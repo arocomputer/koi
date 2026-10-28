@@ -1,0 +1,279 @@
+{
+  "license": "CC0-1.0",
+  "repository": "https://github.com/simple-icons/simple-icons",
+  "revision": "90646e4bf7f3b89df6c37e65baf3e7bc759a517c",
+  "directory": "icons",
+  "localChanges": "Presentation attributes and titles may differ. Path geometry matches the referenced source except where noted.",
+  "files": [
+    {
+      "file": "ansible.svg",
+      "sha256": "4ae33a1aa52698c026a98411b0f18cfc981a18981cbc51715d9bed4eb8123f64"
+    },
+    {
+      "file": "astro.svg",
+      "sha256": "38502102492c2b4a0cb93227c51f12150fe8b695aca236d66a29302166b2b4c2"
+    },
+    {
+      "file": "bun.svg",
+      "sha256": "f356fc1ec5659e73e9b1e881ef2785a4fc4e0e3d82b446e6484f55303546dc6d"
+    },
+    {
+      "file": "claude.svg",
+      "sha256": "2d6fda79eb18ddccca35b799eeb3cece0dfabc22520ce3b10abd25668df9fa93"
+    },
+    {
+      "file": "clojure.svg",
+      "sha256": "6c0e42141a87642b3915f1367d0ab63ec603ba5435a1a615132e8d7dd525c2b2"
+    },
+    {
+      "file": "cmake.svg",
+      "sha256": "5c9dba8cd03b0e12e54ac2dc4a453fa1355c7891c826b0263f95d2a562247120"
+    },
+    {
+      "file": "crystal.svg",
+      "sha256": "bc5ad657fa0e47e5940722b43a4cbf77a19560155feb6c1823d900e24ec0f8f7"
+    },
+    {
+      "file": "dart.svg",
+      "sha256": "895b994d70f2a43416fb172d8e5037d28afdfa51185ec52aa74d8d1990e6b06a"
+    },
+    {
+      "file": "deno.svg",
+      "sha256": "c7ea60906f1e7edabd34ca7a2fb0887419ea52691c036f145a36bceeeaace30a"
+    },
+    {
+      "file": "docker.svg",
+      "sha256": "65571291c261ef869c31540a38f3ca0f0ee3bb73f179c172211c8860f19a6359"
+    },
+    {
+      "file": "dotnet.svg",
+      "sha256": "9c3a414cec70d4cbafb6d568176db019e32388c1cb0f7c1ca6379bf513ae4ae0"
+    },
+    {
+      "file": "elixir.svg",
+      "sha256": "1b7fcc6b1f915f40385f0b1c424414e21e5206ade33f3cacc9155b8e5c39da15"
+    },
+    {
+      "file": "erlang.svg",
+      "sha256": "7f86672f38acffa99f8f9d70a1b99211ab403c72455611a6e8ee1290ba0b6540"
+    },
+    {
+      "file": "esbuild.svg",
+      "sha256": "5fec70a6c49345b02bd3451f6a9da1b2ed224983bda177ab3449127426d9c7f1"
+    },
+    {
+      "file": "flutter.svg",
+      "sha256": "eed4beebb3b7a72a3944b618d87f883abb4a20d741ffea0e77679216fdf1c34c"
+    },
+    {
+      "file": "git.svg",
+      "sha256": "95724d436215d483de82288610c3c144854138f49945424697fcdf8be66e17d6"
+    },
+    {
+      "file": "github.svg",
+      "sha256": "476ba7aa67b86da7d6e7567b08a4bf0eb1a2fd28da5fc243f8ee39a2f1ea6773"
+    },
+    {
+      "file": "githubcopilot.svg",
+      "sha256": "0d34b0aa829c23094eafce1447481d56f41dde65d779121222dcf294943dd245"
+    },
+    {
+      "file": "gitlab.svg",
+      "sha256": "3bbfcd2707b9cd5bc6d68d561da605c520a707ceaecf3912aede560bb0990e27"
+    },
+    {
+      "file": "gnubash.svg",
+      "sha256": "d5bdfe3c67a2baf479b60e2e9a588b7882bad378d707545c0b8f2321f01faaff"
+    },
+    {
+      "file": "gnuemacs.svg",
+      "sha256": "2136713d4eb0d749347f1a720524d93b2b094b8cc523b0c8fac10dfd36f9a07c"
+    },
+    {
+      "file": "go.svg",
+      "sha256": "33e31a3d049683755ceb07b4a6abe830b2ee02e6ffeee408fe705ef078d3849e"
+    },
+    {
+      "file": "googlegemini.svg",
+      "sha256": "404eba6940a54e63d40edcce2d2e7cb2b3dbfec765e7a1d523662b6f4e0d6747"
+    },
+    {
+      "file": "gradle.svg",
+      "sha256": "379d657397d3d046712c7c4916a7226a22476a159ec8438fe9d639713fb7d302"
+    },
+    {
+      "file": "haskell.svg",
+      "sha256": "42aa7794a225595155557f92bf535fe13450d740aefce62f274497d1cf16a247"
+    },
+    {
+      "file": "helix.svg",
+      "sha256": "a8f958e1bcea9989c2475b8c06084e063e165d14ba8cb0fc6c0fc30fb9517dd2"
+    },
+    {
+      "file": "helm.svg",
+      "sha256": "d20ba770d3767e58b86891829aca215aed8a7b98135fbcef3148aff8ffbeb761"
+    },
+    {
+      "file": "huggingface.svg",
+      "sha256": "c167703fa2fb404f1de9bbbd38b6ac6c4c01dbeae49e7783521333ba03ab706a"
+    },
+    {
+      "file": "julia.svg",
+      "sha256": "dab25176f85ba56fd9a5bebf28ef4f792553f659cd748f46564c8d2f4f8b4e50"
+    },
+    {
+      "file": "kotlin.svg",
+      "sha256": "909d1ba63b4bea5843be4579fa68a398c310c3d4748e8e6ba9ea295403984b3b"
+    },
+    {
+      "file": "kubernetes.svg",
+      "sha256": "76037c7167ffdf86e7e014871ba0f42faa38e016c4e5a40aa3b3b011ce789587"
+    },
+    {
+      "file": "lua.svg",
+      "sha256": "ea6e362187dd07d589930f3bb12e5c624253c60767a554d9ecbea4585cc29a60"
+    },
+    {
+      "file": "mistralai.svg",
+      "sha256": "5d6abe5c18446f7971139b2f472b1b1d8cf29db04af332091023d018800cfbd1"
+    },
+    {
+      "file": "mongodb.svg",
+      "sha256": "cf259f556e99f2df9056e60f34ef0eed3eeb4d096dec34f251b0f7a3a5c76fdd"
+    },
+    {
+      "file": "mysql.svg",
+      "sha256": "67c144cc3e44ad14062a3f20ebe29c5e7eeb2c2c9c0f43cf48d87fe6291a8b2d"
+    },
+    {
+      "file": "neovim.svg",
+      "sha256": "b82225d459a28530dfdabb93b78bee75e1cf070feebfee70fd393266710e6b04"
+    },
+    {
+      "file": "nextdotjs.svg",
+      "sha256": "1d806f2ddfe4eb9599dba14d79a6cc79c5fa55b93805fcd1ab186773a8c42c53"
+    },
+    {
+      "file": "nodedotjs.svg",
+      "sha256": "021851b758cde7d3e04819c3ac02047d0ff281c712e8387afa0c76a6dac6db6c"
+    },
+    {
+      "file": "npm.svg",
+      "sha256": "00b410dc2c839cfa62910a065eaf28a48cbdb4babe503cf34d475cc94ba03be1"
+    },
+    {
+      "file": "nushell.svg",
+      "sha256": "29d869da798823ea253dd40de0fcc90c14de2d1657d4ebe277df1602d79e6395"
+    },
+    {
+      "file": "ollama.svg",
+      "sha256": "8d113044ac7b6a4bea46c335f8410a04976c2e6ae5beaf9fc6b823d90f8b05a0"
+    },
+    {
+      "file": "openai.svg",
+      "sha256": "357724f34830193cfbd74214d07015bae43c54063675f46e201d89c876d41c94",
+      "revision": "521c96fd04b0ea93034db8715eda5a4de27a58bb",
+      "geometryChange": "one coordinate rounded from 1.1685 to 1.1686"
+    },
+    {
+      "file": "openjdk.svg",
+      "sha256": "4c4618e49d30e7d026dfda95688ae1746c68a70e4f570c7b2f796715930c1951"
+    },
+    {
+      "file": "perl.svg",
+      "sha256": "2e531e943132344359399b859d6949648b369620871a7bacb14141d14465f113"
+    },
+    {
+      "file": "php.svg",
+      "sha256": "cd1beaa0dde7e765b5d2cbae786c1f6db967f72073eb7b9f9bbc63da55b9d0f6"
+    },
+    {
+      "file": "pnpm.svg",
+      "sha256": "c6285a2d1fa28b8d6c42cd7f7edf360434371ff6f15744425c4444e41fed812b"
+    },
+    {
+      "file": "podman.svg",
+      "sha256": "7d5dbd8c3d7ac8bf5afd8f128d38f2d3778597e47cbb6d5eb2cca735f00669ee"
+    },
+    {
+      "file": "postgresql.svg",
+      "sha256": "c8ccadbd88c9312c2ad3734c4861b31d3485ce179ee91d64793143f83cfa745c"
+    },
+    {
+      "file": "python.svg",
+      "sha256": "ad9468e1c4903f73ae7eebfbe980f0f727a10db695be3d914e7d8bd25356a862"
+    },
+    {
+      "file": "redis.svg",
+      "sha256": "428b86deb14c8bdacdcdf75987fe454f367bcd078a7e4ae3f84de29aa5bdf136"
+    },
+    {
+      "file": "replicate.svg",
+      "sha256": "2b56b6a5c34ab91d2382a769b6d81bbb5b6152df6c474a4f798b73ce45560e33"
+    },
+    {
+      "file": "ruby.svg",
+      "sha256": "956992a81b988b916efdd6f7a78b9f19fe352b5c04f2019af2ce1a89e390ac9d"
+    },
+    {
+      "file": "rust.svg",
+      "sha256": "fb4ca7ef5644310355c652029408aefa7710ab59abecbe386fdd300158ebfbe6"
+    },
+    {
+      "file": "scala.svg",
+      "sha256": "1e5a2e7714d6a756074d4e7e0f76e07ef746fb6f4f88a174e23c62f747e64630"
+    },
+    {
+      "file": "sqlite.svg",
+      "sha256": "71d4153bc9661dfe6b92dad70f737ec2b6c7c839311e502b4ca66fe664fe12b6"
+    },
+    {
+      "file": "sublimetext.svg",
+      "sha256": "ebd68b1bdb9b76731afc67027e3a7e6fe96e80843d032f4eafbbcc20d7b3e8b6"
+    },
+    {
+      "file": "swift.svg",
+      "sha256": "b3d5f49cc459b7a3417db134ec70052c30305c3799d0f854796544c52c18a4bc"
+    },
+    {
+      "file": "terraform.svg",
+      "sha256": "894a34063749ee52f945fd24ec5983b79e0da9cafa16d99e2f0b6506a8908ae5"
+    },
+    {
+      "file": "tmux.svg",
+      "sha256": "c1cd9bc882acccfc1d6b590b82b0b1786416601250bc4c7e15ead08d40f3d34f"
+    },
+    {
+      "file": "turborepo.svg",
+      "sha256": "a7405752882543910b1c66e96e515979927e2459149b7048fd056ce5d186b4c6"
+    },
+    {
+      "file": "vim.svg",
+      "sha256": "d3a39e8a2820764d98e9f481f6dd8bc90fe49788fb5f682e742eb3c98f2fc39e"
+    },
+    {
+      "file": "vite.svg",
+      "sha256": "e350f3a5d8153c29e884dc94839c942e87bb4342ad51d6b9eddb72b85a9fe585"
+    },
+    {
+      "file": "vuedotjs.svg",
+      "sha256": "5a106bc81911286a616a911280f185401408cae30305114481e28191ae6656ea"
+    },
+    {
+      "file": "webpack.svg",
+      "sha256": "59ea25ab3d788b47e484a8ebbbb921f6a57e6ac213e0894af36a2436d57462f9"
+    },
+    {
+      "file": "weightsandbiases.svg",
+      "sha256": "fc4ca824ca0591b1bb7d8a970860250e1876015535e984068d3463b20a606f50"
+    },
+    {
+      "file": "yarn.svg",
+      "sha256": "c2addf3dc035d6d2ddeb4b8b828a0bdc2ed358b48e7e50725aa7bbdc08466904"
+    },
+    {
+      "file": "zig.svg",
+      "sha256": "8279d9314bab82abf89c786ef937cfe1b8e5d3ee41c1c46b1945ebe2831c9893"
+    }
+  ]
+}

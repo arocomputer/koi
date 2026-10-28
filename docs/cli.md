@@ -1,0 +1,121 @@
+# CLI reference
+
+The `koi` executable is both the server and its command-line client. Koi
+adds its directory to each pane's `PATH`. Outside a pane, the bundled Mac
+CLI is at `Koi.app/Contents/Resources/koi`; source builds also produce
+`build/core/koi`. During development, use `scripts/koid koi …` to address
+the separate Koid server.
+
+**Install CLI…** in Settings → Advanced creates `~/.local/bin/koi`, a wrapper
+that invokes the current bundle's executable. Add `~/.local/bin` to your
+shell's `PATH` if needed; Koi does not edit it. Koid installs
+`~/.local/bin/koid-cli` instead and pins `KOI_DIR` to `~/.local/state/koid`.
+Installation happens only on a click, copies no binary, and preserves an
+existing foreign or edited wrapper. Moving the app can invalidate its wrapper.
+
+## Commands
+
+| Command | Behavior |
+| --- | --- |
+| `koi ls [--json]` | List tabs and groups in order; `--json` prints the server's tree as sent, including tab names |
+| `koi new [--cwd DIR] [--command SOURCE]` | Create a tab and print its tab ID |
+| `koi send TARGET TEXT...` | Send text to the target tab's first pane |
+| `koi capture [TARGET]` | Print the first pane's screen and scrollback |
+| `koi split [TARGET] [--down \| --right] [--cwd DIR] [--command SOURCE]` | Split right by default, or down; print the new pane ID |
+| `koi status [PANE] STATE` | Report `working`, `blocked`, `done`, `error` or `idle` for an exact pane ID |
+| `koi info [--json]` | Report the running server's version, PID, protocol, uptime, transports and capabilities |
+| `koi version` | Print this binary's own version, without contacting a server |
+| `koi clear [TARGET]` | Erase retained scrollback, preserving the visible screen and modes |
+| `koi reset [TARGET]` | Reset the terminal engine's screen, history, modes and parser |
+| `koi close [TARGET]` | End the pane with that ID, or the target tab's first pane |
+| `koi help` or `koi --help` | Print command usage |
+
+`send` joins its text arguments with spaces and converts literal `\n` to
+Enter. For example, inside an existing Koi session:
+
+```sh
+koi ls
+koi info --json
+koi new --cwd "$PWD"
+koi split --down --cwd "$PWD" --command 'printf "%s\n" "new shell"; exec /bin/zsh -l'
+koi send 1 'echo hello\n'
+koi capture 1
+koi status working
+koi status done
+```
+
+`--command` is shell source passed intact to the login shell with `-c`.
+Quote it as one argument so pipelines, quoting and expansions belong to
+that new shell. Without it, creation starts an interactive login shell.
+An empty command is rejected; when the command exits, its pane can end.
+`--cwd` chooses the new shell's initial directory. Without an explicit
+directory, a split inherits its source pane's directory; `new` uses the
+server's home directory. Inside a pane, `new` uses `KOI_TAB` for tab placement,
+not directory inheritance. If the requested directory cannot be entered,
+the PTY launcher falls back to `/`. The CLI does not read the app's `startup-command` setting.
+
+Clear and reset run no shell command and preserve the process, PTY, grid
+size and configured appearance/history budget. Reset also clears terminal
+metadata reports, but does not repair the PTY's termios settings or restart
+the shell. The server broadcasts the resulting snapshot to attached clients.
+There is no CLI `configure` subcommand: theme defaults and scrollback
+configuration use JSON `configurePane` through the control protocol.
+
+## Targets and pane selection
+
+A tab target is its full ID, an ID suffix of at least four characters, or a
+position starting at 1. Use full IDs in scripts: positions change when tabs
+are reordered. Suffixes should be unique; the resolver takes the last match
+when several IDs share a suffix.
+
+| Commands | Explicit target | Omitted target |
+| --- | --- | --- |
+| `send`, `capture`, `close` | Exact pane ID, or tab target selecting its first pane | `capture`/`close` use `$KOI_TAB`; `send` requires a target |
+| `split`, `clear`, `reset` | Exact pane ID, or tab target selecting its first pane | `$KOI_PANE`, then `$KOI_TAB` |
+| `status` | Exact pane ID only | `$KOI_PANE` required |
+
+Koi sets `KOI_TAB` and `KOI_PANE` in its shells. Preserve their server context,
+including `KOI_DIR`, when reporting status from tools. Explicit status reports
+reach the server directly and do not depend on tool stdout reaching the PTY.
+Reports describe the foreground program; they are cleared when its identity
+changes. Advisory agent skills do not guarantee lifecycle reporting.
+
+Closing one pane removes the whole tab only when it was the last pane.
+To close every pane in a tab, use **Close Tab** in the app or palette
+(⇧⌘W by default). The CLI's `close` command ends one pane at a time: the
+pane whose ID it is given, or a tab's first pane.
+
+## Running-server compatibility
+
+`info` describes the answering process, even after the executable on disk
+has been rebuilt. Its version includes a build fingerprint; do not substitute
+the app bundle version for server identity. JSON also exposes the exact
+capability names in [Architecture](architecture.md#connections-and-protocol).
+
+The CLI probes `serverInfo` before clear/reset, status, startup source, and
+explicit split-directory requests. Older protocol-v6 servers may lack these
+capabilities and silently ignore unknown fields. Unsupported requests fail
+before the mutation and leave existing sessions intact. A plain `new --cwd`
+and split without new options retain their older behavior. Rebuilding or
+installing a binary does not replace an already running server; restarting
+that server ends its shells.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Operation, capability check or response failed |
+| 2 | Invalid command line |
+| 3 | Target pane or tab could not be resolved |
+| 4 | Server could not be reached |
+
+A nonexistent exact pane passed to a control operation can instead produce
+code 1 from the server's error response. `status` without an explicit pane
+or `KOI_PANE` returns 2. Running `koi` without a command prints usage and
+returns 2.
+
+The app's remote setup also uses `koi --offer` and `koi --stdio` internally.
+Their transport protocol is described in [Architecture](architecture.md);
+they are not additional interactive tab commands. The command parser and
+help text live in [`cli.zig`](../src/core/cli.zig).

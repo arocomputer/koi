@@ -1,0 +1,54 @@
+name: Build and checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.17.0
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          zig version
+      - name: Script regressions
+        run: |
+          sh tests/scripts/koid-test-isolation.sh
+          python3 tests/scripts/buildProvenanceTests.py
+      - name: Build dependencies and core
+        run: |
+          scripts/build-ghostty-vt.sh
+          scripts/build-core.sh
+      - name: Core tests
+        run: zig build -j2 test
+      - name: Swift checks without Metal
+        run: |
+          export KOI_DIR="$(mktemp -d /tmp/koi-ci-XXXXXXXX)"
+          trap 'rm -rf "$KOI_DIR"' EXIT
+          swift test --jobs 2 --filter 'ConfigTests|KeyboardTests|WireTests|SocketTests|PredictionTests|DeviceIconsTests|InstallationTests|IntegrationsTests|UpdatesTests|DiagnosticsTests|DiagnosticIssuesTests|TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests'
+      - name: Bundle and verify
+        env:
+          KOI_BUNDLE_OUTPUT: ${{ runner.temp }}/Koi.app
+        run: |
+          scripts/bundle.sh
+          codesign --verify --deep --strict "$KOI_BUNDLE_OUTPUT"

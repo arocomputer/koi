@@ -1,0 +1,150 @@
+#!/bin/sh
+# koid: work on Koi without touching the Koi you use or taking your
+# screen. It builds and runs "Koid.app" (its own bundle id and state in
+# ~/.local/state/koid), drives its server with the koi command, and
+# takes screenshots of its window by id, so nothing needs focus.
+#
+#   koid build              dependencies, core, and ~/Applications/Koid.app
+#   koid run                start it in the background (restarts it if running)
+#   koid stop               quit it; --all also ends its server and shells
+#   koid shot [FILE]        screenshot its window to FILE (default build/dev.png)
+#   koid koi ARGS...        dev server CLI: ls/new/send/capture/split/close
+#   koid popup NAME         machines/tab/group/shortcut/hint:ACTION/dismiss
+#   koid palette [QUERY]    open/search the command palette
+#   koid palette run ID [VALUE]    execute an entry or submit a prompt
+#   koid palette inspect PATH [QUERY]    write selection and catalog matches
+#   koid log                the dev server's and app's logs
+#   koid test               the core's and the app's tests
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+# One fixed home, not per-worktree, so the dock pin always points at the
+# Koid any worktree's `koid build` rebuilds (see scripts/bundle.sh).
+app="$HOME/Applications/Koid.app"
+state="$HOME/.local/state/koid"
+export KOI_DIR="$state"
+
+case "${1:-}" in
+  build)
+    "$root/scripts/bundle.sh" --dev ;;
+  run)
+    [ -x "$app/Contents/MacOS/koi" ] || { echo "koid: run scripts/koid build first" >&2; exit 1; }
+    "$0" stop >/dev/null 2>&1 || true
+    mkdir -p "$state"
+    "$app/Contents/MacOS/koi" >> "$state/app.log" 2>&1 &
+    for _ in $(seq 1 50); do "$0" window-id >/dev/null 2>&1 && break; sleep 0.1; done
+    "$0" window-id >/dev/null || { echo "koid: Koid did not open a window; see $state/app.log" >&2; exit 1; }
+    echo "Koid running (pid $!), state in $state" ;;
+  stop)
+    pkill -f "Koid.app/Contents/MacOS/koi\$" 2>/dev/null || true
+    if [ "${2:-}" = "--all" ]; then
+      # The server answering Koid's socket, whichever binary started it.
+      for sock in "$state"/server-*.sock; do
+        [ -S "$sock" ] || continue
+        pid=$(KOI_DIR="$state" "$root/build/core/koi" info --json 2>/dev/null | sed -n 's/.*"serverPID":\([0-9]*\).*/\1/p')
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+        break
+      done
+      pkill -f "Koid.app/Contents/Resources/koi --server" 2>/dev/null || true
+    fi
+    true ;;
+  window-id)
+    if [ ! -x "$root/build/koid-control" ] || [ "$root/scripts/koid-control.swift" -nt "$root/build/koid-control" ]; then
+      swiftc -O "$root/scripts/koid-control.swift" -o "$root/build/koid-control"
+    fi
+    "$root/build/koid-control" "Koid" ;;
+  shot)
+    # Koid pictures its own window, so no Screen Recording permission is
+    # needed by whatever terminal runs this.
+    out="${2:-$root/build/dev.png}"
+    case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
+    "$0" window-id >/dev/null || { echo "koid: Koid has no window" >&2; exit 1; }
+    rm -f "$out"
+    "$root/build/koid-control" shot "$out"
+    for _ in $(seq 1 30); do [ -s "$out" ] && break; sleep 0.1; done
+    [ -s "$out" ] || { echo "koid: Koid did not answer" >&2; exit 1; }
+    echo "$out" ;;
+  popup)
+    "$0" window-id >/dev/null
+    "$root/build/koid-control" popup "${2:-machines}" ;;
+  palette)
+    "$0" window-id >/dev/null
+    shift
+    "$root/build/koid-control" palette "$@" ;;
+  koi)
+    shift
+    exec "$root/build/core/koi" "$@" ;;
+  log)
+    tail -n 20 "$state/server.log" "$state/app.log" 2>/dev/null ;;
+  test)
+    # Keep fixture socket paths short enough to avoid the shared /tmp fallback.
+    test_root=$(mktemp -d /tmp/koi-tests-XXXXXXXX)
+    # A marker alone is insufficient: the PID may have been reused.
+    cleanup_tests() {
+      python3 - "$test_root" <<'PY'
+import ctypes, os, shlex, signal, subprocess, sys
+root = sys.argv[1]
+binary = os.path.join(root, 'koi')
+def owns_process(pid):
+    # Native macOS servers can be identified without launching another tool.
+    if sys.platform == 'darwin':
+        lib = ctypes.CDLL('/usr/lib/libproc.dylib')
+        path = ctypes.create_string_buffer(4096)
+        if lib.proc_pidpath(pid, path, len(path)) > 0 and os.path.realpath(os.fsdecode(path.value)) == os.path.realpath(binary):
+            return True
+    # Script-based server overrides have an interpreter as their executable.
+    command = subprocess.check_output(['ps', '-ww', '-p', str(pid), '-o', 'command='], text=True, stderr=subprocess.DEVNULL)
+    args = shlex.split(command)
+    return any(args[i:i+2] == [binary, '--server'] for i in range(len(args) - 1))
+
+for directory, _, files in os.walk(os.path.join(root, 'tmp'), followlinks=False):
+    if 'server.pid' not in files:
+        continue
+    try:
+        with open(os.path.join(directory, 'server.pid')) as marker:
+            pid = int(marker.read())
+        if pid <= 1:
+            continue
+        if owns_process(pid):
+            os.kill(pid, signal.SIGTERM)
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        pass
+PY
+      rm -rf "$test_root"
+    }
+    trap cleanup_tests EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    TMPDIR="$test_root/tmp"
+    KOI_TEST_ROOT="$test_root/tmp"
+    KOI_DIR="$test_root/state"
+    export TMPDIR KOI_TEST_ROOT KOI_DIR
+    mkdir -p "$TMPDIR" "$KOI_DIR"
+    # Serialize the entire pipeline for this checkout, including compilation
+    # against shared build outputs. The OS releases the lock on process exit.
+    python3 - "$root" "$test_root/koi" "${KOI_SERVER_BIN:-}" <<'PY'
+import fcntl, hashlib, os, shutil, subprocess, sys
+root, snapshot, selected = sys.argv[1:]
+key = hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:24]
+lock = f'/tmp/koi-test-build-{os.getuid()}-{key}.lock'
+fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+with os.fdopen(fd, 'r+') as guard:
+    fcntl.flock(guard, fcntl.LOCK_EX)
+    for script in ('build-ghostty-vt.sh', 'build-core.sh'):
+        result = subprocess.run([os.path.join(root, 'scripts', script)], cwd=root)
+        if result.returncode:
+            sys.exit(result.returncode if result.returncode > 0 else 128 - result.returncode)
+    source = os.path.join(root, selected or 'zig-out/bin/koi')
+    shutil.copy2(source, snapshot)
+    environment = os.environ.copy()
+    environment['KOI_SERVER_BIN'] = snapshot
+    for command in (['zig', 'build', 'test'], ['swift', 'test']):
+        result = subprocess.run(command, cwd=root, env=environment)
+        if result.returncode:
+            sys.exit(result.returncode if result.returncode > 0 else 128 - result.returncode)
+PY
+    ;;
+  *)
+    sed -n '2,/^set -eu$/p' "$0" | sed '$d; s/^# \{0,1\}//'
+    exit 2 ;;
+esac

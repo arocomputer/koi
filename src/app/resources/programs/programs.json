@@ -1,0 +1,944 @@
+[
+  {
+    "runs": [
+      "claude"
+    ],
+    "name": "Claude Code",
+    "logo": "claude",
+    "colors": [
+      "E38C69",
+      "C8603F"
+    ]
+  },
+  {
+    "runs": [
+      "codex"
+    ],
+    "name": "Codex",
+    "colors": [
+      "3A3A3A",
+      "1A1A1A"
+    ],
+    "ink": "FFFFFF",
+    "logo": "openai"
+  },
+  {
+    "runs": [
+      "gemini"
+    ],
+    "name": "Gemini",
+    "logo": "googlegemini",
+    "colors": [
+      "8E75B2",
+      "5C4A8A"
+    ]
+  },
+  {
+    "runs": [
+      "nvim"
+    ],
+    "name": "Neovim",
+    "logo": "neovim",
+    "colors": [
+      "52A8EC",
+      "2B6EC2"
+    ]
+  },
+  {
+    "runs": [
+      "vim",
+      "vi"
+    ],
+    "name": "Vim",
+    "logo": "vim",
+    "colors": [
+      "2AA845",
+      "14792B"
+    ]
+  },
+  {
+    "runs": [
+      "hx",
+      "helix"
+    ],
+    "name": "Helix",
+    "logo": "helix",
+    "colors": [
+      "7350BD",
+      "482C86"
+    ]
+  },
+  {
+    "runs": [
+      "emacs"
+    ],
+    "name": "Emacs",
+    "logo": "gnuemacs",
+    "colors": [
+      "9270CC",
+      "6243A1"
+    ]
+  },
+  {
+    "runs": [
+      "git"
+    ],
+    "name": "git",
+    "logo": "git",
+    "colors": [
+      "F4704F",
+      "D8452A"
+    ]
+  },
+  {
+    "runs": [
+      "lazygit"
+    ],
+    "name": "Git Changes",
+    "logo": "git",
+    "colors": [
+      "F4704F",
+      "D8452A"
+    ],
+    "mark": {
+      "symbol": "plus.circle"
+    }
+  },
+  {
+    "runs": [
+      "tig"
+    ],
+    "name": "tig",
+    "logo": "git",
+    "colors": [
+      "F4704F",
+      "D8452A"
+    ]
+  },
+  {
+    "runs": [
+      "btop"
+    ],
+    "name": "btop",
+    "text": "B",
+    "colors": [
+      "5C1818",
+      "340B0B"
+    ],
+    "ink": "FF5C5C"
+  },
+  {
+    "runs": [
+      "htop"
+    ],
+    "name": "htop",
+    "text": "H",
+    "colors": [
+      "1C4A2C",
+      "0F2A18"
+    ],
+    "ink": "5CE08A"
+  },
+  {
+    "runs": [
+      "top"
+    ],
+    "name": "top",
+    "text": "T",
+    "colors": [
+      "3A3A42",
+      "24242A"
+    ],
+    "ink": "DADAE0"
+  },
+  {
+    "runs": [
+      "node"
+    ],
+    "name": "Node",
+    "logo": "nodedotjs",
+    "colors": [
+      "6DB55A",
+      "3F8A39"
+    ],
+    "mark": {
+      "symbol": "hexagon.fill"
+    }
+  },
+  {
+    "runs": [
+      "bun"
+    ],
+    "name": "Bun",
+    "logo": "bun",
+    "colors": [
+      "FCF1E0",
+      "EFDCBD"
+    ],
+    "ink": "3B2A20"
+  },
+  {
+    "runs": [
+      "deno"
+    ],
+    "name": "Deno",
+    "logo": "deno",
+    "colors": [
+      "2B2B2E",
+      "111113"
+    ]
+  },
+  {
+    "runs": [
+      "npm"
+    ],
+    "name": "npm",
+    "logo": "npm",
+    "colors": [
+      "D9393E",
+      "B0232A"
+    ]
+  },
+  {
+    "runs": [
+      "pnpm"
+    ],
+    "name": "pnpm",
+    "logo": "pnpm",
+    "colors": [
+      "F9AD20",
+      "DB8E0B"
+    ],
+    "ink": "2B1D05"
+  },
+  {
+    "runs": [
+      "yarn"
+    ],
+    "name": "Yarn",
+    "logo": "yarn",
+    "colors": [
+      "3A9BC8",
+      "22789F"
+    ]
+  },
+  {
+    "runs": [
+      "python",
+      "python3",
+      "ipython"
+    ],
+    "name": "Python",
+    "logo": "python",
+    "colors": [
+      "4C8DCB",
+      "2E68A2"
+    ],
+    "ink": "FFD43B"
+  },
+  {
+    "runs": [
+      "ruby",
+      "irb"
+    ],
+    "name": "Ruby",
+    "logo": "ruby",
+    "colors": [
+      "D8473C",
+      "A62A22"
+    ]
+  },
+  {
+    "runs": [
+      "go"
+    ],
+    "name": "Go",
+    "logo": "go",
+    "colors": [
+      "2CC0DF",
+      "0092B6"
+    ]
+  },
+  {
+    "runs": [
+      "cargo"
+    ],
+    "name": "Cargo",
+    "logo": "rust",
+    "colors": [
+      "3B3B3E",
+      "1D1D20"
+    ],
+    "ink": "F2A47E"
+  },
+  {
+    "runs": [
+      "rustc"
+    ],
+    "name": "Rust",
+    "logo": "rust",
+    "colors": [
+      "3B3B3E",
+      "1D1D20"
+    ],
+    "ink": "F2A47E"
+  },
+  {
+    "runs": [
+      "swift"
+    ],
+    "name": "Swift",
+    "logo": "swift",
+    "colors": [
+      "F8774F",
+      "E5432A"
+    ]
+  },
+  {
+    "runs": [
+      "zig"
+    ],
+    "name": "Zig",
+    "logo": "zig",
+    "colors": [
+      "F8B53E",
+      "E0921A"
+    ],
+    "ink": "2B1E0A"
+  },
+  {
+    "runs": [
+      "lua"
+    ],
+    "name": "Lua",
+    "logo": "lua",
+    "colors": [
+      "3C3FA0",
+      "22246D"
+    ]
+  },
+  {
+    "runs": [
+      "php"
+    ],
+    "name": "PHP",
+    "logo": "php",
+    "colors": [
+      "8390C4",
+      "5B679D"
+    ]
+  },
+  {
+    "runs": [
+      "kotlin"
+    ],
+    "name": "Kotlin",
+    "logo": "kotlin",
+    "colors": [
+      "8C62FF",
+      "6A3FE0"
+    ]
+  },
+  {
+    "runs": [
+      "docker"
+    ],
+    "name": "Docker",
+    "logo": "docker",
+    "colors": [
+      "3B9FF1",
+      "1C73CE"
+    ]
+  },
+  {
+    "runs": [
+      "psql"
+    ],
+    "name": "Postgres",
+    "logo": "postgresql",
+    "colors": [
+      "4F7BC9",
+      "2E559F"
+    ]
+  },
+  {
+    "runs": [
+      "mysql"
+    ],
+    "name": "MySQL",
+    "logo": "mysql",
+    "colors": [
+      "4F88B7",
+      "2E648F"
+    ]
+  },
+  {
+    "runs": [
+      "redis-cli"
+    ],
+    "name": "Redis",
+    "logo": "redis",
+    "colors": [
+      "E74A3F",
+      "B8281F"
+    ]
+  },
+  {
+    "runs": [
+      "sqlite3"
+    ],
+    "name": "SQLite",
+    "logo": "sqlite",
+    "colors": [
+      "4E9DD4",
+      "1F6DA4"
+    ]
+  },
+  {
+    "runs": [
+      "tmux"
+    ],
+    "name": "tmux",
+    "logo": "tmux",
+    "colors": [
+      "2F3B30",
+      "1B231C"
+    ],
+    "ink": "3DD24D"
+  },
+  {
+    "runs": [
+      "ssh"
+    ],
+    "name": "ssh",
+    "symbol": "network",
+    "colors": [
+      "3E4C66",
+      "253043"
+    ]
+  },
+  {
+    "runs": [
+      "mosh"
+    ],
+    "name": "mosh",
+    "symbol": "network",
+    "colors": [
+      "3E4C66",
+      "253043"
+    ]
+  },
+  {
+    "runs": [
+      "man"
+    ],
+    "name": "man",
+    "symbol": "book.closed.fill",
+    "colors": [
+      "5A4A3A",
+      "3A2F24"
+    ],
+    "ink": "F2DFC2"
+  },
+  {
+    "runs": [
+      "less",
+      "more"
+    ],
+    "name": "less",
+    "symbol": "doc.text.fill",
+    "colors": [
+      "3B3B42",
+      "24242A"
+    ],
+    "ink": "DADAE0"
+  },
+  {
+    "runs": [
+      "make"
+    ],
+    "name": "make",
+    "symbol": "hammer.fill",
+    "colors": [
+      "4A4A52",
+      "2E2E34"
+    ],
+    "ink": "F2C66D"
+  },
+  {
+    "runs": [
+      "terraform"
+    ],
+    "name": "Terraform",
+    "logo": "terraform",
+    "colors": [
+      "7B42BC",
+      "5C3099"
+    ]
+  },
+  {
+    "runs": [
+      "kubectl",
+      "k9s"
+    ],
+    "name": "Kubernetes",
+    "logo": "kubernetes",
+    "colors": [
+      "326CE5",
+      "1F4FA3"
+    ]
+  },
+  {
+    "runs": [
+      "ansible",
+      "ansible-playbook"
+    ],
+    "name": "Ansible",
+    "logo": "ansible",
+    "colors": [
+      "3A3A3A",
+      "1A1A1A"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "podman"
+    ],
+    "name": "Podman",
+    "logo": "podman",
+    "colors": [
+      "892CA0",
+      "5C1E6E"
+    ]
+  },
+  {
+    "runs": [
+      "iex",
+      "elixir"
+    ],
+    "name": "Elixir",
+    "logo": "elixir",
+    "colors": [
+      "6E4A7E",
+      "4B275F"
+    ]
+  },
+  {
+    "runs": [
+      "erl",
+      "erlang"
+    ],
+    "name": "Erlang",
+    "logo": "erlang",
+    "colors": [
+      "A90533",
+      "7A0325"
+    ]
+  },
+  {
+    "runs": [
+      "ghci",
+      "ghc"
+    ],
+    "name": "Haskell",
+    "logo": "haskell",
+    "colors": [
+      "5E5086",
+      "453C66"
+    ]
+  },
+  {
+    "runs": [
+      "julia"
+    ],
+    "name": "Julia",
+    "logo": "julia",
+    "colors": [
+      "9558B2",
+      "6E3F8A"
+    ]
+  },
+  {
+    "runs": [
+      "scala"
+    ],
+    "name": "Scala",
+    "logo": "scala",
+    "colors": [
+      "DC322F",
+      "A02420"
+    ]
+  },
+  {
+    "runs": [
+      "clj",
+      "clojure",
+      "lein"
+    ],
+    "name": "Clojure",
+    "logo": "clojure",
+    "colors": [
+      "5881D8",
+      "3A5CB0"
+    ]
+  },
+  {
+    "runs": [
+      "dart"
+    ],
+    "name": "Dart",
+    "logo": "dart",
+    "colors": [
+      "0175C2",
+      "015A94"
+    ]
+  },
+  {
+    "runs": [
+      "flutter"
+    ],
+    "name": "Flutter",
+    "logo": "flutter",
+    "colors": [
+      "02569B",
+      "013E70"
+    ]
+  },
+  {
+    "runs": [
+      "dotnet"
+    ],
+    "name": ".NET",
+    "logo": "dotnet",
+    "colors": [
+      "512BD4",
+      "3A1F9E"
+    ]
+  },
+  {
+    "runs": [
+      "perl"
+    ],
+    "name": "Perl",
+    "logo": "perl",
+    "colors": [
+      "39457E",
+      "2A3460"
+    ]
+  },
+  {
+    "runs": [
+      "crystal"
+    ],
+    "name": "Crystal",
+    "logo": "crystal",
+    "colors": [
+      "2E2E2E",
+      "000000"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "vite"
+    ],
+    "name": "Vite",
+    "logo": "vite",
+    "colors": [
+      "646CFF",
+      "4049C9"
+    ]
+  },
+  {
+    "runs": [
+      "next"
+    ],
+    "name": "Next.js",
+    "logo": "nextdotjs",
+    "colors": [
+      "2E2E2E",
+      "000000"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "vue"
+    ],
+    "name": "Vue",
+    "logo": "vuedotjs",
+    "colors": [
+      "4FC08D",
+      "369970"
+    ]
+  },
+  {
+    "runs": [
+      "astro"
+    ],
+    "name": "Astro",
+    "logo": "astro",
+    "colors": [
+      "7E22CE",
+      "4E1A8A"
+    ]
+  },
+  {
+    "runs": [
+      "webpack"
+    ],
+    "name": "webpack",
+    "logo": "webpack",
+    "colors": [
+      "2B6CB3",
+      "1E4E85"
+    ],
+    "ink": "8DD6F9"
+  },
+  {
+    "runs": [
+      "esbuild"
+    ],
+    "name": "esbuild",
+    "logo": "esbuild",
+    "colors": [
+      "FFCF00",
+      "D9AE00"
+    ],
+    "ink": "191919"
+  },
+  {
+    "runs": [
+      "turbo"
+    ],
+    "name": "Turborepo",
+    "logo": "turborepo",
+    "colors": [
+      "EF4444",
+      "C32E2E"
+    ]
+  },
+  {
+    "runs": [
+      "mongosh",
+      "mongo",
+      "mongod"
+    ],
+    "name": "MongoDB",
+    "logo": "mongodb",
+    "colors": [
+      "47A248",
+      "357A33"
+    ]
+  },
+  {
+    "runs": [
+      "subl"
+    ],
+    "name": "Sublime Text",
+    "logo": "sublimetext",
+    "colors": [
+      "FF9800",
+      "D97E00"
+    ]
+  },
+  {
+    "runs": [
+      "nu"
+    ],
+    "name": "Nushell",
+    "logo": "nushell",
+    "colors": [
+      "4E9A06",
+      "3A7304"
+    ]
+  },
+  {
+    "runs": [
+      "gradle",
+      "gradlew"
+    ],
+    "name": "Gradle",
+    "logo": "gradle",
+    "colors": [
+      "02303A",
+      "01181F"
+    ],
+    "ink": "02B2AF"
+  },
+  {
+    "runs": [
+      "bash"
+    ],
+    "name": "bash",
+    "logo": "gnubash",
+    "colors": [
+      "4EAA25",
+      "3A7D1B"
+    ]
+  },
+  {
+    "runs": [
+      "cmake"
+    ],
+    "name": "CMake",
+    "logo": "cmake",
+    "colors": [
+      "064F8C",
+      "043A66"
+    ]
+  },
+  {
+    "runs": [
+      "gh"
+    ],
+    "name": "GitHub",
+    "logo": "github",
+    "colors": [
+      "3A3A3A",
+      "1A1A1A"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "glab"
+    ],
+    "name": "GitLab",
+    "logo": "gitlab",
+    "colors": [
+      "FC6D26",
+      "D9531E"
+    ]
+  },
+  {
+    "runs": [
+      "helm"
+    ],
+    "name": "Helm",
+    "logo": "helm",
+    "colors": [
+      "0F1689",
+      "0A0F5E"
+    ]
+  },
+  {
+    "runs": [
+      "java"
+    ],
+    "name": "Java",
+    "logo": "openjdk",
+    "colors": [
+      "ED8B00",
+      "C47200"
+    ]
+  },
+  {
+    "runs": [
+      "ollama"
+    ],
+    "name": "Ollama",
+    "logo": "ollama",
+    "colors": [
+      "3A3A3A",
+      "1A1A1A"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "copilot"
+    ],
+    "name": "GitHub Copilot",
+    "logo": "githubcopilot",
+    "colors": [
+      "3A3A3A",
+      "1A1A1A"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "aider"
+    ],
+    "name": "Aider",
+    "symbol": "sparkles",
+    "colors": [
+      "2DB55D",
+      "1F8A45"
+    ]
+  },
+  {
+    "runs": [
+      "pi"
+    ],
+    "name": "Pi",
+    "symbol": "pi",
+    "colors": [
+      "6366F1",
+      "4348C7"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "fx"
+    ],
+    "name": "fx",
+    "text": "fx",
+    "colors": [
+      "00B3A4",
+      "008578"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "huggingface-cli",
+      "huggingface-cli"
+    ],
+    "name": "Hugging Face",
+    "logo": "huggingface",
+    "colors": [
+      "FFD21E",
+      "E6B800"
+    ],
+    "ink": "2A2A2A"
+  },
+  {
+    "runs": [
+      "mistral"
+    ],
+    "name": "Mistral",
+    "logo": "mistralai",
+    "colors": [
+      "FA520F",
+      "C73E08"
+    ]
+  },
+  {
+    "runs": [
+      "replicate"
+    ],
+    "name": "Replicate",
+    "logo": "replicate",
+    "colors": [
+      "2A2A2A",
+      "000000"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "wandb"
+    ],
+    "name": "Weights & Biases",
+    "logo": "weightsandbiases",
+    "colors": [
+      "FFBE00",
+      "D99F00"
+    ],
+    "ink": "2A2A2A"
+  }
+]

@@ -1,0 +1,33 @@
+# Downloaded dependencies and generated build output.
+/vendor/
+/zig-pkg/
+/.build/
+/.swiftpm/
+/build/
+/zig-out*/
+/.zig-cache/
+*.app/
+*.dSYM/
+*.dmg
+*.log
+__pycache__/
+*.py[cod]
+
+# Finder and per-user editor state.
+.DS_Store
+xcuserdata/
+*.xcuserstate
+*.swp
+*.swo
+*~
+
+# Local environment files and signing credentials.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p8
+*.p12
+*.pfx
+*.mobileprovision
