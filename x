@@ -10,7 +10,7 @@ usage: ./x [command]
   check        Default: scripts, catalog, full isolated correctness tests
   scripts      Portable script and CI regressions (Python 3, no native builds)
   programs     Application catalog and artwork checks (Python 3)
-  deps         Discover same-major Action updates without editing (Python 3, gh)
+  deps         Discover stable Ghostty updates without editing (Python 3, gh)
   test [FILTER] Full correctness suite or focused Swift tests (Mac)
   test-core [FILTER] Isolated core tests; optional Zig test-name filter
   bench        Isolated Swift benchmarks (Mac with Metal)
@@ -40,13 +40,15 @@ case "$task" in
     sh tests/scripts/koid-test-isolation.sh
     python3 tests/scripts/buildProvenanceTests.py
     python3 tests/scripts/ciTests.py
-    python3 tests/scripts/actionUpdatesTests.py
+    python3 tests/scripts/dependencyUpdatesTests.py
+    python3 tests/scripts/actionPinsTests.py
+    python3 tests/scripts/releaseTests.py
     ;;
   programs)
     python3 scripts/check-programs.py
     python3 tests/scripts/programsTests.py
     ;;
-  deps) exec python3 scripts/update-actions.py plan ;;
+  deps) exec python3 scripts/update-dependencies.py plan ;;
   bench) exec scripts/koid test --bench ;;
   test-app) exec scripts/koid test --headless ;;
   bundle)

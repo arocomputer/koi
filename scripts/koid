@@ -168,12 +168,17 @@ with os.fdopen(fd, 'r+') as guard:
               'TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests|'
               'paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
               'stdioRelayCarriesTheProtocol|offerFromTheServerOpensALinkForItsSecretOnly|'
-              'streamKeepsItsLinkAlive')
+              'streamKeepsItsLinkAlive|'
+              'impairedUDPDeliversOrderedProcessEcho|encryptedSessionSurvivesRebindAndReconnect|'
+              'compatibilityPrivatePasteFollowsRestoredModes|compatibilityColorsAndUnicodeCellsSurviveSnapshot|'
+              'compatibilityResizeAndSnapshotRestoreTheShell')
     benchmarks = 'engineWriteAndFrameAssembly|keystrokeEchoRoundTrip'
     zig = ['zig', 'build', '-j2', 'test']
     swift = ['swift', 'test', '--jobs', '2']
     if mode == 'core':
-        commands = [zig + ([f'-Dtest-filter={test_filter}'] if test_filter else [])]
+        # On Linux, exercise the same libc as the shipped server, on the host CPU.
+        musl = [f'-Dtarget={os.uname().machine}-linux-musl'] if sys.platform.startswith('linux') else []
+        commands = [zig + musl + ([f'-Dtest-filter={test_filter}'] if test_filter else [])]
     elif mode == 'full':
         commands = [zig, swift + ['--skip', benchmarks]]
     elif mode == 'headless':

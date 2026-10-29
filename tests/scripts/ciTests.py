@@ -27,7 +27,7 @@ class CITests(unittest.TestCase):
     def test_app_core_and_unknown_changes_select_their_consumers(self):
         self.assertEqual(ci.select(["tests/app/wireTests.swift"]), {"core": False, "app": True, "bundle": False})
         self.assertEqual(ci.select(["src/app/wire.swift"]), {"core": False, "app": True, "bundle": False})
-        self.assertEqual(ci.select(["tests/scripts/ciTests.py", "scripts/update-actions.py"]),
+        self.assertEqual(ci.select(["tests/scripts/ciTests.py", "scripts/update-dependencies.py"]),
                          {"core": False, "app": False, "bundle": False})
         self.assertEqual(ci.select(["tests/scripts/koid-test-isolation.sh"]),
                          {"core": False, "app": True, "bundle": False})
@@ -90,10 +90,14 @@ class CITests(unittest.TestCase):
                     name: str(name in selected).lower() for name in ("core", "app", "bundle")}},
                 "native": {"result": "success" if selected else "skipped", "outputs": {
                     name: "success" if name in selected else "skipped" for name in ("core", "app", "bundle")}},
+                "linux-core": {"result": "success" if "core" in selected else "skipped"},
             }
             ci.check_results(needs)
             for name in needs:
-                unexpected = "skipped" if name == "checks" or selected else "success"
+                if name == "linux-core":
+                    unexpected = "skipped" if "core" in selected else "success"
+                else:
+                    unexpected = "skipped" if name == "checks" or selected else "success"
                 for result in ("failure", "cancelled", unexpected):
                     bad = copy.deepcopy(needs)
                     bad[name]["result"] = result

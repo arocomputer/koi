@@ -17,14 +17,14 @@ ruleset. Local clones should use the organization URL:
 git remote set-url origin https://github.com/arocomputer/koi.git
 ```
 
-CI and Action-update jobs use the organization's Namespace integration.
+CI, dependency-update and release jobs use the organization's Namespace integration.
 Runner labels keep the configuration in the workflows, without dashboard
 profiles or a Namespace token in repository secrets:
 
 | Jobs | `runs-on` label |
 | --- | --- |
-| Selection, script/catalog checks, final gate and Action updates | `nscloud-ubuntu-24.04-amd64-2x4` |
-| Native tests and packaging | `nscloud-macos-tahoe-arm64-6x14` |
+| Selection, script/catalog checks, Linux core tests, final gate and dependency updates | `nscloud-ubuntu-24.04-amd64-2x4` |
+| Native tests, packaging and release drafts | `nscloud-macos-tahoe-arm64-6x14` |
 
 The macOS jobs explicitly select
 `/Applications/Xcode_26.3.app/Contents/Developer`. The image was inspected
@@ -50,12 +50,13 @@ weaken required checks to work around a queued or failing runner.
 ## Checks and selection
 
 The [workflow](../.github/workflows/ci.yml) runs on PRs, main pushes and manual
-requests. It has three jobs:
+requests. It has four jobs:
 
 | Job | Work |
 | --- | --- |
 | Portable checks | Complete PR diff, script regressions and catalog validation on Linux |
 | Native checks | Selected core tests, Swift tests and/or packaging on one Mac |
+| Linux core tests | Selected core tests natively on Linux with musl, the shipped server's libc |
 | Required | Require the portable job and every selected native step to pass |
 
 Portable checks finish before a Mac is requested. The Mac steps share one
@@ -88,8 +89,9 @@ focused local tests for those changes. The entire test target still compiles.
 Routine Swift PRs do not cross-compile a Linux server or assemble a signed
 bundle. Production packaging runs for relevant changes and on main. Tests
 use development resource lookup, which production release builds intentionally
-omit. Linux is cross-compiled for packaging, not executed as a native Linux
-test lane.
+omit. When core tests are selected, a separate Linux job also runs them
+natively against musl, alongside the Linux server cross-build used for
+packaging.
 
 The final gate checks both the Mac job result and each selected step's
 outcome. A green job with a skipped selected test/bundle step fails the gate.
@@ -174,56 +176,52 @@ Check live settings for actual enforcement. A future merge queue needs a
 
 ## Dependency updates
 
-The custom [Action updates workflow](../.github/workflows/deps.yml) runs on
-Mondays at 09:00 UTC or manually on main. It replaces Dependabot and follows
-Aft's separation of discovery, validation and publication. It maintains one
-`chore/action-updates` PR and never merges it automatically.
+The custom [Dependency updates workflow](../.github/workflows/deps.yml) runs on
+Mondays at 09:00 UTC or manually on main. It maintains one
+`chore/dependency-updates` PR authored by `github-actions[bot]` and never merges
+it automatically. It uses GitHub's built-in workflow token.
 
-`./x deps` is a read-only discovery command requiring Python 3 and an
-authenticated GitHub CLI. Remote Actions must use a full commit SHA and a
-`# vMAJOR` comment. The updater resolves that upstream major tag, follows
-annotated tags, and rejects backward or divergent movements. Major versions,
-Ghostty's pin, Zig and Xcode remain manual upgrades.
+`./x deps` discovers a forward stable Ghostty tag within the current major
+version. Discovery checks ancestry, the tagged manifest and unchanged Zig
+requirements. A development pin ahead of the newest stable release is left
+alone. Major engine changes, Zig, Xcode and Action pins receive manual review.
+The scheduled run reports available same-major Action pins in its summary;
+`python3 scripts/check-actions.py` runs that read-only report locally.
+Both commands require Python 3 and an authenticated GitHub CLI.
 
-The discovery job has only repository read permission. It verifies candidate
-SHA substitutions and runs portable regressions and catalog checks. A small
-SHA map passes to the publishing job; no new artifact Actions or Python
-packages are needed. The publisher checks out the same base commit and
-revalidates the map against upstream before reconstructing just the pin edits.
-If main or an upstream tag moved in the meantime, it fails for a fresh retry.
+Discovery runs with read permission. Publication reconstructs only the
+Ghostty commit pin at the same base, rechecks upstream and only creates an absent automation branch. An existing
+PR is left untouched, preserving all commits and maintainer notes. The publisher
+opens a draft, explicitly dispatches CI, and marks the PR ready
+only when that exact commit passes. Failed validation leaves the PR draft for maintainer review. After merging,
+the repository deletes its branch so the next update can be proposed. Opening
+the PR with the built-in token needs the repository setting **Allow GitHub
+Actions to create and approve pull requests**; if creation fails, the publisher
+deletes the branch it just pushed so the next run is not blocked.
+An observed head change withdraws readiness; required CI still guards merges.
 
-The publisher refuses branches without an owned PR, commits with non-bot
-authorship or an unexpected title, and branch diffs beyond workflow pins. Updates
-use a lease against the observed remote head. It creates a
-draft (or withdraws an existing PR's readiness before pushing), watches the
-normal PR-triggered CI run for the exact new commit, and marks it ready only
-after success, checking the head before and after marking it ready. GitHub
-does not offer an atomic readiness/head update; an observed race withdraws
-readiness, and required CI remains the merge guard for later pushes. Failed
-CI leaves a draft for the next
-run to refresh. There is no duplicate manual CI dispatch.
+Engine updates also require the full `scripts/koid test` suite on an Apple
+silicon Mac with Metal and `scripts/bundle.sh`, at the proposed commit, before
+manual merge. Hosted checks do not replace that gate. Review the engine diff
+and packaged notices with the test results.
 
-### Publishing credential
+## Release drafts
 
-Updating `.github/workflows/` requires **Workflows write** permission, which
-the built-in `GITHUB_TOKEN` cannot request. See GitHub's
-[workflow permission list](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)
-and [additional authentication options](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token#granting-additional-permissions).
+[Release draft](../.github/workflows/release.yml) is a manual main-branch workflow.
+It accepts an existing stable tag matching `build.zig.zon`, requires successful
+main CI for that commit (its push run, or a manual run on main when a later
+merge cancelled that), and records the maintainer's exact-commit full Metal
+suite attestation. Read-only build and test work completes before a separate
+job signs the bundle, submits it for notarization, staples the accepted ticket,
+and validates an installation extracted into a private directory.
 
-Create a fine-grained personal access token restricted to this repository:
-
-- Contents: read and write.
-- Workflows: read and write.
-- Pull requests: read and write.
-- Actions: read (to watch CI).
-
-Store it as the repository Actions secret `WORKFLOW_UPDATES_TOKEN` in GitHub
-Settings → Secrets and variables → Actions. It is used only by the publisher,
-never by candidate checks or PR CI. The workflow does not provision this credential.
-With no updates, discovery succeeds without it; when updates exist but the
-secret is missing, publication fails with a setup message. The PR is opened
-as the token's user; commits use `github-actions[bot]` attribution. Renew the
-token before it expires and retain the same account for existing update PRs.
+The output is a Developer ID signed archive, checksum file and **draft** GitHub
+release. Signing secrets live in the `release` environment, which only the
+signing job uses. Missing signing configuration or failed verification stops
+the run; a rerun replaces a draft an earlier attempt left behind.
+Publication remains a separate maintainer action; the workflow never installs
+into Applications or launches the app. Development bundles continue to use the
+ordinary `scripts/bundle.sh` signing behavior.
 
 ### Dependency inventory
 
@@ -232,7 +230,7 @@ token before it expires and retain the same account for existing update PRs.
 | Direct external product code | 1 | libghostty-vt, pinned in `build-ghostty-vt.sh` |
 | Remote Swift packages | 0 | GhosttyVt is locally built; CKoi/libkoi is Koi's own code |
 | External libraries used through the pinned VT build | 4 | uucode, Wuffs, SIMDUTF, Highway |
-| GitHub Action repositories | 3 | actions/checkout, mlugg/setup-zig, actions/cache (restore/save) |
+| GitHub Action repositories | 5 | actions/checkout, mlugg/setup-zig, actions/cache (restore/save), actions/upload-artifact, actions/download-artifact |
 
 These categories are not a complete runtime/build bill of materials. The
 engine also uses build helpers such as translate-c and includes Unicode/color
@@ -243,8 +241,7 @@ separate provenance. See [third-party notices](../THIRD_PARTY_NOTICES.md) for
 the shipped components and licenses. The full Ghostty application's manifest
 lists additional dependencies that Koi's VT-only build does not use.
 
-Next priorities are native Linux tests, auditing omitted hosted integration
-tests, and a release workflow with explicit signing/notarization and artifact
-verification when Koi is ready to distribute. A merge queue, mandatory second
+Next priorities are auditing omitted hosted integration tests and a first
+live run of the release workflow's signing and notarization. A merge queue, mandatory second
 reviewer, and a new generic build framework add little value for the current
 single-maintainer repository.

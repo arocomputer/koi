@@ -37,9 +37,9 @@ scripts/koid run
 `./x test` delegates to `scripts/koid test`. Packaging is separate: `./x bundle` runs
 `scripts/bundle.sh` followed by signature verification. Neither installs or
 launches an app. Development builds and interaction remain under `scripts/koid`.
-`./x deps` checks for same-major GitHub Actions updates without changing files;
+`./x deps` checks for forward stable Ghostty updates without changing files;
 it needs an authenticated `gh`. The [dependency workflow](docs/ci.md#dependency-updates)
-documents the scheduled publisher and its required credential.
+documents the scheduled update process.
 
 `build` fetches dependencies as needed, builds the Mac and Linux server
 binaries, and installs Koid at the same path across worktrees. Its bundle ID
@@ -115,6 +115,25 @@ are useful when changing rendering or transport; they are not routine
 correctness gates or measurements of WAN/display latency. Ordinary snapshot
 round-trip checks remain in the correctness suite.
 
+The hosted subset also runs network-impairment fixtures (12–28 ms one-way
+delay, deterministic packet loss, port rebinding and reconnecting to the same
+process) and synthetic TUI paste/color/Unicode/resize/snapshot checks. These
+are reliability checks, not WAN performance measurements.
+
+After compiling the full test suite, measure a real Mac-to-x86_64-Linux link with:
+
+```sh
+python3 scripts/benchmark-remote.py --ssh-host my-linux-host
+```
+
+This copies the built Linux server into a disposable remote directory over
+SSH and measures direct encrypted UDP process echo with three warmups and
+40 samples. It requires Python 3 on both hosts and reachable UDP. The optional
+`--binary` selects a local Linux server binary; `--udp-host` overrides the
+resolved SSH hostname. Setup and display time are excluded. The test is disabled
+in normal runs, coordinates with the checkout test lock, and removes its own
+remote pane, server and temporary files. It never attaches to existing sessions.
+
 The app logs `first pane ready N ms after launch` once per start and shows
 it in Diagnostics; that is the startup number to watch.
 
@@ -138,7 +157,8 @@ The [CI workflow](.github/workflows/ci.yml) runs portable checks before
 starting one Mac job. PRs select core tests, Swift tests and
 packaging independently from the complete diff. Swift/test-only edits do not
 cross-compile Linux or assemble a bundle. Resource/packaging changes select
-bundling; core/build/workflow and unknown inputs select everything. Main pushes select changed inputs and package Swift source changes;
+bundling; core/build/workflow and unknown inputs select everything. Selected
+core tests also run natively on Linux (musl) on a Namespace Linux runner. Main pushes select changed inputs and package Swift source changes;
 manual runs execute all checks. `Required` rejects failed jobs and skipped
 selected steps.
 

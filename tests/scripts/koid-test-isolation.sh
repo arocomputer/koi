@@ -54,7 +54,9 @@ MOCK
 chmod +x "$fixture/repo/scripts/build-ghostty-vt.sh" "$fixture/repo/scripts/build-core.sh"
 cat > "$fixture/bin/zig" <<'MOCK'
 #!/bin/sh
-case "$*" in 'build -j2 test'|'build -j2 test -Dtest-filter=watcher') ;; *) exit 1 ;; esac
+# Linux core runs add the host's musl target.
+args=$(printf '%s\n' "$*" | sed 's/ -Dtarget=[a-z0-9_]*-linux-musl//')
+case "$args" in 'build -j2 test'|'build -j2 test -Dtest-filter=watcher') ;; *) exit 1 ;; esac
 printf '%s\n' "$*" > "$RECORDS/$RUN.zig-args"
 printf '%s\n%s\n' "$TMPDIR" "$KOI_DIR" > "$RECORDS/$RUN.zig"
 [ "$KOI_TEST_ROOT" = "$TMPDIR" ]

@@ -23,7 +23,8 @@ def select(paths):
             app = True  # Its process-ownership checks also have a Darwin path.
             continue
         if path.startswith("tests/scripts/") or path in {
-            "scripts/ci.py", "scripts/update-actions.py", "scripts/publish-action-updates.sh",
+            "scripts/ci.py", "scripts/update-dependencies.py", "scripts/publish-dependency-updates.sh",
+            "scripts/check-actions.py", "scripts/benchmark-remote.py",
             ".github/CODEOWNERS",
         } or path.startswith(".github/rulesets/"):
             continue
@@ -76,6 +77,10 @@ def check_results(needs):
     for name in ("core", "app", "bundle"):
         if selections.get(name) not in ("true", "false"):
             raise ValueError(f"{name}: missing or invalid selection")
+    linux = needs["linux-core"]["result"]
+    expected = "success" if selections["core"] == "true" else "skipped"
+    if linux != expected:
+        raise ValueError(f"linux-core: expected {expected}, got {linux}")
     native = needs["native"]
     selected = any(selections[name] == "true" for name in ("core", "app", "bundle"))
     expected = "success" if selected else "skipped"

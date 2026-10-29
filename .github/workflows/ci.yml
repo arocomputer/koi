@@ -148,10 +148,27 @@ jobs:
           KOI_BUNDLE_OUTPUT: ${{ runner.temp }}/Koi.app
         run: ./x bundle
 
+  linux-core:
+    name: Linux core tests
+    needs: checks
+    if: needs.checks.outputs.core == 'true'
+    runs-on: nscloud-ubuntu-24.04-amd64-2x4
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.17.0
+          cache-key: linux-core-v1
+      - name: Run isolated core tests (native Linux, musl)
+        run: ./x test-core
+
   required:
     name: Required
     if: always()
-    needs: [checks, native]
+    needs: [checks, native, linux-core]
     runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     steps:
