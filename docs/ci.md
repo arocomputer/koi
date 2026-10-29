@@ -70,8 +70,9 @@ packaged licenses or `THIRD_PARTY_NOTICES.md` run the app/bundle job.
 Selection uses a NUL-delimited Git diff from the PR merge base, includes
 deleted files and both sides of renames, and has no changed-file API limit.
 Unknown paths or unavailable history run all native jobs. Main and manual
-runs always run everything. Core tests run in parallel with the app job;
-app tests and bundling share a runner to reuse their dependencies. Linux is
+runs always run everything. Core and app jobs are independent; available
+runner capacity may serialize them. App tests and bundling share a runner
+to reuse their dependencies. Linux is
 cross-compiled for the bundle; CI does not yet execute Linux core tests.
 
 The final gate requires successful selection, script and catalog checks.
