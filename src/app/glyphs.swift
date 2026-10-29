@@ -160,7 +160,10 @@ final class GlyphAtlas {
         let font = metrics.font(bold: key.bold, italic: key.italic)
         let attrs: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorAttributeName: CGColor.white]
         let line = CTLineCreateWithAttributedString(CFAttributedStringCreate(nil, key.text as CFString, attrs as CFDictionary))
-        let colored = (CTLineGetGlyphRuns(line) as! [CTRun]).contains { run in
+        // Every run inherits the font and color set on the whole attributed
+        // string above, so the CF attributes are always present; Swift rejects a
+        // conditional downcast between CF types, so these are plain casts.
+        let colored = (CTLineGetGlyphRuns(line) as? [CTRun] ?? []).contains { run in
             let runAttrs = CTRunGetAttributes(run) as NSDictionary
             let runFont = runAttrs[kCTFontAttributeName] as! CTFont
             return CTFontGetSymbolicTraits(runFont).contains(.traitColorGlyphs)

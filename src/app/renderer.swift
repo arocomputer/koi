@@ -211,8 +211,7 @@ final class RenderDiagnosticsStats: @unchecked Sendable {
 @MainActor
 final class Renderer {
     /// One quad. `kind` 0 fills with `color`; 1 tints the atlas mask with
-    /// `color`; 2 draws the atlas texel as is (color emoji); 3 fades `color`
-    /// from full at its top edge to clear at its bottom.
+    /// `color`; 2 draws the atlas texel as is (color emoji).
     struct Quad {
         var origin: SIMD2<Float>
         var size: SIMD2<Float>
@@ -289,9 +288,6 @@ final class Renderer {
 
     /// Whether the pane has keyboard focus; inactive panes use an outline cursor.
     var focused = true
-    /// The viewport is above the live screen: scrolled-back rows fade out
-    /// under the top edge instead of stopping at it.
-    private var scrolledBack = false
     /// The inset of the grid from the layer's edges, in pixels.
     var padding = SIMD2<Float>(0, 0)
     /// Predicted typing drawn over the grid, with the cursor at its caret.
@@ -361,7 +357,6 @@ final class Renderer {
         diagnosticLayer = layer
         if atlasGeneration != atlas.generation { rows.removeAll() }
         if rows.isEmpty { colors.background = Theme.current.background }
-        scrolledBack = false
         assembleFrame(full: nil)
         framePending = !draw(into: layer, started: started)
         return !framePending
@@ -388,7 +383,6 @@ final class Renderer {
         var dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE
         ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
         let moved = cursorOrScrollMoved(terminal)
-        scrolledBack = !terminal.viewportIsActive
         let invalidAtlas = atlasGeneration != atlas.generation
         if !force, dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE, !invalidAtlas {
             guard overlayChanged || moved else { return false }
@@ -423,7 +417,6 @@ final class Renderer {
             for r in rows { quads.append(contentsOf: r.decorations) }
             quads.append(contentsOf: overlayQuads())
             quads.append(contentsOf: cursorQuads.over)
-            if scrolledBack { quads.append(topFade()) }
             atlas.endFrame()
             if atlas.overflowed { diagnosticStats.atlasOverflow(omittedGlyphs: attempt == 1) }
             if atlas.overflowed && attempt == 0 {
@@ -466,16 +459,6 @@ final class Renderer {
         drawnCursor = c
         drawnScroll = scroll
         return moved
-    }
-
-    /// While scrolled back, the top padding and first row dissolve into the
-    /// background, so earlier output reads as continuing under the header
-    /// rather than being cut off by it. At the live screen nothing is drawn.
-    private func topFade() -> Quad {
-        let ch = Float(atlas.metrics.cellHeight)
-        let width = Float(diagnosticLayer?.drawableSize.width ?? 0)
-        return Quad(origin: [-padding.x, -padding.y], size: [width, padding.y + ch], uvOrigin: .zero,
-                    color: premultiplied(colors.background, alpha: Float(Config.current.backgroundOpacity)), kind: 3)
     }
 
     /// The overlay's quads: each predicted cell painted in the default
@@ -752,7 +735,7 @@ final class Renderer {
         float2 viewport = view.xy;
         Out o;
         o.position = float4(px.x / viewport.x * 2 - 1, 1 - px.y / viewport.y * 2, 0, 1);
-        o.uv = q.kind == 3 ? corner : q.uv_origin + corner * q.size;
+        o.uv = q.uv_origin + corner * q.size;
         o.color = q.color;
         o.kind = q.kind;
         return o;
@@ -760,7 +743,6 @@ final class Renderer {
 
     fragment float4 quad_fragment(Out in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
         if (in.kind == 0) return in.color;
-        if (in.kind == 3) return in.color * (1 - in.uv.y);
         constexpr sampler s(coord::pixel, filter::nearest);
         float4 t = atlas.sample(s, in.uv);
         if (in.kind == 2) return t;
