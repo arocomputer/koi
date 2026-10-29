@@ -49,7 +49,7 @@ elif name == 'gh':
         role = os.environ.get('PERMISSION', 'maintain')
         print(json.dumps({'permission': 'write' if role == 'maintain' else role, 'role_name': role}))
     elif '/compare/' in path: print(json.dumps({'status': os.environ.get('ANCESTRY', 'ahead'), 'merge_base_commit': {'sha': sha}}))
-    else: print(json.dumps({'workflow_runs': [{'head_sha': os.environ.get('CI_SHA', sha), 'event': os.environ.get('CI_EVENT', 'push'), 'status': 'completed', 'conclusion': os.environ.get('CI', 'success')}]}))
+    else: print(json.dumps({'workflow_runs': [{'head_sha': os.environ.get('CI_SHA', sha), 'event': os.environ.get('CI_EVENT', 'push'), 'status': 'completed', 'conclusion': os.environ.get('CI_RESULT', 'success')}]}))
 '''
 
 
@@ -111,7 +111,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_gate_refuses_unverified_commit(self):
         for key, value in [('METAL_ATTESTATION', 'yes'), ('PERMISSION', 'write'),
-                           ('ANCESTRY', 'diverged'), ('CI', 'failure'), ('CI_SHA', 'b' * 40),
+                           ('ANCESTRY', 'diverged'), ('CI_RESULT', 'failure'), ('CI_SHA', 'b' * 40),
                            ('RELEASE_TAG', 'v9.0.0'), ('TAG_MISSING', '1'), ('CI_EVENT', 'pull_request')]:
             with self.subTest(key=key):
                 old = self.env.get(key)
