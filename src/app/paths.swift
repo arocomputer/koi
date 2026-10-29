@@ -75,31 +75,30 @@ enum Paths {
     static var config: URL { (override ?? xdg("XDG_CONFIG_HOME", default: ".config")).appendingPathComponent("config") }
     static var state: URL { override ?? xdg("XDG_STATE_HOME", default: ".local/state") }
 
+    /// The same choice as the server (paths.zig). With TMPDIR unset,
+    /// NSTemporaryDirectory would pick a per-user directory the server does
+    /// not know about, and the app would never find its socket. A directory
+    /// too long for a socket path moves, lock and all, to a per-user one in
+    /// /tmp, never to a bare name in shared /tmp.
     static var runtime: URL {
-        if let override { return override }
-        if let d = ProcessInfo.processInfo.environment["XDG_RUNTIME_DIR"], !d.isEmpty {
-            return URL(fileURLWithPath: d).appendingPathComponent("koi")
-        }
-        // The same fallback as the server (paths.zig): with TMPDIR unset,
-        // NSTemporaryDirectory would pick a per-user directory the server
-        // does not know about, and the app would never find its socket.
-        let tmp = ProcessInfo.processInfo.environment["TMPDIR"].flatMap { $0.isEmpty ? nil : $0 } ?? "/tmp"
-        return URL(fileURLWithPath: tmp).appendingPathComponent("koi")
+        let env = ProcessInfo.processInfo.environment
+        let privateTmp = URL(fileURLWithPath: "/tmp/koi-\(getuid())")
+        let dir = override
+            ?? env["XDG_RUNTIME_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).appendingPathComponent("koi") }
+            ?? env["TMPDIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).appendingPathComponent("koi") }
+            ?? privateTmp
+        return dir.appendingPathComponent(socketName).path.utf8.count < 100 ? dir : privateTmp
     }
+
+    private static var socketName: String { "server-\(Wire.version).sock" }
 
     static var layout: URL { state.appendingPathComponent("layout.json") }
     static var serverLog: URL { state.appendingPathComponent("server.log") }
     static var serverLock: URL { runtime.appendingPathComponent("server.lock") }
 
     /// The server's socket. Its name carries the protocol version, so an app
-    /// never talks to a server that speaks another one. Falls back to a
-    /// short path inside a verified private directory when runtime is too long.
-    static var socket: String {
-        let name = "server-\(Wire.version).sock"
-        let p = runtime.appendingPathComponent(name).path
-        if p.utf8.count < 100 { return p }
-        return "/tmp/koi-\(getuid())/\(name)"
-    }
+    /// never talks to a server that speaks another one.
+    static var socket: String { runtime.appendingPathComponent(socketName).path }
 
     /// Create or verify a user-owned 0700 directory without following symlinks.
     /// Ancestors must be root/user-owned and not writable by others, except
@@ -140,7 +139,7 @@ enum Paths {
     /// Makes the state and runtime directories, private to the user, and
     /// moves `layout.json` over from where earlier builds kept it.
     static func ensureDirs() throws {
-        for dir in [state, runtime, URL(fileURLWithPath: socket).deletingLastPathComponent()] {
+        for dir in [state, runtime] {
             try ensurePrivateDirectory(dir)
         }
         let old = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

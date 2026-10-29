@@ -2,8 +2,14 @@
 //! `~/.config/koi`, state in `~/.local/state/koi`, the server's socket in
 //! the per-user runtime directory. `KOI_DIR` puts everything under one
 //! directory instead, which the tests use.
+//!
+//! The socket's directory is the only thing authenticating a client, so
+//! `ensureDirs` refuses to serve from a directory this user does not solely
+//! control, and never places the socket in shared `/tmp`.
 const std = @import("std");
+const builtin = @import("builtin");
 const sys = @import("sys.zig");
+const c = sys.c;
 const wire = @import("wire.zig");
 
 /// Match Swift's treatment of unset and empty directory overrides.
@@ -27,20 +33,28 @@ pub const Paths = struct {
         else
             try std.fs.path.join(gpa, &.{ home, ".local/state/koi" });
         errdefer gpa.free(state);
-        const runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv("XDG_RUNTIME_DIR")) |x|
+        // Without a per-user runtime or temporary directory, the fallback in
+        // shared /tmp is per user too: a single /tmp/koi would belong to
+        // whichever user started first, and `ensureDirs` refuses everyone else.
+        var runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv("XDG_RUNTIME_DIR")) |x|
             try std.fs.path.join(gpa, &.{ x, "koi" })
+        else if (nonemptyEnv("TMPDIR")) |t|
+            try std.fs.path.join(gpa, &.{ t, "koi" })
         else
-            try std.fs.path.join(gpa, &.{ nonemptyEnv("TMPDIR") orelse "/tmp", "koi" });
+            try std.fmt.allocPrint(gpa, "/tmp/koi-{d}", .{c.getuid()});
         errdefer gpa.free(runtime);
         const name = try std.fmt.allocPrint(gpa, "server-{d}.sock", .{wire.version});
         defer gpa.free(name);
-        var socket = try std.fs.path.join(gpa, &.{ runtime, name });
-        errdefer gpa.free(socket);
-        if (socket.len >= 100) {
-            const short = try std.fmt.allocPrint(gpa, "/tmp/koi-{d}/{s}", .{ sys.c.getuid(), name });
-            gpa.free(socket);
-            socket = short;
+        // `sun_path` is 104 bytes. A long TMPDIR moves the whole runtime
+        // directory to a per-user one, rather than dropping the socket alone
+        // into shared /tmp where another local user could pre-empt the path.
+        if (runtime.len + name.len + 1 >= 100) {
+            const private = try std.fmt.allocPrint(gpa, "/tmp/koi-{d}", .{c.getuid()});
+            gpa.free(runtime);
+            runtime = private;
         }
+        const socket = try std.fs.path.join(gpa, &.{ runtime, name });
+        errdefer gpa.free(socket);
         const lock = try std.fs.path.join(gpa, &.{ runtime, "server.lock" });
         errdefer gpa.free(lock);
         return .{
@@ -57,11 +71,12 @@ pub const Paths = struct {
         inline for (.{ self.state, self.runtime, self.socket, self.lock, self.log }) |path| gpa.free(path);
     }
 
-    /// Create or verify private state, runtime and fallback socket directories; fail closed.
+    /// Creates or verifies the private state and runtime directories, the
+    /// socket's included; fails closed rather than serving from a directory
+    /// another local user could write to.
     pub fn ensureDirs(self: Paths) !void {
         try ensurePrivateDir(self.state);
         try ensurePrivateDir(self.runtime);
-        try ensurePrivateDir(std.fs.path.dirname(self.socket) orelse return error.UnsafeDirectory);
     }
 };
 
@@ -82,7 +97,7 @@ pub fn ensurePrivateDir(path: []const u8) !void {
     if (path.len == 0 or path[0] != '/' or std.mem.indexOfScalar(u8, path, 0) != null)
         return error.UnsafeDirectory;
     // Darwin's system aliases are root-managed; all subsequent components use O_NOFOLLOW.
-    const aliased = @import("builtin").os.tag == .macos and
+    const aliased = builtin.os.tag == .macos and
         (std.mem.startsWith(u8, path, "/tmp/") or std.mem.startsWith(u8, path, "/var/"));
     const actual = if (aliased) path[1..] else path;
     var fd = sys.c.open(if (aliased) "/private" else "/", sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_CLOEXEC);

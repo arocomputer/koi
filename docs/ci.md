@@ -112,6 +112,18 @@ correctness work. Run `./x bundle` when changing packaging, native build inputs
 or toolchains, and for release validation. Do not repeat passing checks in an
 unchanged checkout merely because another step finished.
 
+Zig 0.17 prints `failed command: ./.zig-cache/o/.../test --listen=-` whenever a
+test writes to stderr, and Koi's suites do that routinely (server and CLI
+diagnostics). The line appears on passing runs too: trust the exit status and
+the `Build Summary: N/N steps succeeded; N/N tests passed` line, not that
+message. Test isolation is unaffected — the suite also passes with
+`HOME=/nonexistent` and a private `KOI_DIR`.
+
+CI pins Xcode 26.3 (Swift 6.2.4) and Zig 0.17.0; a local Xcode or Zig that
+differs is the first thing to check when a native failure does not reproduce
+in CI, or the reverse. `./x`, not the raw compiler, is the supported entry
+point because it is what CI runs.
+
 ## Caches and performance
 
 The first successful Namespace run took about eight minutes. Its 105 selected
