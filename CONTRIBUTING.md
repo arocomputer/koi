@@ -34,6 +34,9 @@ scripts/koid run
 `./x test` delegates to `scripts/koid test`, and `./x bundle` runs
 `scripts/bundle.sh` followed by signature verification. Neither installs or
 launches an app. Development builds and interaction remain under `scripts/koid`.
+`./x deps` checks for same-major GitHub Actions updates without changing files;
+it needs an authenticated `gh`. The [dependency workflow](docs/ci.md#dependency-updates)
+documents the scheduled publisher and its required credential.
 
 `build` fetches dependencies as needed, builds the Mac and Linux server
 binaries, and installs Koid at the same path across worktrees. Its bundle ID
