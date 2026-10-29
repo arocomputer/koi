@@ -38,17 +38,24 @@ enum Remote {
 
     /// The hash a server binary is installed under, computed once per file
     /// version: hashing eight megabytes on every connection is wasted work.
+    /// The key includes the size too, because a rebuilt binary can keep the
+    /// old modification time (`cp -p`, a restored artifact) and would then look
+    /// unchanged and never be reinstalled.
     private static func binaryHash(_ url: URL) throws -> String {
-        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
-        if let cached = lock.withLock({ hashes[url] }), cached.modified == modified { return cached.hash }
+        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let modified = values?.contentModificationDate ?? .distantPast
+        let size = values?.fileSize ?? -1
+        if let cached = lock.withLock({ hashes[url] }), cached.modified == modified, cached.size == size {
+            return cached.hash
+        }
         guard let binary = try? Data(contentsOf: url) else {
             throw Failure(description: "cannot read the server binary at \(url.path)")
         }
         let hash = SHA256.hash(data: binary).map { String(format: "%02x", $0) }.joined()
-        lock.withLock { hashes[url] = (modified, hash) }
+        lock.withLock { hashes[url] = (modified, size, hash) }
         return hash
     }
-    nonisolated(unsafe) private static var hashes: [URL: (modified: Date, hash: String)] = [:] // guarded by lock
+    nonisolated(unsafe) private static var hashes: [URL: (modified: Date, size: Int, hash: String)] = [:] // guarded by lock
 
     /// The binary that is Koi's server on a machine reporting `uname -sm`
     /// as `system`: on an Apple silicon Mac, this app's own; on Linux, the

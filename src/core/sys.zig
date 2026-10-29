@@ -16,25 +16,49 @@ pub fn errno() c_int {
 const Timespec = extern struct { sec: i64, nsec: i64 };
 extern "c" fn clock_gettime(clock: c_int, ts: *Timespec) c_int;
 
+/// Reads a clock the process cannot run without. Panics rather than leaving
+/// the timespec undefined: these values stamp link replay windows, so garbage
+/// here is worse than stopping.
+fn clock(which: c_int) Timespec {
+    var ts: Timespec = .{ .sec = 0, .nsec = 0 };
+    if (clock_gettime(which, &ts) != 0) @panic("clock_gettime failed");
+    return ts;
+}
+
 /// Milliseconds since the Unix epoch.
 pub fn nowMillis() i64 {
-    var ts: Timespec = undefined;
-    _ = clock_gettime(c.CLOCK_REALTIME, &ts);
+    const ts = clock(c.CLOCK_REALTIME);
     return ts.sec * 1000 + @divTrunc(ts.nsec, 1_000_000);
 }
 
 /// Monotonic elapsed milliseconds, unaffected by wall-clock adjustments.
 pub fn monotonicMillis() u64 {
-    var ts: Timespec = undefined;
-    _ = clock_gettime(c.CLOCK_MONOTONIC, &ts);
+    const ts = clock(c.CLOCK_MONOTONIC);
     return @as(u64, @intCast(ts.sec)) * 1000 + @as(u64, @intCast(@divTrunc(ts.nsec, 1_000_000)));
 }
 
 /// Microseconds since the epoch, for the link's pings.
 pub fn nowMicros() u64 {
-    var ts: Timespec = undefined;
-    _ = clock_gettime(c.CLOCK_REALTIME, &ts);
+    const ts = clock(c.CLOCK_REALTIME);
     return @as(u64, @intCast(ts.sec)) * 1_000_000 + @as(u64, @intCast(@divTrunc(ts.nsec, 1000)));
+}
+
+/// Writes all of `bytes` to `fd`, retrying short writes and EINTR. A single
+/// `write` may deliver less than asked on a pipe or a socket, so every write
+/// to stdout goes through here: a truncated `koi capture` or `--offer` JSON
+/// is a silent wrong answer. Returns false once the reader is gone.
+pub fn writeAll(fd: c_int, bytes: []const u8) bool {
+    var off: usize = 0;
+    while (off < bytes.len) {
+        const n = c.write(fd, bytes[off..].ptr, bytes.len - off);
+        if (n < 0) {
+            if (errno() == c.EINTR) continue;
+            return false;
+        }
+        if (n == 0) return false;
+        off += @intCast(n);
+    }
+    return true;
 }
 
 /// SIG_IGN and SIG_DFL are casts translate-c cannot express, so `signal`
@@ -120,4 +144,13 @@ pub fn selfPath(gpa: std.mem.Allocator) ![]const u8 {
     const n = c.readlink("/proc/self/exe", &buf, buf.len);
     if (n <= 0) return error.NoPath;
     return gpa.dupe(u8, buf[0..@intCast(n)]);
+}
+
+test "writeAll reports a failed write instead of treating it as delivered" {
+    const fd = c.open("/dev/null", c.O_RDONLY);
+    try std.testing.expect(fd >= 0);
+    defer _ = c.close(fd);
+    // A read-only descriptor refuses the write; that must not look like success,
+    // or a truncated capture would exit 0.
+    try std.testing.expect(!writeAll(fd, "x"));
 }
