@@ -16,7 +16,7 @@ concurrency:
 jobs:
   changes:
     name: Select checks
-    runs-on: ubuntu-latest
+    runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     outputs:
       core: ${{ steps.select.outputs.core }}
@@ -32,7 +32,7 @@ jobs:
 
   scripts:
     name: Script regressions
-    runs-on: ubuntu-latest
+    runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -42,7 +42,7 @@ jobs:
 
   programs:
     name: Application catalog
-    runs-on: ubuntu-latest
+    runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -54,10 +54,10 @@ jobs:
     name: Core tests (macOS)
     needs: changes
     if: needs.changes.outputs.core == 'true'
-    runs-on: macos-26
+    runs-on: nscloud-macos-tahoe-arm64-6x14
     timeout-minutes: 20
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -65,7 +65,7 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.17.0
-          cache-key: core-tests-xcode-26.6
+          cache-key: core-tests-xcode-26.3
       - name: Run isolated core tests
         run: ./x test-core
 
@@ -73,10 +73,10 @@ jobs:
     name: App tests and bundle (macOS)
     needs: changes
     if: needs.changes.outputs.app == 'true'
-    runs-on: macos-26
+    runs-on: nscloud-macos-tahoe-arm64-6x14
     timeout-minutes: 45
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -84,7 +84,7 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.17.0
-          cache-key: app-bundle-xcode-26.6
+          cache-key: app-bundle-xcode-26.3
       - name: Identify native toolchain
         id: toolchain
         run: |
@@ -127,7 +127,7 @@ jobs:
     name: CI required
     if: always()
     needs: [changes, scripts, programs, core, app]
-    runs-on: ubuntu-latest
+    runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

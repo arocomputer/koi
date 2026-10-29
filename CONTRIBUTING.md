@@ -16,9 +16,10 @@ The locally verified toolchain is Xcode 27.1 (build 27A9275), Swift 6.4
 and Zig 0.17.0. These are tested versions, distinct from the declared minimums.
 Select the intended Xcode with `DEVELOPER_DIR` or `xcode-select` and check
 `xcodebuild -version`, `swift --version` and `zig version` before comparing
-builds. The hosted workflow explicitly selects Xcode 26.6 and Zig 0.17.0
-from the macOS 26 ARM runner image; it does not depend on `macos-latest` or
-the image's default Xcode selection.
+builds. The hosted workflow uses Namespace runners and explicitly selects
+Xcode 26.3 (Swift 6.2.4) and Zig 0.17.0 on macOS Tahoe ARM64. The runner
+image's default Xcode is different, so keep `DEVELOPER_DIR` explicit. See
+[CI](docs/ci.md#runners) for runner labels, migration and rollback.
 
 From the repository root:
 

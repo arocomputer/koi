@@ -7,6 +7,46 @@ wrappers around Koi's existing build and isolated test scripts. `./x check`
 runs all local checks; it requires an Apple silicon Mac with Metal. Hosted
 Actions uses the individual commands described below.
 
+## Runners
+
+The repository is [arocomputer/koi](https://github.com/arocomputer/koi).
+Transferring ownership preserved its history, open PRs and active main-branch
+ruleset. Local clones should use the organization URL:
+
+```sh
+git remote set-url origin https://github.com/arocomputer/koi.git
+```
+
+CI and Action-update jobs use the organization's Namespace integration.
+Runner labels keep the configuration in the workflows, without dashboard
+profiles or a Namespace token in repository secrets:
+
+| Jobs | `runs-on` label |
+| --- | --- |
+| Selection, script/catalog checks, final gate and Action updates | `nscloud-ubuntu-24.04-amd64-2x4` |
+| Core tests and app/bundle checks | `nscloud-macos-tahoe-arm64-6x14` |
+
+The macOS jobs explicitly select
+`/Applications/Xcode_26.3.app/Contents/Developer`. The image was inspected
+with the Namespace CLI: Xcode 26.3 includes Swift 6.2.4, the macOS 26.2 SDK
+and the Metal toolchain. Xcode 26.6 was not installed. `setup-zig` installs
+the pinned Zig version; it is not assumed to be in the base image.
+Workflow logs record the selected toolchain, and native output caches include
+its actual identity. The existing Actions checkout/cache steps remain in use.
+
+For runner debugging, install `brew install namespacelabs/namespace/nsc`,
+run `nsc login` and select **Aro Computer Company**. CLI authentication stays
+in your local Namespace keychain. It is not needed by the workflow, which
+uses the organization's installed Namespace GitHub app. See
+[Namespace runner labels](https://namespace.so/docs/reference/github-actions/runner-configuration).
+
+To move providers again, change `runs-on` and verify the selected Xcode path
+exists on the replacement image. GitHub-hosted equivalents are `ubuntu-latest`
+and `macos-26`; select an installed Xcode explicitly on the latter. Keep job
+IDs and the `CI required` gate unchanged so branch protection continues to
+work. Validate a PR run before merging a runner change. Do not disable or
+weaken required checks to work around a queued or failing runner.
+
 ## Checks and selection
 
 The [workflow](../.github/workflows/ci.yml) always starts for PRs, pushes to
@@ -30,8 +70,9 @@ packaged licenses or `THIRD_PARTY_NOTICES.md` run the app/bundle job.
 Selection uses a NUL-delimited Git diff from the PR merge base, includes
 deleted files and both sides of renames, and has no changed-file API limit.
 Unknown paths or unavailable history run all native jobs. Main and manual
-runs always run everything. Core tests run in parallel with the app job;
-app tests and bundling share a runner to reuse their dependencies. Linux is
+runs always run everything. Core and app jobs are independent; available
+runner capacity may serialize them. App tests and bundling share a runner
+to reuse their dependencies. Linux is
 cross-compiled for the bundle; CI does not yet execute Linux core tests.
 
 The final gate requires successful selection, script and catalog checks.
@@ -49,7 +90,7 @@ required locally for code changes.
 
 ## Caches and performance
 
-The initial successful hosted run took 22m05s: 16m15s for dependencies/core,
+The initial successful GitHub-hosted run took 22m05s: 16m15s for dependencies/core,
 1m37s for core tests, 1m35s for Swift checks and 1m25s for the release bundle.
 These are baseline measurements, not a promise about subsequent runs.
 
@@ -76,9 +117,9 @@ as a separate lane rather than describing a cross-build as Linux testing.
 
 ## Repository policy
 
-The audit found no Koi branch rulesets or legacy protection on `main`.
-The proposed [ruleset](../.github/rulesets/main.json) follows ask/aft with
-one stable required gate and a narrower administrator bypass:
+The private organization repository has an active **Main protections**
+ruleset. Its checked-in [payload](../.github/rulesets/main.json) follows
+ask/aft with one stable required gate and a narrower administrator bypass:
 
 - PRs and resolved review threads; squash merging and linear history.
 - No branch deletion or force pushes.
@@ -88,7 +129,6 @@ one stable required gate and a narrower administrator bypass:
 - Administrator bypass only through a PR, not unrestricted direct pushes.
 
 The JSON is an importable API payload, not an automatically applied policy.
-Activate it only after the new `CI required` check has passed on GitHub.
 Check live settings for actual enforcement. A future merge queue needs a
 `merge_group` trigger and validation before it is enabled.
 
