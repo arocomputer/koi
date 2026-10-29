@@ -12,7 +12,7 @@ import Testing
         #expect(!Socket.sameUserPeer(-1))
     }
 
-    /// Existing public directories and symlinks are rejected without repairing them.
+    /// Existing public directories and symlinked leaves are rejected without repairing them.
     @Test func privateDirectoriesRejectUnsafeModesAndSymlinks() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("koi-private-\(UUID().uuidString)")
         try Paths.ensurePrivateDirectory(root)
@@ -28,7 +28,12 @@ import Testing
         let link = root.appendingPathComponent("link")
         #expect(symlink(child.path, link.path) == 0)
         #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(link) }
+        // A symlinked ancestor is followed and its target checked like any other.
+        try Paths.ensurePrivateDirectory(link.appendingPathComponent("nested"))
+        #expect(rmdir(child.appendingPathComponent("nested").path) == 0)
+        #expect(chmod(child.path, 0o757) == 0)
         #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(link.appendingPathComponent("nested")) }
+        #expect(chmod(child.path, 0o755) == 0)
         let file = root.appendingPathComponent("file")
         try Data().write(to: file)
         #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(file.appendingPathComponent("nested")) }
@@ -137,5 +142,54 @@ import Testing
         var tries = 0
         while fcntl(a, F_GETFD) != -1 && tries < 200 { Thread.sleep(forTimeInterval: 0.01); tries += 1 }
         #expect(fcntl(a, F_GETFD) == -1)
+    }
+}
+
+@Suite struct RemoteLinkPolicyTests {
+    private final class Owner {}
+
+    @Test func failureQuarantinesOnlyTheMatchingOwnerForThirtySeconds() {
+        var state = RemoteLinkState<Owner>()
+        let first = Owner(), other = Owner()
+        let token = state.beginProbe(now: 100)!
+        let installed = state.install(first, token: token)
+        #expect(installed)
+        state.endProbe(token)
+        state.quarantine(other, now: 101)
+        #expect(state.owner === first)
+        state.quarantine(first, now: 102)
+        #expect(state.owner == nil)
+        #expect(state.beginProbe(now: 131) == nil)
+        let retry = state.beginProbe(now: 132)!
+        let reinstalled = state.install(other, token: retry)
+        #expect(reinstalled)
+        state.endProbe(retry)
+        state.quarantine(first, now: 133)
+        #expect(state.owner === other)
+    }
+
+    @Test func staleProbeCannotReinstallOrChangeCooldownAfterFailure() {
+        var state = RemoteLinkState<Owner>()
+        let first = Owner(), replacement = Owner()
+        let token = state.beginProbe(now: 10)!
+        let installed = state.install(first, token: token)
+        #expect(installed)
+        state.quarantine(first, now: 11)
+        let staleInstalled = state.install(replacement, token: token)
+        #expect(!staleInstalled)
+        state.probeUnanswered(token, now: 12)
+        state.endProbe(token)
+        #expect(state.beginProbe(now: 40) == nil)
+        #expect(state.beginProbe(now: 41) != nil)
+    }
+
+    @Test func probesAreSingleAndUnansweredProbesBackOff() {
+        var state = RemoteLinkState<Owner>()
+        let token = state.beginProbe(now: 10)!
+        #expect(state.beginProbe(now: 50) == nil)
+        state.probeUnanswered(token, now: 12)
+        state.endProbe(token)
+        #expect(state.beginProbe(now: 611) == nil)
+        #expect(state.beginProbe(now: 612) != nil)
     }
 }

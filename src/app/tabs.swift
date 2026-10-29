@@ -6,6 +6,8 @@ struct SidebarView: View {
     let machines: Machines
     private var workspace: Workspace { machines.workspace }
     @State private var drag: TabDrag
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var motion = Config.current.motion
 
     init(machines: Machines, drag: TabDrag? = nil) {
         self.machines = machines
@@ -35,12 +37,18 @@ struct SidebarView: View {
                                     }
                                 }
                                 .padding(.top, 5)
+                                .transition(.identity)
                             }
                         }
                         TabEndTarget(drag: drag)
                     }
                     .padding(.horizontal, 8)
+                    .animation(stripAnimation(motion, reduceMotion: reduceMotion || drag.active), value: stripTopology(workspace))
+                    .transaction { transaction in
+                        if drag.active || reduceMotion || motion == .off { transaction.disablesAnimations = true; transaction.animation = nil }
+                    }
                 }
+                .id(machines.current)
                 .onChange(of: selectedStripTarget(workspace), initial: true) { _, id in
                     if let id, !drag.active { scroll.scrollTo(id) }
                 }
@@ -48,18 +56,22 @@ struct SidebarView: View {
             .layoutPriority(1)
         }
         .onChange(of: machines.current) { drag.cancel() }
-        .onReceive(NotificationCenter.default.publisher(for: Config.didReload)) { _ in drag.cancel() }
+        .onReceive(NotificationCenter.default.publisher(for: Config.didReload)) { _ in
+            drag.cancel()
+            motion = Config.current.motion
+        }
     }
 }
 
-/// Horizontal tabs with a selection-only spring. Topology changes resolve
-/// against final slots in one non-overshooting transition; window chrome stays put.
+/// Horizontal tabs expand the selection to its natural width within the viewport.
+/// Selection and row geometry share the selection spring; topology uses a short ease.
 struct HorizontalBar: View {
     let machines: Machines
     private var workspace: Workspace { machines.workspace }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drag = TabDrag(horizontal: true)
-    @State private var previousTopology: [String] = []
+    @Namespace private var selectionSpace
+    @State private var viewportWidth: CGFloat = 194
     @State private var motion = Config.current.motion
 
     init(machines: Machines, drag: TabDrag? = nil) {
@@ -72,60 +84,63 @@ struct HorizontalBar: View {
         let topology = stripTopology(workspace)
         HStack(spacing: 8) {
             MachineButton(machines: machines)
-            ScrollViewReader { scroll in
-                TabStrip(workspace: workspace, drag: drag) {
+            Group {
+                TabStrip(workspace: workspace, drag: drag, revealTarget: selectedStripTarget(workspace)) {
                     HStack(spacing: 6) {
                         ForEach(items) { item in
                             switch item {
-                            case .tab(let tab): TabItem(tab: tab, workspace: workspace, drag: drag, horizontal: true).id(tab.id)
+                            case .tab(let tab):
+                                TabItem(tab: tab, workspace: workspace, drag: drag, horizontal: true,
+                                        maximumWidth: max(1, viewportWidth - 4), selectionSpace: selectionSpace).id(tab.id)
                             case .group(let group):
                                 HStack(spacing: 4) {
                                     TabGroupLabel(group: group, workspace: workspace, drag: drag, horizontal: true)
                                         .id("group:" + group.id)
                                     if !workspace.collapsed.contains(group.id) {
                                         ForEach(group.tabs) { tab in
-                                            TabItem(tab: tab, workspace: workspace, drag: drag, horizontal: true).id(tab.id)
+                                            TabItem(tab: tab, workspace: workspace, drag: drag, horizontal: true,
+                                                    maximumWidth: max(1, viewportWidth - 12), selectionSpace: selectionSpace).id(tab.id)
                                         }
                                     }
                                 }
                                 .padding(.horizontal, 4)
                                 .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 11))
                                 .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+                                .transition(.identity)
                             }
                         }
                         TabEndTarget(drag: drag)
                     }
                     .padding(.trailing, 4)
                 }
-                .backgroundPreferenceValue(HorizontalSelectionBounds.self) { anchor in
+                .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { viewportWidth = $0 }
+                .background {
                     GeometryReader { geometry in
-                        if let anchor {
-                            let frame = geometry[anchor].intersection(CGRect(origin: .zero, size: geometry.size))
-                            if !frame.isNull && !frame.isEmpty {
-                                // The highlight paints outside the scroll clip. Its
-                                // model stays in the viewport when tabs are scrolled.
-                                Color.clear
-                                    .frame(width: frame.width, height: frame.height)
-                                    .modifier(GlassTabSurface(selected: true, horizontal: true))
-                                    .position(x: frame.midX, y: frame.midY)
-                                    // Animate only the indicator, never rows or scroll
-                                    // geometry. A removal must cancel spring velocity.
-                                    .animation(selectionAnimation(topologyChanged: previousTopology != topology),
-                                        value: StripSelection(tab: workspace.selectedTab, topology: topology))
-                            }
+                        let leading = max(0, geometry.frame(in: .global).minX)
+                        ZStack(alignment: .topLeading) {
+                            Color.clear
+                                .modifier(GlassTabSurface(selected: true, horizontal: true))
+                                .matchedGeometryEffect(id: machines.current, in: selectionSpace, isSource: false)
+                                .frame(width: 0, height: 0)
+                                .opacity(selectionIsVisible ? 1 : 0)
                         }
+                        // Include the header to the left so the first tab can
+                        // overshoot, while keeping the trailing controls clear.
+                        .frame(width: geometry.size.width + leading, height: geometry.size.height, alignment: .topLeading)
+                        .clipped()
+                        .offset(x: -leading)
                     }
                     .allowsHitTesting(false)
                 }
-                .onChange(of: selectedStripTarget(workspace)) { _, id in
-                    guard let id, !drag.active else { return }
-                    // Seat the viewport first. An independent animated scroll
-                    // would otherwise move the spring's destination mid-flight.
-                    var transaction = Transaction(animation: nil)
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) { scroll.scrollTo(id) }
+                .animation(stripAnimation(motion, reduceMotion: reduceMotion || drag.active), value: topology)
+                .animation(selectionSpring(motion, reduceMotion: reduceMotion || drag.active), value: workspace.selectedTab)
+                .animation(nil, value: drag.active)
+                .animation(nil, value: motion)
+                .animation(nil, value: reduceMotion)
+                .transaction { transaction in
+                    if drag.active || reduceMotion || motion == .off { transaction.disablesAnimations = true; transaction.animation = nil }
                 }
-                .onChange(of: topology, initial: true) { _, value in previousTopology = value }
+                .id(machines.current)
                 .onChange(of: machines.current) { drag.cancel() }
                 .onReceive(NotificationCenter.default.publisher(for: Config.didReload)) { _ in
                     drag.cancel()
@@ -148,20 +163,22 @@ struct HorizontalBar: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
-    /// Ordinary switches retain bounce; geometry changes use a monotonic ease.
-    private func selectionAnimation(topologyChanged: Bool) -> Animation? {
-        guard !reduceMotion, motion != .off else { return nil }
-        if topologyChanged { return .easeOut(duration: motion == .snappy ? 0.12 : 0.18) }
-        return .bouncy(duration: motion == .snappy ? 0.22 : 0.32)
+    private var selectionIsVisible: Bool {
+        guard let id = workspace.selectedTab, let found = workspace.tab(id) else { return false }
+        return found.group.map { !workspace.collapsed.contains($0.id) } ?? true
     }
 
 }
 
-/// Selection animation identity includes visible membership and group boundaries,
-/// so closing an unselected predecessor also cancels an old selection spring.
-private struct StripSelection: Equatable {
-    let tab: String?
-    let topology: [String]
+/// Selection may bounce; structural changes always settle without overshoot.
+private func selectionSpring(_ motion: Config.Motion, reduceMotion: Bool) -> Animation? {
+    guard !reduceMotion, motion != .off else { return nil }
+    return .bouncy(duration: motion == .snappy ? 0.22 : 0.32)
+}
+
+private func stripAnimation(_ motion: Config.Motion, reduceMotion: Bool) -> Animation? {
+    guard !reduceMotion, motion != .off else { return nil }
+    return .easeOut(duration: motion == .snappy ? 0.12 : 0.18)
 }
 
 /// Metadata changes do not disturb motion. Collapsing, grouping and removal do.
@@ -175,15 +192,6 @@ private struct StripSelection: Equatable {
     }
 }
 
-/// The selected tab's bounds let its highlight paint outside the scroller
-/// while labels, buttons and drag targets keep their existing clipping.
-private struct HorizontalSelectionBounds: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>? { nil }
-    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
-        if let next = nextValue() { value = next }
-    }
-}
-
 /// Tab behavior and Capsule styling are shared across placements. Horizontal
 /// selection belongs to the bar; vertical rows paint their own selection.
 private struct TabItem: View {
@@ -191,13 +199,17 @@ private struct TabItem: View {
     let workspace: Workspace
     let drag: TabDrag
     let horizontal: Bool
-    var width: CGFloat = 190
+    var maximumWidth: CGFloat = 190
+    var selectionSpace: Namespace.ID? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var motion = Config.current.motion
     @State private var hovering = false
     @State private var editName = ""
     @State private var grouping = false
     @FocusState private var nameFocused: Bool
 
     private var selected: Bool { workspace.selectedTab == tab.id }
+    private var displayName: String? { workspace.pendingTabNames[tab.id] ?? tab.name }
     private var renaming: Bool {
         workspace.renamingTab == tab.id && horizontal == (Config.current.tabs == .top)
     }
@@ -214,26 +226,35 @@ private struct TabItem: View {
             } else {
                 ProgramTile(style: style, size: ProgramTile.tabSize)
             }
-            if renaming {
-                TextField("Tab name", text: $editName)
-                    .textFieldStyle(.plain).focused($nameFocused)
-                    .onAppear { editName = tab.name ?? ""; nameFocused = true }
-                    .onSubmit(commitName)
-                    .onExitCommand { workspace.renamingTab = nil }
-                    .onChange(of: nameFocused) { _, focused in if !focused { commitName() } }
-            } else {
+            HStack(spacing: 0) {
                 HStack(spacing: 5) {
-                    Text(tab.name?.isEmpty == false ? tab.name! : label.title)
+                    Text(displayName?.isEmpty == false ? displayName! : label.title)
                         .fontWeight(horizontal ? (selected ? .medium : .regular) : (selected ? .semibold : .medium))
                         .foregroundStyle(selected ? .primary : .secondary)
+                        .frame(minWidth: 0, alignment: .leading)
                         .layoutPriority(1)
-                    if tab.name?.isEmpty != false, !label.detail.isEmpty {
+                    if displayName?.isEmpty != false, !label.detail.isEmpty {
                         Text(label.detail).foregroundStyle(.tertiary).truncationMode(.head)
                     }
                 }
                 .lineLimit(1)
                 Spacer(minLength: 0)
             }
+            .clipped()
+            .opacity(renaming ? 0 : 1)
+            .accessibilityHidden(renaming)
+            .overlay {
+                if renaming {
+                    TextField("Tab name", text: $editName)
+                        .textFieldStyle(.plain).focused($nameFocused)
+                        .onAppear { editName = displayName ?? ""; nameFocused = true }
+                        .onSubmit { commitName(restoreFocus: true) }
+                        .onExitCommand { endRename(in: workspace, group: false, restoreFocus: true) }
+                        .onChange(of: nameFocused) { _, focused in if !focused { commitName(restoreFocus: false) } }
+                        .transition(.opacity)
+                }
+            }
+            .animation(stripAnimation(motion, reduceMotion: reduceMotion), value: renaming)
             if !horizontal && tab.panes.count > 1 {
                 Text("\(tab.panes.count)").font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.tertiary)
@@ -244,37 +265,55 @@ private struct TabItem: View {
         .padding(.leading, 10)
         .padding(.trailing, horizontal ? 6 : 5)
         .frame(height: horizontal ? 32 : 34)
-        .frame(width: horizontal ? width : nil)
+        .frame(minWidth: horizontal ? (selected ? min(190, maximumWidth) : 190) : nil,
+               maxWidth: horizontal ? (selected ? maximumWidth : 190) : nil)
         .frame(maxWidth: horizontal ? nil : .infinity, alignment: .leading)
-        .anchorPreference(key: HorizontalSelectionBounds.self, value: .bounds) { horizontal && selected ? $0 : nil }
+        // Move the caption, tile and controls in one geometry space during reflow.
+        .geometryGroup()
+        .background {
+            if horizontal && selected, let selectionSpace {
+                Color.clear.matchedGeometryEffect(id: workspace.endpoint, in: selectionSpace)
+            }
+        }
         .modifier(GlassTabSurface(selected: !horizontal && selected,
                                  hovering: hovering && !drag.active && (!horizontal || !selected), horizontal: horizontal))
         .contentShape(Capsule())
         .onHover { hovering = $0 }
+        .onReceive(NotificationCenter.default.publisher(for: Config.didReload)) { _ in motion = Config.current.motion }
         .modifier(TabDragTarget(drag: drag, target: .tab(tab.id)))
+        .transition(.identity)
         .koiContextMenu("tab", menu)
         .koiPopup(isPresented: $grouping, id: "group-tab-\(tab.id)") {
             TabGroupingMenu(tab: tab, workspace: workspace)
         }
-        .accessibilityLabel(tab.name?.isEmpty == false ? tab.name! : "\(label.title) \(label.detail)")
+        .accessibilityLabel(displayName?.isEmpty == false ? displayName! : "\(label.title) \(label.detail)")
         .accessibilityValue(selected ? "Selected" : "")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { workspace.select(tab.id) }
     }
 
+    /// Crossfade the reserved close/status slot without moving the tab's caption.
     @ViewBuilder private func trailing(_ pane: Wire.PaneInfo?) -> some View {
-        if hovering && !renaming && !drag.active {
-            IconButton(symbol: "xmark", help: "Close Tab", shortcut: .closeTab) { workspace.closeTab(tab.id) }
-        } else {
+        let showClose = hovering && !renaming && !drag.active
+        ZStack {
             if !horizontal {
-                switch pane?.status {
-                case .working: WorkingDots()
-                case .blocked: StatusDot(color: .orange)
-                case .error: StatusDot(color: .red)
-                default: if workspace.attention.contains(tab.id) { StatusDot(color: .orange) }
+                Group {
+                    switch pane?.status {
+                    case .working: WorkingDots()
+                    case .blocked: StatusDot(color: .orange)
+                    case .error: StatusDot(color: .red)
+                    default: if workspace.attention.contains(tab.id) { StatusDot(color: .orange) }
+                    }
                 }
+                .opacity(showClose ? 0 : 1)
             }
+            IconButton(symbol: "xmark", help: "Close Tab", shortcut: .closeTab) { workspace.closeTab(tab.id) }
+                .disabled(!showClose)
+                .opacity(showClose ? 1 : 0)
+                .allowsHitTesting(showClose)
+                .accessibilityHidden(!showClose)
         }
+        .animation(reduceMotion || motion == .off ? nil : .easeOut(duration: 0.12), value: showClose)
     }
 
     private var menu: [PopupEntry] {
@@ -282,7 +321,7 @@ private struct TabItem: View {
             .init(title: "Rename…", symbol: "pencil", action: { workspace.renamingTab = tab.id }),
             .init(title: "Move or Group…", symbol: "folder", action: { grouping = true }),
         ]
-        if tab.name?.isEmpty == false {
+        if displayName?.isEmpty == false {
             entries.append(.init(title: "Clear Name", symbol: "eraser", action: { workspace.renameTab(tab.id, to: "") }))
         }
         if workspace.tab(tab.id)?.group != nil {
@@ -296,11 +335,11 @@ private struct TabItem: View {
         return entries
     }
 
-    private func commitName() {
+    private func commitName(restoreFocus: Bool) {
         guard renaming else { return }
-        workspace.renamingTab = nil
+        endRename(in: workspace, group: false, restoreFocus: restoreFocus)
         let name = editName.trimmingCharacters(in: .whitespaces)
-        if name != (tab.name ?? "") { workspace.renameTab(tab.id, to: name) }
+        if name != (displayName ?? "") { workspace.renameTab(tab.id, to: name) }
     }
 }
 
@@ -310,7 +349,9 @@ private struct GlassTabSurface: ViewModifier {
     var hovering = false
     var horizontal = false
     @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var reduceTransparency = Config.current.reduceTransparency
+    @State private var motion = Config.current.motion
 
     func body(content: Content) -> some View {
         content.background {
@@ -330,8 +371,11 @@ private struct GlassTabSurface: ViewModifier {
                             reduceTransparency = Config.current.reduceTransparency
                         }
                 }
-            } else if hovering {
+            } else {
                 Capsule().fill(Color.primary.opacity(horizontal ? 0.06 : 0.045))
+                    .opacity(hovering ? 1 : 0)
+                    .animation(reduceMotion || motion == .off ? nil : .easeOut(duration: 0.12), value: hovering)
+                    .onReceive(NotificationCenter.default.publisher(for: Config.didReload)) { _ in motion = Config.current.motion }
             }
         }
     }
@@ -364,8 +408,11 @@ private struct TabGroupLabel: View {
     let workspace: Workspace
     let drag: TabDrag
     let horizontal: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var motion = Config.current.motion
     @State private var name = ""
     @FocusState private var focused: Bool
+    private var displayName: String { workspace.pendingGroupNames[group.id] ?? group.name }
 
     private var renaming: Bool {
         workspace.renamingGroup == group.id && horizontal == (Config.current.tabs == .top)
@@ -381,17 +428,23 @@ private struct TabGroupLabel: View {
                     .font(.system(size: 9, weight: .semibold)).frame(width: 16, height: 22)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(workspace.collapsed.contains(group.id) ? "Expand" : "Collapse") \(group.name)")
-            if renaming {
-                TextField("Group name", text: $name).textFieldStyle(.plain).focused($focused)
-                    .onAppear { name = group.name; focused = true }
-                    .onSubmit(commit)
-                    .onExitCommand { workspace.renamingGroup = nil }
-                    .onChange(of: focused) { _, focused in if !focused { commit() } }
-            } else {
-                Text(group.name.isEmpty ? "Untitled" : group.name).lineLimit(1)
-                    .onTapGesture(count: 2) { workspace.renamingGroup = group.id }
-            }
+            .accessibilityLabel("\(workspace.collapsed.contains(group.id) ? "Expand" : "Collapse") \(displayName)")
+            Text(displayName.isEmpty ? "Untitled" : displayName).lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .opacity(renaming ? 0 : 1)
+                .accessibilityHidden(renaming)
+                .onTapGesture(count: 2) { workspace.renamingGroup = group.id }
+                .overlay {
+                    if renaming {
+                        TextField("Group name", text: $name).textFieldStyle(.plain).focused($focused)
+                            .onAppear { name = displayName; focused = true }
+                            .onSubmit { commit(restoreFocus: true) }
+                            .onExitCommand { endRename(in: workspace, group: true, restoreFocus: true) }
+                            .onChange(of: focused) { _, focused in if !focused { commit(restoreFocus: false) } }
+                            .transition(.opacity)
+                    }
+                }
+                .animation(stripAnimation(motion, reduceMotion: reduceMotion), value: renaming)
             if !horizontal { Spacer(minLength: 0) }
             if !horizontal { Text("\(group.tabs.count)").font(.system(size: 10)).foregroundStyle(.tertiary) }
         }
@@ -403,8 +456,9 @@ private struct TabGroupLabel: View {
         .modifier(GlassTabSurface(selected: containsHiddenSelection, horizontal: horizontal))
         .background(Color.primary.opacity(drag.placement == .intoGroup(group.id) ? 0.1 : 0), in: Capsule())
         .modifier(TabDragTarget(drag: drag, target: .group(group.id)))
+        .onReceive(NotificationCenter.default.publisher(for: Config.didReload)) { _ in motion = Config.current.motion }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(group.name.isEmpty ? "Untitled Group" : group.name)
+        .accessibilityLabel(displayName.isEmpty ? "Untitled Group" : displayName)
         .accessibilityValue(selectionDescription)
         .koiContextMenu("group", [
             .init(title: "Rename…", symbol: "pencil", action: { workspace.renamingGroup = group.id }),
@@ -427,12 +481,21 @@ private struct TabGroupLabel: View {
         return "Selected tab: \(tab.name?.isEmpty == false ? tab.name! : label.title + " " + label.detail)"
     }
 
-    private func commit() {
+    private func commit(restoreFocus: Bool) {
         guard renaming else { return }
-        workspace.renamingGroup = nil
+        endRename(in: workspace, group: true, restoreFocus: restoreFocus)
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        if trimmed != group.name { workspace.renameGroup(group.id, to: trimmed) }
+        if trimmed != displayName { workspace.renameGroup(group.id, to: trimmed) }
     }
+}
+
+/// Explicit completion returns focus to the terminal; blur preserves its new owner.
+/// An open menu or palette keeps focus for its own card.
+@MainActor func endRename(in workspace: Workspace, group: Bool, restoreFocus: Bool) {
+    if group { workspace.renamingGroup = nil } else { workspace.renamingTab = nil }
+    guard restoreFocus, let view = workspace.selectedView, let window = view.window,
+          window.firstResponder !== view, !window.hasKoiPopup else { return }
+    window.makeFirstResponder(view)
 }
 
 /// Hidden selected tabs scroll to their collapsed header in either orientation.

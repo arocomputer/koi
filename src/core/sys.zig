@@ -166,17 +166,17 @@ pub fn sameUserPeer(fd: c_int) bool {
 
 /// Read ownership and mode from an opened directory. Linux statx avoids musl's
 /// opaque translated stat/timespec layout and validates the returned field mask.
-pub fn directoryInfo(fd: c_int) !struct { uid: c.uid_t, mode: u32 } {
+pub fn directoryInfo(fd: c_int) !struct { uid: c.uid_t, gid: c.gid_t, mode: u32 } {
     if (builtin.os.tag == .macos) {
         var st: c.struct_stat = undefined;
         if (c.fstat(fd, &st) != 0) return error.UnsafeDirectory;
-        return .{ .uid = st.st_uid, .mode = st.st_mode };
+        return .{ .uid = st.st_uid, .gid = st.st_gid, .mode = st.st_mode };
     } else {
         const linux = std.os.linux;
         var st: linux.Statx = undefined;
-        if (linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .UID = true, .MODE = true }, &st) != 0 or
-            !st.mask.UID or !st.mask.MODE) return error.UnsafeDirectory;
-        return .{ .uid = st.uid, .mode = st.mode };
+        if (linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .UID = true, .GID = true, .MODE = true }, &st) != 0 or
+            !st.mask.UID or !st.mask.GID or !st.mask.MODE) return error.UnsafeDirectory;
+        return .{ .uid = st.uid, .gid = st.gid, .mode = st.mode };
     }
 }
 

@@ -13,10 +13,14 @@ struct Theme: Sendable {
         cursor: .init(r: 0xe6, g: 0xe6, b: 0xea)
     )
 
-    /// The background as a SwiftUI color, for chrome that sits over the
-    /// same frost as the terminal.
-    var backgroundColor: Color {
-        Color(.sRGB, red: Double(background.r) / 255, green: Double(background.g) / 255, blue: Double(background.b) / 255)
+    /// SwiftUI colors keep chrome and previews consistent with terminal rendering.
+    var backgroundColor: Color { Self.color(background) }
+    var foregroundColor: Color { Self.color(foreground) }
+    var cursorColor: Color { Self.color(cursor) }
+
+    /// Converts native 8-bit channels without changing their sRGB color space.
+    private static func color(_ rgb: GhosttyColorRgb) -> Color {
+        Color(.sRGB, red: Double(rgb.r) / 255, green: Double(rgb.g) / 255, blue: Double(rgb.b) / 255)
     }
 
     /// Sets terminal default colors for rendering and color-query responses.

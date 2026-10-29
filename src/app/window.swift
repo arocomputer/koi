@@ -3,9 +3,11 @@ import SwiftUI
 import QuartzCore
 
 extension NSView {
-    /// Pointer monitors must respect clipping even when a covered view stays drawn.
+    /// Pointer monitors stay within their own bounds and respect ancestor clipping.
+    /// Unclipped SwiftUI anchors can report a visibleRect wider than their control.
     func koiExposes(_ windowPoint: NSPoint) -> Bool {
-        guard !isHiddenOrHasHiddenAncestor, visibleRect.contains(convert(windowPoint, from: nil)) else { return false }
+        let local = convert(windowPoint, from: nil)
+        guard !isHiddenOrHasHiddenAncestor, bounds.contains(local), visibleRect.contains(local) else { return false }
         var ancestor: NSView? = self
         while let view = ancestor {
             if let mask = view.layer?.mask as? CAShapeLayer, let path = mask.path {
@@ -486,8 +488,10 @@ extension AppDelegate {
             return v
         }
         prunePaneCards()
+        // Pane updates arrive while a name field is open; its focus stays put.
+        let editing = ws.renamingTab != nil || ws.renamingGroup != nil
         if let view = ws.selectedView {
-            if window.firstResponder !== view && !window.hasKoiPopup { window.makeFirstResponder(view) }
+            if window.firstResponder !== view && !window.hasKoiPopup && !editing { window.makeFirstResponder(view) }
             view.setFocused(window.isKeyWindow)
         }
         let group = ws.tab(ws.selectedTab)?.group?.name ?? ""

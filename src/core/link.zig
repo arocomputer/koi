@@ -39,10 +39,14 @@ const Aes = std.crypto.aead.aes_gcm.Aes256Gcm;
 const Hkdf = std.crypto.kdf.hkdf.HkdfSha256;
 const mss = 1150;
 const receive_window = 4 << 20;
-/// Most bytes a stream queues for sending beyond what is in flight. Above the
-/// largest scrollback snapshot (32 MiB); per-stream memory is bounded by this
+/// Most bytes a stream queues for sending beyond what is in flight: the
+/// largest wire payload and its frame header. Per-stream memory is bounded by this
 /// plus `receive_window` in flight, plus up to 2 * `receive_window` received.
-pub const max_unsent = 64 << 20;
+pub const max_unsent = (64 << 20) + 5;
+/// Whether a send fits the bounded unsent queue.
+fn fitsSendQueue(queued: usize, incoming: usize) bool {
+    return queued <= max_unsent and incoming <= max_unsent - queued;
+}
 /// Bookkeeping charged against `receive_window` per out-of-order segment, so
 /// many tiny segments cannot cost more memory than their payload suggests.
 const out_of_order_overhead = 64;
@@ -690,7 +694,7 @@ pub const Link = struct {
     /// and expires silent peers.
     fn tick(self: *Link) void {
         const now = sys.nowMillis();
-        if (now - self.last_received > 60_000) {
+        if (now - self.last_received >= 10_000) {
             self.finish();
             return;
         }
@@ -800,7 +804,7 @@ pub const Stream = struct {
         const link = self.link;
         link.mutex.lockUncancelable(link.runtime.io());
         if (!link.closed and !self.fin_queued) {
-            if (bytes.len > max_unsent - self.unsent.bytes().len or
+            if (!fitsSendQueue(self.unsent.bytes().len, bytes.len) or
                 bytes.len > (std.math.maxInt(u64) -| self.send_offset -| 1) -| self.unsent.bytes().len)
             {
                 self.reset();
@@ -1360,6 +1364,25 @@ fn testReceive(link: *Link, id: u32, offset: u64, data: []const u8, fin: bool) v
 }
 
 fn testAccept(_: ?*anyopaque, _: *Stream) void {}
+
+test "silent peers expire on client and server links" {
+    for ([_]bool{ false, true }) |is_server| {
+        const link = try testLink(std.testing.allocator, is_server);
+        defer link.free();
+        const stream = try link.open();
+        link.last_received = sys.nowMillis() - 10_001;
+        link.tick();
+        try std.testing.expect(link.closed);
+        var buf: [1]u8 = undefined;
+        try std.testing.expectEqual(@as(usize, 0), stream.read(&buf));
+    }
+}
+
+test "send queue accepts a maximum wire frame and stays bounded" {
+    try std.testing.expect(fitsSendQueue(0, (64 << 20) + 5));
+    try std.testing.expect(!fitsSendQueue(1, (64 << 20) + 5));
+    try std.testing.expect(!fitsSendQueue(max_unsent, 1));
+}
 
 test "appending to a large link backlog amortizes compaction" {
     const gpa = std.testing.allocator;

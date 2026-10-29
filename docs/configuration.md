@@ -11,7 +11,7 @@ Settings. The horizontal categories are **Appearance** (the default),
 **Terminal**, **Shortcuts**, **Machines & Server**, **Activity** and **Advanced**. Click a
 category, drag the strip with the mouse, use two-finger scrolling, or click
 the left/right arrows. Arrows dim and disable at the ends; the strip does
-not wrap. Selected categories use the same rounded rectangle highlight as selected tabs
+not wrap. Selected categories use the same capsule shape as selected tabs
 and collapsed groups containing the selected tab. There is no keyboard
 category navigation.
 
@@ -91,6 +91,11 @@ and `cursor` keys are unknown keys and produce diagnostics.
 | `scrollback-mb` | `32` | Integer 1–32 MiB of estimated engine pages per terminal |
 
 An application's terminal cursor-shape request overrides `cursor-style`.
+Synchronized terminal redraws retain the last complete frame until release,
+with a one-second fallback for stuck applications. Cursor opacity also applies
+to the inverted character under a block cursor. Remote typing prediction
+clears on navigation, paste, and other unpredictable input, then waits for a real
+echo before showing predictions again.
 Font family selection includes installed-font search and a sample; Terminal
 also previews text and cursor settings, including the full 1–3 line-height
 range.

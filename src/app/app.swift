@@ -298,7 +298,7 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
                 diagnosticIssues.record(subsystem: "Rendering", message: "Renderer unavailable for pane \(view.paneID).")
             }
             if paneConnectionStates[key] != state,
-               state.hasPrefix("Connection lost") || state.contains("invalid terminal snapshot") {
+               state.hasPrefix("Connection lost") || state.hasPrefix("Connection error") {
                 diagnosticIssues.record(subsystem: "Pane connection", message: "Pane \(view.paneID): \(state)", sensitiveHosts: machines.hosts)
             }
             paneConnectionStates[key] = state
@@ -330,6 +330,9 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
                 guard self.serverInspector.supports("configurePane", at: endpoint) else { return }
                 let appearance = ServerInspector.appearance
                 for pane in source.state.tabs.flatMap(\.panes) {
+                    // Observing another client's work must not reconfigure its
+                    // engine or broadcast replacement snapshots to that client.
+                    if endpoint != .local, !source.attachedViews.contains(where: { $0.paneID == pane.id && $0.canControl }) { continue }
                     if self.configuredPanes[endpoint]?[pane.id] == appearance { continue }
                     self.configuredPanes[endpoint, default: [:]][pane.id] = appearance
                     do { _ = try await source.perform(.init(op: .configurePane, pane: pane.id, appearance: appearance), reportingErrors: false) }
@@ -822,6 +825,18 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
         let pane = ws.selectedPane
         let hasSplits = (tab?.panes.count ?? 0) > 1
         var entries: [PaletteItem] = []
+        if let view = ws.attachedViews.first(where: { $0.paneID == pane?.id }) {
+            entries.append(.init(id: "reconnect_pane", title: "Reconnect Pane", detail: "Refresh the display; keep the process running",
+                                 symbol: "arrow.clockwise", category: .panes,
+                                 operation: .perform { [weak view] in view?.reconnect() }))
+            entries.append(.init(id: "pane_control", title: view.observing ? "Take Control of Pane" : "Observe Pane",
+                                 detail: view.observing ? "Allow typing and terminal resizing" : "Watch output without changing the terminal",
+                                 symbol: view.observing ? "cursorarrow" : "eye", category: .panes,
+                                 operation: .perform { [weak view] in
+                                     guard let view else { return }
+                                     if view.observing { view.takeControl() } else { view.observe() }
+                                 }))
+        }
         let ordered = machines.allWorkspaces.sorted {
             if $0.endpoint == machines.current { return $1.endpoint != machines.current }
             if $1.endpoint == machines.current { return false }
@@ -878,12 +893,12 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
             if action == .increaseFontSize { title = "Increase Text Size" }
             if action == .decreaseFontSize { title = "Decrease Text Size" }
             if action == .resetFontSize { title = "Reset Text Size" }
-            entries.append(.init(id: action.rawValue, title: title, detail: enabled ? action.paletteCategory : unavailable, symbol: action.paletteSymbol,
-                                 keywords: [action.paletteCategory, action.rawValue.replacingOccurrences(of: "_", with: " "),
+            entries.append(.init(id: action.rawValue, title: title, detail: enabled ? action.paletteCategory.rawValue : unavailable, symbol: action.paletteSymbol,
+                                 keywords: [action.paletteCategory.rawValue, action.rawValue.replacingOccurrences(of: "_", with: " "),
                                             action == .openConfig ? "preferences settings" : "",
                                             [.increaseFontSize, .decreaseFontSize, .resetFontSize].contains(action) ? "terminal font size text" : ""],
                                  shortcut: Config.current.bind(action).symbols,
-                                 category: PaletteItem.Category(rawValue: action.paletteCategory) ?? .settings,
+                                 category: action.paletteCategory,
                                  destructive: action == .closePane || action == .closeTab, enabled: enabled,
                                  operation: .perform { [weak self] in
                                      if self != nil { NSApp.sendAction(action.selector, to: nil, from: nil) }

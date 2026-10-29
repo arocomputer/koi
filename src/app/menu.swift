@@ -100,7 +100,9 @@ struct PopupMenu: View {
                         .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
-                    .onHover { if $0 { selected = index } }
+                    .onHover { inside in
+                        if inside { selected = index } else if selected == index { selected = nil }
+                    }
                     .id(index)
                 }
             }

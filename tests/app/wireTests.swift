@@ -78,8 +78,21 @@ import Testing
         #expect(payload.count == big.count && payload.allSatisfy { $0 == 9 })
     }
 
-    /// Additive fields are omitted for old commands and old results decode
-    /// without inventing capabilities or a running-server identity.
+    /// Ownership negotiation leaves old open requests unchanged on the wire.
+    @Test func paneOwnershipFieldsAreAdditive() throws {
+        let legacy = Wire.OpenRequest(pane: "p", cols: 80, rows: 24, cellWidth: 8, cellHeight: 16)
+        let object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        #expect(object["paneControl"] == nil && object["observer"] == nil)
+        let modern = Wire.OpenRequest(pane: "p", cols: 80, rows: 24, cellWidth: 8, cellHeight: 16,
+                                      paneControl: true, observer: false)
+        let decoded = try JSONDecoder().decode(Wire.OpenRequest.self, from: JSONEncoder().encode(modern))
+        #expect(decoded.paneControl == true && decoded.observer == false)
+        let info = try JSONDecoder().decode(Wire.Result.self, from: Data(#"{"layoutFormat":"binary-v1","snapshotFormat":"ghostty-vt-v1"}"#.utf8))
+        #expect(info.layoutFormat == "binary-v1" && info.snapshotFormat == "ghostty-vt-v1")
+        #expect(Wire.Kind.paneControl.rawValue == 9 && Wire.Kind.ownership.rawValue == 72 && Wire.Kind.failure.rawValue == 73)
+    }
+
+    /// Old commands and results omit workflow capabilities and server identity.
     @Test func optionalWorkflowFieldsKeepV6JSONCompatible() throws {
         let old = try JSONDecoder().decode(Wire.Command.self, from: Data(#"{"op":"newTab"}"#.utf8))
         #expect(old.startup == nil && old.appearance == nil)
@@ -106,6 +119,41 @@ import Testing
         for op in [Wire.Command.Op.clearPane, .resetPane, .configurePane, .serverInfo] {
             let encoded = try JSONEncoder().encode(Wire.Command(op: op, pane: "original"))
             #expect(try JSONDecoder().decode(Wire.Command.self, from: encoded).op == op)
+        }
+    }
+
+    /// A live pre-weighted v6 server must stay readable after its first split,
+    /// including unequal nested dividers whose IDs are used for resizing.
+    @Test func legacySplitsPreserveTheirTreeAndDividerWeights() throws {
+        let json = #"{"split":{"id":"outer","direction":"right","ratio":0.25,"first":{"pane":"a"},"second":{"split":{"id":"inner","direction":"down","ratio":0.75,"first":{"pane":"b"},"second":{"pane":"c"}}}}}"#
+        let layout = try JSONDecoder().decode(Wire.LayoutNode.self, from: Data(json.utf8))
+        guard case .split(let outer) = layout, case .split(let inner) = outer.children[1].layout else {
+            Issue.record("The server's nested splits were lost")
+            return
+        }
+        #expect(layout.panes == ["a", "b", "c"])
+        #expect(outer.id == "outer" && outer.direction == .right)
+        #expect(outer.children.map(\.weight) == [0.25, 0.75])
+        #expect(inner.id == "inner" && inner.direction == .down)
+        #expect(inner.children.map(\.weight) == [0.75, 0.25])
+        let encoded = try JSONEncoder().encode(layout)
+        #expect(try JSONDecoder().decode(Wire.LayoutNode.self, from: encoded) == layout)
+        let object = try #require(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let split = try #require(object["split"] as? [String: Any])
+        #expect(split["children"] != nil && split["ratio"] == nil && split["first"] == nil)
+    }
+
+    /// A malformed weighted split must not fall back to the legacy fields.
+    @Test func malformedSplitFormatsAreRejected() {
+        for split in [
+            #""ratio":0,"first":{"pane":"a"},"second":{"pane":"b"}"#,
+            #""ratio":0.5,"first":{"pane":"a"}"#,
+            #""children":null,"ratio":0.5,"first":{"pane":"a"},"second":{"pane":"b"}"#,
+        ] {
+            let json = "{\"split\":{\"id\":\"s\",\"direction\":\"right\",\(split)}}"
+            #expect(throws: DecodingError.self) {
+                try JSONDecoder().decode(Wire.LayoutNode.self, from: Data(json.utf8))
+            }
         }
     }
 
