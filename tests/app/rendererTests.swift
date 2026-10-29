@@ -4,6 +4,93 @@ import QuartzCore
 import Testing
 @testable import Koi
 
+@MainActor extension SessionTests {
+    /// Cursor opacity blends a complete block/inverse layer, preserving text at zero.
+    @Test func cursorOpacityAlsoControlsItsInverseGlyph() throws {
+        let saved = Config.current
+        defer { Config.current = saved }
+        Config.current.cursorHeight = 1
+        let renderer = try #require(Renderer(metrics: FontMetrics(size: 13, scale: 1)))
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array("A\u{1b}[H\u{1b}[2 q".utf8))
+        for opacity in [0.0, 0.5, 1.0] {
+            Config.current.cursorOpacity = opacity
+            #expect(renderer.prepareFrame(terminal, force: true))
+            let glyphs = renderer.quads.filter { $0.kind == 1 }
+            #expect(glyphs.count == 1)
+            let cursor = renderer.quads.filter { $0.kind == 4 }
+            #expect(cursor.count == (opacity == 0 ? 0 : 1))
+            if opacity > 0 { #expect(cursor.first?.color.w == Float(opacity)) }
+        }
+    }
+
+    /// GPU pixels at half opacity must be halfway between cursor-off and
+    /// cursor-on, including antialiased glyph edges, rather than darkened twice.
+    @Test func blockCursorOpacityInterpolatesTheCompleteGlyphOnTheGPU() throws {
+        let saved = Config.current
+        defer { Config.current = saved }
+        Config.current.cursorHeight = 1
+        let renderer = try #require(Renderer(metrics: FontMetrics(size: 13, scale: 1)))
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array("\u{1b}[31mA\u{1b}[H\u{1b}[2 q".utf8))
+        let device = renderer.device
+        let library = try device.makeLibrary(source: Renderer.shaders, options: nil)
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = library.makeFunction(name: "quad_vertex")
+        descriptor.fragmentFunction = library.makeFunction(name: "quad_fragment")
+        let attachment = try #require(descriptor.colorAttachments[0])
+        attachment.pixelFormat = .rgba16Float
+        attachment.isBlendingEnabled = true
+        attachment.sourceRGBBlendFactor = .one
+        attachment.sourceAlphaBlendFactor = .one
+        attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+        attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: 64, height: 32, mipmapped: false)
+        textureDescriptor.storageMode = .shared
+        textureDescriptor.usage = [.renderTarget]
+        let texture = try #require(device.makeTexture(descriptor: textureDescriptor))
+        let queue = try #require(device.makeCommandQueue())
+        let bg = Theme.current.background
+        let background = SIMD4<Float>(Float(bg.r) / 255, Float(bg.g) / 255, Float(bg.b) / 255, 1)
+        func pixels(opacity: Double) throws -> [Float] {
+            Config.current.cursorOpacity = opacity
+            #expect(renderer.prepareFrame(terminal, force: true))
+            let command = try #require(queue.makeCommandBuffer())
+            let pass = MTLRenderPassDescriptor()
+            let color = try #require(pass.colorAttachments[0])
+            color.texture = texture
+            color.loadAction = .clear
+            color.storeAction = .store
+            color.clearColor = MTLClearColorMake(Double(background.x), Double(background.y), Double(background.z), 1)
+            let encoder = try #require(command.makeRenderCommandEncoder(descriptor: pass))
+            let buffer = try #require(renderer.quads.withUnsafeBytes { bytes in
+                device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared)
+            })
+            var view = SIMD4<Float>(64, 32, 0, 0), inverse = background
+            encoder.setRenderPipelineState(pipeline)
+            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+            encoder.setVertexBytes(&view, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
+            encoder.setFragmentTexture(renderer.atlas.texture, index: 0)
+            encoder.setFragmentBytes(&inverse, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: renderer.quads.count)
+            encoder.endEncoding()
+            command.commit()
+            command.waitUntilCompleted()
+            try #require(command.status == .completed)
+            var values = [Float16](repeating: 0, count: 64 * 32 * 4)
+            values.withUnsafeMutableBytes { bytes in
+                texture.getBytes(bytes.baseAddress!, bytesPerRow: 64 * 8, from: MTLRegionMake2D(0, 0, 64, 32), mipmapLevel: 0)
+            }
+            return values.map(Float.init)
+        }
+        let off = try pixels(opacity: 0), on = try pixels(opacity: 1), half = try pixels(opacity: 0.5)
+        #expect(zip(off, on).contains { abs($0 - $1) > 0.1 }, "the rendered cursor changes actual pixels")
+        let error = zip(zip(off, on), half).map { abs(($0.0 + $0.1) / 2 - $1) }.max() ?? 0
+        #expect(error < 0.003)
+    }
+}
+
 /// Pins accounting and completion races without constructing a Metal device.
 @Suite struct RendererDiagnosticsTests {
     /// Deferrals are retries, not frames; completion may precede the CPU
@@ -166,6 +253,154 @@ import Testing
 /// Exercises real atlas exhaustion through the same assembly path used by draw,
 /// with small textures so eviction needs neither a window nor thousands of glyphs.
 @Suite @MainActor struct RendererTests {
+    /// Terminal callbacks and timeout tasks cannot retain a retired renderer.
+    @Test func renderHoldCallbackDoesNotKeepItsRendererAlive() throws {
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        weak var retired: Renderer?
+        do {
+            let renderer = try renderer()
+            retired = renderer
+            renderer.bind(to: terminal)
+            terminal.write(Array("\u{1b}[?2026h".utf8))
+        }
+        #expect(retired == nil)
+        terminal.write(Array("\u{1b}[?2026l\u{1b}[?2026hA\u{1b}[?2026l".utf8))
+        #expect(terminal.text(x: 0, y: 0) == "A")
+    }
+
+    /// A split synchronized redraw must not expose its hidden cursor or partial text.
+    @Test func synchronizedOutputKeepsTheCompletedFrameUntilRelease() throws {
+        let renderer = try renderer()
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        renderer.bind(to: terminal)
+        terminal.write(Array("A".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        let count = renderer.quads.count
+        terminal.write(Array("\u{1b}[?2026h\u{1b}[?25l\r\u{1b}[2KB".utf8))
+        #expect(!renderer.prepareFrame(terminal))
+        #expect(renderer.quads.count == count)
+        try expectGlyph(renderer, text: "A", x: 0, y: 0)
+        terminal.write(Array("\u{1b}[?25h\u{1b}[?2026l".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        try expectGlyph(renderer, text: "B", x: 0, y: 0)
+    }
+
+    /// Hold boundaries capture completed frames even between writes or inside one write.
+    @Test func consecutiveHoldsCaptureTheirOwnPrecedingFrame() throws {
+        let renderer = try renderer()
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        renderer.bind(to: terminal)
+        terminal.write(Array("A".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        terminal.write(Array("\rB\u{1b}[?2026h\rC".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        try expectGlyph(renderer, text: "B", x: 0, y: 0)
+        terminal.write(Array("\u{1b}[?2026l\rC\u{1b}[?2026h\rA".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        try expectGlyph(renderer, text: "C", x: 0, y: 0)
+        terminal.write(Array("\u{1b}[?2026l".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        try expectGlyph(renderer, text: "A", x: 0, y: 0)
+    }
+
+    /// Stuck applications release without more output; a later terminal retires the old callback.
+    @Test func heldOutputTimesOutAndRebindingRetiresTheOldTerminal() throws {
+        let renderer = try renderer()
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        renderer.bind(to: terminal)
+        terminal.write(Array("A\u{1b}[?2026h\rB".utf8))
+        var wakes = 0
+        renderer.onFrameNeeded = { wakes += 1 }
+        renderer.expireRenderHold(now: 0)
+        #expect(terminal.mode(2026) && wakes == 0)
+        renderer.expireRenderHold(now: .greatestFiniteMagnitude)
+        #expect(!terminal.mode(2026) && wakes == 1)
+        #expect(renderer.prepareFrame(terminal))
+        try expectGlyph(renderer, text: "B", x: 0, y: 0)
+        renderer.expireRenderHold(now: .greatestFiniteMagnitude)
+        #expect(wakes == 1)
+        let replacement = VTTerminal(cols: 20, rows: 2)
+        renderer.bind(to: replacement)
+        terminal.write(Array("\u{1b}[?2026h".utf8))
+        replacement.write(Array("C".utf8))
+        #expect(renderer.prepareFrame(replacement, force: true))
+        try expectGlyph(renderer, text: "C", x: 0, y: 0)
+    }
+
+    /// A block cursor composites its inverse above ordinary text in one layer.
+    @Test func blockCursorInversionIsAboveTheOriginalGlyph() throws {
+        let renderer = try renderer()
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array("\u{1b}[31mA\u{1b}[H\u{1b}[2 q".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        let cursor = try #require(renderer.quads.last)
+        #expect(cursor.kind == 4)
+        try expectGlyph(renderer, text: "A", x: 0, y: 0)
+    }
+
+    /// A reconnect inside synchronized output cannot publish an already partial snapshot.
+    @Test func restoringAHeldSnapshotKeepsThePreviousCompletedImage() throws {
+        let renderer = try renderer()
+        let previous = VTTerminal(cols: 20, rows: 2)
+        previous.write(Array("A".utf8))
+        #expect(renderer.prepareFrame(previous))
+        let partial = VTTerminal(cols: 20, rows: 2)
+        partial.write(Array("\u{1b}[?2026hB\u{1b}[?25l".utf8))
+        let restored = try #require(VTTerminal(snapshot: partial.snapshot()))
+        renderer.bind(to: restored)
+        _ = renderer.prepareFrame(restored, force: true)
+        try expectGlyph(renderer, text: "A", x: 0, y: 0)
+        restored.write(Array("\u{1b}[?25h\u{1b}[?2026l".utf8))
+        #expect(renderer.prepareFrame(restored))
+        try expectGlyph(renderer, text: "B", x: 0, y: 0)
+        let initial = try self.renderer()
+        initial.bind(to: partial)
+        #expect(!initial.prepareFrame(partial, force: true))
+        #expect(initial.quads.isEmpty, "a first attach has no complete frame to expose yet")
+    }
+
+    /// Explicit user viewport interaction follows Ghostty's permitted hold-interruption policy.
+    @Test func localScrollingCanInterruptARenderHold() throws {
+        let renderer = try renderer()
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        renderer.bind(to: terminal)
+        terminal.write(Array("A\r\nB\r\nC".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        terminal.write(Array("\u{1b}[?2026h".utf8))
+        terminal.scroll(rows: -1)
+        #expect(!terminal.mode(2026))
+        #expect(renderer.prepareFrame(terminal))
+        #expect(renderer.quads.contains { $0.kind == 3 })
+    }
+
+    /// An erased prediction owns the cell beneath its caret; the old grid glyph cannot return.
+    @Test func predictedEraseDoesNotResurrectTheCoveredGlyph() throws {
+        let renderer = try renderer()
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array("A\u{1b}[2 q".utf8))
+        renderer.overlay = .init(cells: [.init(x: 0, y: 0, text: " ")], caret: (x: 0, y: 0))
+        #expect(renderer.prepareFrame(terminal))
+        try expectGlyph(renderer, text: "A", x: 0, y: 0)
+        #expect(renderer.quads.last?.kind == 0, "the caret stays above the blank prediction")
+    }
+
+    /// Failed completion wakes an idle view and retains the latest frame for retry.
+    @Test func failedCompletionRequestsPresentationWithoutMoreOutput() throws {
+        let renderer = try renderer()
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array("A".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        var wakes = 0
+        renderer.onFrameNeeded = { wakes += 1 }
+        renderer.retryFailedPresentation()
+        #expect(wakes == 1 && renderer.diagnostics.pendingFrame)
+        let layer = CAMetalLayer()
+        layer.device = renderer.device
+        layer.drawableSize = .zero
+        #expect(!renderer.render(terminal, into: layer))
+        #expect(renderer.diagnostics.deferred["zeroSize"] == 1)
+    }
+
     /// Scrolled-back output fades out under the top edge; the live screen
     /// never does, so the first row of a prompt stays crisp.
     @Test func scrollingBackFadesTheTopEdgeOnly() throws {
@@ -226,6 +461,12 @@ import Testing
 
     @Test func overlayEvictionRebuildsCleanRowsAndBlockCursor() throws {
         let renderer = try renderer()
+        func expectCursorMask() throws {
+            let mask = try #require(renderer.quads.last)
+            let glyph = try #require(renderer.quads.first { $0.kind == 1 })
+            #expect(mask.kind == 4)
+            #expect(mask.uvOrigin == glyph.uvOrigin + mask.origin - glyph.origin)
+        }
         let terminal = VTTerminal(cols: 20, rows: 2)
         terminal.write(Array("A\u{1b}[1;1H\u{1b}[2 q".utf8))
         #expect(renderer.prepareFrame(terminal))
@@ -237,12 +478,14 @@ import Testing
         #expect(renderer.prepareFrame(terminal))
         #expect(renderer.atlas.generation == generation + 1)
         #expect(renderer.atlas.texture !== texture)
-        try expectGlyph(renderer, text: "A", x: 0, y: 0, count: 2)
+        try expectGlyph(renderer, text: "A", x: 0, y: 0)
+        try expectCursorMask()
         try expectGlyph(renderer, text: "Z", x: 1, y: 0)
         // Removing prediction must keep the rebuilt grid and cursor UVs valid.
         renderer.overlay = .init()
         #expect(renderer.prepareFrame(terminal))
-        try expectGlyph(renderer, text: "A", x: 0, y: 0, count: 2)
+        try expectGlyph(renderer, text: "A", x: 0, y: 0)
+        try expectCursorMask()
     }
 
     @Test func visibleSetLargerThanAtlasStopsAfterOneEviction() throws {

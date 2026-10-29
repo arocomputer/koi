@@ -2,6 +2,40 @@ import AppKit
 import Testing
 @testable import Koi
 
+/// A broken mirror or unavailable attachment is not proof that its shell died.
+@MainActor @Test func attachmentFailuresPreserveTheProcessOutcomeAndLastScreen() {
+    let view = TerminalView(pane: "recovery-fixture", at: .local)
+    let terminal = VTTerminal(cols: 40, rows: 4)
+    terminal.write(Array("work still running".utf8))
+    view.handle([.snapshot(terminal.snapshot())])
+    var exits = 0
+    view.onEnd = { exits += 1 }
+    view.handle([.snapshot([0, 1, 2])])
+    #expect(exits == 0)
+    #expect(view.connectionDescription.contains("invalid terminal snapshot"))
+    #expect(view.terminal?.text().contains("work still running") == true)
+    view.handle([.failure("incompatible snapshot format")])
+    #expect(exits == 0 && view.connectionDescription.hasPrefix("Connection error"))
+    view.handle([.exited(-1)])
+    #expect(exits == 0)
+    view.handle([.exited(0)])
+    #expect(exits == 1 && view.connectionDescription == "Ended")
+}
+
+/// Merely creating a view of another device grants no typing/resize permission.
+@MainActor @Test func remoteMirrorsStartPassiveAndOwnershipIsExplicit() {
+    let view = TerminalView(pane: "observer-fixture", at: .ssh("fixture.invalid"))
+    #expect(view.observing && !view.canControl)
+    view.handle([.negotiated(ownership: true, observing: true)])
+    view.handle([.snapshot(VTTerminal(cols: 40, rows: 4).snapshot()), .ownership(false)])
+    #expect(view.observing && view.connectionDescription.hasPrefix("Observing"))
+    view.handle([.ownership(true)])
+    #expect(!view.observing && view.connectionDescription == "Connected")
+    view.handle([.ownership(false)])
+    #expect(view.observing && view.connectionDescription.hasPrefix("Observing"))
+    view.detach()
+}
+
 /// ⌘-click only opens real web and mail links, and only the one under the
 /// pointer.
 @MainActor @Test func findsTheUrlUnderTheClick() {

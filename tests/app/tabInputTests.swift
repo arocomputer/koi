@@ -5,6 +5,17 @@ import Testing
 /// Dragging only chooses a release intent: server order and group membership
 /// remain authoritative, and cancellation leaves no delayed work behind.
 @Suite @MainActor struct TabDragTests {
+    /// Expanding a selection must not change the source under an already pressed pointer.
+    @Test func selectionReflowKeepsTheOriginallyPressedTab() {
+        let drag = TabDrag(horizontal: true)
+        let state = fixture(drag)
+        drag.record(.tab("a"), frame: CGRect(x: 0, y: 0, width: 200, height: 34))
+        drag.record(.tab("b"), frame: CGRect(x: 206, y: 0, width: 100, height: 34))
+        drag.begin(at: CGPoint(x: 150, y: 17), state: state, renaming: nil, pressedTab: "b")
+        #expect(drag.source?.id == "b")
+        drag.cancel()
+    }
+
     @Test(arguments: [false, true]) func insertionReturnsOneIntentAndClearsImmediately(horizontal: Bool) throws {
         let drag = TabDrag(horizontal: horizontal)
         let state = fixture(drag)

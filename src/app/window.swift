@@ -486,8 +486,10 @@ extension AppDelegate {
             return v
         }
         prunePaneCards()
+        // Pane updates arrive while a name field is open; its focus stays put.
+        let editing = ws.renamingTab != nil || ws.renamingGroup != nil
         if let view = ws.selectedView {
-            if window.firstResponder !== view && !window.hasKoiPopup { window.makeFirstResponder(view) }
+            if window.firstResponder !== view && !window.hasKoiPopup && !editing { window.makeFirstResponder(view) }
             view.setFocused(window.isKeyWindow)
         }
         let group = ws.tab(ws.selectedTab)?.group?.name ?? ""

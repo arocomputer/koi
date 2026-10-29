@@ -4,6 +4,46 @@ import Testing
 @testable import Koi
 
 extension SessionTests {
+    /// Submitted names bridge the asynchronous command and authoritative tree.
+    @Test @MainActor func submittedNamesStayVisibleUntilServerStateCatchesUp() async throws {
+        let server = try TestServer()
+        defer { Layout.flush(); server.stop() }
+        let control = try #require(TestControl())
+        let id = try #require(control.run(.init(op: .newTab)).tab)
+        let other = try #require(control.run(.init(op: .newTab, tab: id)).tab)
+        let group = try #require(control.run(.init(op: .group, tab: other, target: id, name: "Old")).group)
+        let machines = Machines()
+        machines.start()
+        let workspace = machines.workspace
+        defer { workspace.detachAll() }
+        for _ in 0..<200 {
+            if workspace.tab(id) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(workspace.tab(id) != nil)
+        workspace.renameTab(id, to: "Review")
+        #expect(workspace.pendingTabNames[id] == "Review")
+        for _ in 0..<200 {
+            if workspace.tab(id)?.tab.name == "Review", workspace.pendingTabNames[id] == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(workspace.tab(id)?.tab.name == "Review")
+        #expect(workspace.pendingTabNames[id] == nil)
+        workspace.renameGroup(group, to: "New")
+        #expect(workspace.pendingGroupNames[group] == "New")
+        for _ in 0..<200 {
+            if workspace.pendingGroupNames[group] == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(workspace.tab(id)?.group?.name == "New")
+        #expect(workspace.pendingGroupNames[group] == nil)
+        let offline = Workspace(.local)
+        offline.renameTab(id, to: "Rejected")
+        #expect(offline.pendingTabNames[id] == nil)
+        offline.renameGroup(group, to: "Rejected")
+        #expect(offline.pendingGroupNames[group] == nil)
+    }
+
     /// Real hosted geometry feeds all three placements. Dragging keeps rows
     /// intact, and release commits one insertion to a private server.
     @Test @MainActor func tabStripsCommitUsingTheirRenderedTargets() async throws {
@@ -124,6 +164,86 @@ extension SessionTests {
         writeStripPreview(root.superview ?? root, name: "top-window")
     }
 
+    /// Selection reveals a long title, gives its old slot back on switching,
+    /// and stays bounded by the viewport after a narrow-window resize.
+    @Test @MainActor func selectedHorizontalTabFitsItsTitleWithinTheViewport() async throws {
+        let server = try TestServer()
+        defer { Layout.flush(); server.stop() }
+        let control = try #require(TestControl())
+        let a = try #require(control.run(.init(op: .newTab)).tab)
+        let b = try #require(control.run(.init(op: .newTab, tab: a)).tab)
+        _ = control.run(.init(op: .renameTab, tab: a, name: "Compare Rex features for Koi | release review"))
+        _ = control.run(.init(op: .renameTab, tab: b, name: String(repeating: "A much longer terminal title ", count: 8)))
+        let saved = Config.current
+        defer { Config.current = saved }
+        Config.current.tabs = .top
+        Config.current.motion = .natural
+        let machines = Machines()
+        machines.start()
+        let workspace = machines.workspace
+        defer { workspace.detachAll() }
+        for _ in 0..<200 {
+            if workspace.state.tabs.count == 2 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        workspace.select(a)
+        let drag = TabDrag(horizontal: true)
+        let host = NSHostingView(rootView: HorizontalBar(machines: machines, drag: drag)
+            .preferredColorScheme(.dark).background(Color(red: 0.08, green: 0.08, blue: 0.1)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 52),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.setFrameSize(NSSize(width: 1000, height: 52))
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderFront(nil)
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if let first = drag.frame(for: .tab(a)), let second = drag.frame(for: .tab(b)), first.width > second.width { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let expanded = try #require(drag.frame(for: .tab(a)))
+        let compact = try #require(drag.frame(for: .tab(b)))
+        #expect(expanded.width > compact.width)
+        let anchor = try #require(clickAnchor(in: host))
+        writeStripPreview(host, name: "top-expanded-title")
+        workspace.select(b)
+        if ProcessInfo.processInfo.environment["KOI_VISUALS"] != nil {
+            for step in 0..<8 {
+                try await Task.sleep(for: .milliseconds(40))
+                host.layoutSubtreeIfNeeded()
+                writeStripPreview(host, name: "top-selection-\(step)")
+            }
+        }
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if let first = drag.frame(for: .tab(a)), abs(first.width - compact.width) < 1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(abs(try #require(drag.frame(for: .tab(a))).width - compact.width) < 1)
+        for _ in 0..<120 {
+            host.layoutSubtreeIfNeeded()
+            if let second = drag.frame(for: .tab(b)), second.maxX <= anchor.bounds.width + 1, second.minX >= -1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let selected = try #require(drag.frame(for: .tab(b)))
+        #expect(selected.minX >= -1 && selected.maxX <= anchor.bounds.width + 1,
+                "title expansion must keep the whole selected row inside the viewport")
+        writeStripPreview(host, name: "top-expanded-settled")
+        window.setContentSize(NSSize(width: 480, height: 52))
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if let second = drag.frame(for: .tab(b)), second.maxX <= anchor.bounds.width + 1, second.minX >= -1 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let bounded = try #require(drag.frame(for: .tab(b)))
+        #expect(bounded.width > compact.width && bounded.width < 480)
+        #expect(bounded.minX >= -1, "the selected tab stays in the viewport after resizing")
+        #expect(bounded.maxX <= anchor.bounds.width + 1, "resizing must reveal the selected tab's trailing edge too")
+        writeStripPreview(host, name: "top-expanded-narrow")
+    }
+
     /// Closing the first horizontal tab keeps its successor in that same slot,
     /// and selection waits for the authoritative removal rather than chasing
     /// an obsolete slot. No screen capture or application activation is involved.
@@ -162,6 +282,9 @@ extension SessionTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         let first = try #require(drag.frame(for: .tab(a)))
+        let owner = workspace.view(for: try #require(workspace.tab(a)?.tab.panes.first?.id))
+        for _ in 0..<200 where !owner.canControl { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(owner.canControl)
         workspace.closeTab(a)
         #expect(workspace.selectedTab == a, "do not animate toward the successor's obsolete slot")
         for _ in 0..<40 {
@@ -229,6 +352,8 @@ extension SessionTests {
             try stripMouse(.leftMouseUp, point: end, clicks: 1, anchor: anchor, window: window)
             #expect(workspace.selectedTab == a, "pressing a tab selects it even when the press becomes a drag")
             workspace.select(b)
+            try stripMouse(.leftMouseDown, point: close, clicks: 1, anchor: anchor, window: window)
+            try stripMouse(.leftMouseUp, point: close, clicks: 1, anchor: anchor, window: window)
             try stripMouse(.leftMouseDown, point: point, clicks: 2, anchor: anchor, window: window)
             try stripMouse(.leftMouseUp, point: point, clicks: 2, anchor: anchor, window: window)
             #expect(workspace.renamingTab == nil, "a click in another control is not the first click of a rename")
@@ -239,6 +364,121 @@ extension SessionTests {
             #expect(workspace.renamingTab == b)
             workspace.renamingTab = nil
         }
+    }
+
+    /// Selecting a horizontal tab resizes its wide predecessor, so the rows
+    /// slide under a still pointer between the two presses of a double-click.
+    /// The rename belongs to the tab that took the first press, not whichever
+    /// row ends up under the second.
+    @Test @MainActor func doubleClickRenamesTheFirstPressedTabAfterRowsMove() async throws {
+        _ = NSApplication.shared
+        let server = try TestServer()
+        defer { Layout.flush(); server.stop() }
+        let control = try #require(TestControl())
+        let a = try #require(control.run(.init(op: .newTab)).tab)
+        let b = try #require(control.run(.init(op: .newTab, tab: a)).tab)
+        let c = try #require(control.run(.init(op: .newTab, tab: b)).tab)
+        _ = control.run(.init(op: .renameTab, tab: a, name: String(repeating: "A much longer terminal title ", count: 3)))
+        let saved = Config.current
+        defer { Config.current = saved }
+        Config.current.tabs = .top
+        Config.current.motion = .off
+        let machines = Machines()
+        machines.start()
+        let workspace = machines.workspace
+        defer { workspace.detachAll() }
+        for _ in 0..<200 {
+            if workspace.state.tabs.count == 3, workspace.tab(a)?.tab.name?.isEmpty == false { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        workspace.select(a)
+        let drag = TabDrag(horizontal: true)
+        let host = NSHostingView(rootView: HorizontalBar(machines: machines, drag: drag))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 52),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.setFrameSize(NSSize(width: 1000, height: 52))
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if let first = drag.frame(for: .tab(a)), drag.frame(for: .tab(c)) != nil, first.width > 400 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let expanded = try #require(drag.frame(for: .tab(a)))
+        let second = try #require(drag.frame(for: .tab(b)))
+        #expect(expanded.width > 400)
+        let anchor = try #require(clickAnchor(in: host))
+        let point = CGPoint(x: second.minX + 12, y: second.midY)
+        try stripMouse(.leftMouseDown, point: point, clicks: 1, anchor: anchor, window: window)
+        try stripMouse(.leftMouseUp, point: point, clicks: 1, anchor: anchor, window: window)
+        #expect(workspace.selectedTab == b)
+        for _ in 0..<100 {
+            host.layoutSubtreeIfNeeded()
+            if let first = drag.frame(for: .tab(a)), first.width < expanded.width - 100 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let moved = try #require(drag.frame(for: .tab(b)))
+        #expect(!moved.contains(point), "the pressed row must have slid away from the pointer for this check to mean anything")
+        try stripMouse(.leftMouseDown, point: point, clicks: 2, anchor: anchor, window: window)
+        try stripMouse(.leftMouseUp, point: point, clicks: 2, anchor: anchor, window: window)
+        #expect(workspace.renamingTab == b)
+        #expect(workspace.selectedTab == b, "the second press renames instead of selecting the row now under it")
+        workspace.renamingTab = nil
+    }
+
+    /// The terminal takes the keyboard back on pane updates, except while a
+    /// name field is open: a program retitling itself must not end a rename.
+    @Test @MainActor func paneUpdatesLeaveAnOpenNameFieldFocused() async throws {
+        _ = NSApplication.shared
+        let server = try TestServer()
+        defer { Layout.flush(); server.stop() }
+        let control = try #require(TestControl())
+        let id = try #require(control.run(.init(op: .newTab)).tab)
+        let delegate = AppDelegate()
+        let window = delegate.makeWindow()
+        window.isReleasedWhenClosed = false
+        defer { delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification)); window.close() }
+        delegate.machines.start()
+        let workspace = delegate.workspace
+        defer { workspace.detachAll() }
+        for _ in 0..<200 {
+            if workspace.tab(id) != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let tab = try #require(workspace.tab(id)?.tab)
+        workspace.select(id)
+        let field = NSTextView(frame: NSRect(x: 0, y: 0, width: 80, height: 20))
+        try #require(window.contentView).addSubview(field)
+        window.makeFirstResponder(field)
+        workspace.renamingTab = id
+        delegate.show(tab)
+        #expect(window.firstResponder === field)
+        endRename(in: workspace, group: false, restoreFocus: false)
+        #expect(window.firstResponder === field, "blur must preserve the chosen responder")
+        workspace.renamingGroup = "group"
+        endRename(in: workspace, group: true, restoreFocus: false)
+        #expect(window.firstResponder === field, "group blur must preserve the chosen responder")
+        workspace.renamingTab = id
+        endRename(in: workspace, group: false, restoreFocus: true)
+        #expect(window.firstResponder === workspace.selectedView, "explicit completion returns focus to the terminal")
+        window.makeFirstResponder(field)
+        workspace.renamingGroup = "group"
+        endRename(in: workspace, group: true, restoreFocus: true)
+        #expect(window.firstResponder === workspace.selectedView, "explicit group completion returns focus to the terminal")
+        let anchor = PopupAnchor.AnchorView(frame: NSRect(x: 20, y: 20, width: 40, height: 20))
+        try #require(window.contentView).addSubview(anchor)
+        let popup = PopupAnchor.Coordinator()
+        popup.anchor = anchor
+        popup.content = AnyView(Text("Popup"))
+        popup.show()
+        let popupResponder = window.firstResponder
+        workspace.renamingTab = id
+        endRename(in: workspace, group: false, restoreFocus: true)
+        #expect(window.firstResponder === popupResponder, "an open popup keeps focus")
+        popup.dismiss()
+        delegate.show(tab)
+        #expect(window.firstResponder === workspace.selectedView)
     }
 
     /// Find the real strip input anchor through native scroll/hosting wrappers.

@@ -5,6 +5,10 @@ import GhosttyVt
 /// drawing) keep. Not thread-safe; each owner uses it from one queue.
 final class VTTerminal {
     let raw: GhosttyTerminal
+    /// Runs synchronously on the terminal's owning queue, at the exact VT hold boundary.
+    var onRenderHold: ((Bool) -> Void)?
+    /// Explicit local viewport/selection changes may interrupt a synchronized redraw.
+    var onViewportInteraction: (() -> Void)?
 
     /// Default history for a fresh mirror; snapshots carry the server's limit.
     static let scrollbackBytes = 32 * 1024 * 1024
@@ -35,9 +39,19 @@ final class VTTerminal {
         configure(restored: true)
     }
 
-    deinit { ghostty_terminal_free(raw) }
+    deinit {
+        ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, nil)
+        ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_USERDATA, nil)
+        ghostty_terminal_free(raw)
+    }
 
     private func configure(restored: Bool = false) {
+        ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_USERDATA, Unmanaged.passUnretained(self).toOpaque())
+        let hold: GhosttyTerminalRenderHoldFn = { _, userdata, held in
+            guard let userdata else { return }
+            Unmanaged<VTTerminal>.fromOpaque(userdata).takeUnretainedValue().onRenderHold?(held)
+        }
+        ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, unsafeBitCast(hold, to: UnsafeRawPointer.self))
         // A snapshot owns the server's colors and history limit. Overriding
         // them here would silently undo configurePane in attached mirrors.
         // This cooperation cannot change old v6 binaries, which restore 32 MiB;
@@ -95,6 +109,12 @@ final class VTTerminal {
 
     func resize(_ size: GridSize) {
         ghostty_terminal_resize(raw, size.cols, size.rows, size.cellWidth, size.cellHeight)
+    }
+
+    /// Releases a timed-out synchronized redraw; direct mode changes do not invoke callbacks.
+    func endRenderHold() {
+        var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(2026, false), value: false)
+        ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_MODE, &mode)
     }
 
     /// The complete state: screen, modes, scrollback and unfinished input.
@@ -179,6 +199,7 @@ final class VTTerminal {
         sel.end = end
         sel.rectangle = false
         ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_SELECTION, &sel)
+        onViewportInteraction?()
     }
 
     /// Selects the whole screen and scrollback.
@@ -187,6 +208,7 @@ final class VTTerminal {
         sel.size = MemoryLayout<GhosttySelection>.size
         guard ghostty_terminal_select_all(raw, &sel) == GHOSTTY_SUCCESS else { return }
         ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_SELECTION, &sel)
+        onViewportInteraction?()
     }
 
     func clearSelection() {
@@ -317,7 +339,11 @@ final class VTTerminal {
     }
 
     func scroll(_ behavior: GhosttyTerminalScrollViewport) {
+        var before = GhosttyTerminalScrollbar(), after = GhosttyTerminalScrollbar()
+        ghostty_terminal_get(raw, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &before)
         ghostty_terminal_scroll_viewport(raw, behavior)
+        ghostty_terminal_get(raw, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &after)
+        if before.offset != after.offset { onViewportInteraction?() }
     }
 
     func scroll(rows delta: Int) {

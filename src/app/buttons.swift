@@ -1,20 +1,6 @@
 import SwiftUI
 
-/// Koi's Capsule style: a continuous rounded rectangle for selections and controls.
-struct Capsule: InsettableShape {
-    private let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
-
-    func path(in rect: CGRect) -> Path {
-        shape.path(in: rect)
-    }
-
-    /// Keeps control rims inside the same rounded bounds as their backing.
-    func inset(by amount: CGFloat) -> some InsettableShape {
-        shape.inset(by: amount)
-    }
-}
-
-/// Shared Capsule backing for category and tab selection; adds no layout or motion.
+/// Shared capsule backing for category selection; adds no layout or motion.
 struct SelectionSurface: ViewModifier {
     let selected: Bool
     var hovering: Bool = false

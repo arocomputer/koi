@@ -6,6 +6,239 @@ import Testing
 /// Serializes fixtures sharing process-wide config, application events or KOI_DIR.
 /// Servers and windows remain private; no test drives the user’s desktop.
 @Suite(.serialized) struct SessionTests {
+    /// An unvisited tab has no cached view, but its close command still needs
+    /// server-side ownership; a second window cannot end the owner's shell.
+    @Test @MainActor func anUnvisitedLocalTabCannotBeClosedByAnotherWindow() async throws {
+        let server = try TestServer()
+        defer { server.stop() }
+        let control = try #require(TestControl())
+        let made = control.run(.init(op: .newTab))
+        let tab = try #require(made.tab), pane = try #require(made.pane)
+        let owner = Workspace(.local), observer = Workspace(.local)
+        owner.start(); observer.start()
+        defer { owner.detachAll(); observer.detachAll() }
+        try await waitForTabOrder([tab], in: owner)
+        try await waitForTabOrder([tab], in: observer)
+        let view = owner.view(for: pane)
+        for _ in 0..<200 where !view.canControl { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(view.canControl)
+        #expect(observer.attachedViews.isEmpty)
+        var rejection: String?
+        observer.onError = { rejection = $0 }
+        observer.closeTab(tab)
+        for _ in 0..<200 where rejection == nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(rejection == "NOTOWNER")
+        #expect(control.waitFor { $0.tabs.first?.panes.first?.id == pane })
+        #expect(owner.state.tabs.map(\.id) == [tab] && view.canControl)
+    }
+
+    /// A fresh watch and its ordered reply reconcile a coalesced competing name
+    /// without exposing the pre-command name while the reply is in flight.
+    @Test @MainActor func renameWaitsForAFencedAuthoritativeTree() async throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        let stream = RenameTransport()
+        let control = Control(socket: stream)
+        let workspace = Workspace(.local, control: control, controlTransport: stream)
+        defer { workspace.detachAll() }
+        control.onState = { workspace.apply($0) }
+        func state(_ tabName: String, _ groupName: String) -> Wire.State {
+            guard case .tab(var tab) = fixture.state(["a"]).items[0] else { fatalError("fixture") }
+            tab.name = tabName
+            return Wire.State(items: [.group(.init(id: "g", name: groupName, tabs: [tab]))])
+        }
+        func receive(_ value: Wire.State) throws {
+            stream.receive(.state, try JSONEncoder().encode(value))
+        }
+        workspace.apply(state("old", "old group"))
+        workspace.renameTab("a", to: "mine")
+        try receive(state("old", "old group"))
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where stream.frames.filter({ $0 == .watch }).count < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.pendingTabNames["a"] == "mine")
+        try receive(state("theirs", "old group"))
+        stream.receive(.result, Data("{\"error\":\"unsupported\"}".utf8))
+        for _ in 0..<200 where workspace.pendingTabNames["a"] != nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.pendingTabNames["a"] == nil)
+        #expect(workspace.tab("a")?.tab.name == "theirs")
+
+        // A tree delivered before the command callback must also be fenced.
+        workspace.renameGroup("g", to: "mine group")
+        try receive(state("theirs", "their group"))
+        for _ in 0..<200 where workspace.tab("a")?.group?.name != "their group" {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.pendingGroupNames["g"] == "mine group")
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where stream.frames.filter({ $0 == .watch }).count < 3 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.pendingGroupNames["g"] == "mine group")
+        try receive(state("theirs", "their group"))
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where workspace.pendingGroupNames["g"] != nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.pendingGroupNames["g"] == nil)
+        #expect(workspace.tab("a")?.group?.name == "their group")
+    }
+
+    /// A late reply for an older submission cannot retire the newer name.
+    @Test @MainActor func renameReplyKeepsTheNewerRequest() async throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        let stream = RenameTransport()
+        let control = Control(socket: stream)
+        let workspace = Workspace(.local, control: control, controlTransport: stream)
+        defer { workspace.detachAll() }
+        control.onState = { workspace.apply($0) }
+        workspace.apply(fixture.state(["a"]))
+        workspace.renameTab("a", to: "first")
+        workspace.renameTab("a", to: "second")
+        stream.receive(.result, Data("{\"error\":\"rejected\"}".utf8))
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where stream.frames.filter({ $0 == .watch }).count < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.pendingTabNames["a"] == "second")
+        var state = fixture.state(["a"])
+        if case .tab(var tab) = state.items[0] { tab.name = "other"; state.items[0] = .tab(tab) }
+        stream.receive(.state, try JSONEncoder().encode(state))
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where workspace.pendingTabNames["a"] != nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.pendingTabNames["a"] == nil)
+        #expect(workspace.tab("a")?.tab.name == "other")
+
+        workspace.renameTab("a", to: "third")
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where stream.frames.filter({ $0 == .watch }).count < 3 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        workspace.renameTab("a", to: "fourth")
+        if case .tab(var tab) = state.items[0] { tab.name = "third"; state.items[0] = .tab(tab) }
+        stream.receive(.state, try JSONEncoder().encode(state))
+        stream.receive(.result, Data("{}".utf8))
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(workspace.pendingTabNames["a"] == "fourth", "an older refresh cannot retire a later submission")
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where stream.frames.filter({ $0 == .watch }).count < 4 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        if case .tab(var tab) = state.items[0] { tab.name = "latest"; state.items[0] = .tab(tab) }
+        stream.receive(.state, try JSONEncoder().encode(state))
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where workspace.pendingTabNames["a"] != nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.tab("a")?.tab.name == "latest")
+        #expect(workspace.pendingTabNames["a"] == nil)
+    }
+
+    /// Reconnection's first full tree retires an acknowledged rename whose
+    /// original connection ended before its refresh barrier was answered.
+    @Test @MainActor func reconnectTreeRetiresAnAcknowledgedRename() async throws {
+        let server = try TestServer()
+        defer { Layout.flush(); server.stop() }
+        let serverControl = try #require(TestControl())
+        let id = try #require(serverControl.run(.init(op: .newTab)).tab)
+        _ = serverControl.run(.init(op: .renameTab, tab: id, name: "server"))
+        let stream = RenameTransport()
+        let control = Control(socket: stream)
+        let workspace = Workspace(.local, control: control, controlTransport: stream)
+        defer { workspace.detachAll() }
+        workspace.apply(Wire.State(items: [.tab(.init(id: id, panes: [], layout: .pane("fixture")))]))
+        workspace.renameTab(id, to: "mine")
+        stream.receive(.result, Data("{}".utf8))
+        for _ in 0..<200 where stream.frames.filter({ $0 == .watch }).count < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(workspace.pendingTabNames[id] == "mine")
+        control.close()
+        workspace.start()
+        for _ in 0..<300 where workspace.pendingTabNames[id] != nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(workspace.pendingTabNames[id] == nil)
+        #expect(workspace.tab(id)?.tab.name == "server")
+    }
+
+    /// Another app window must observe a shared PTY until it explicitly claims
+    /// control; reconnecting it must preserve the first client's running shell.
+    @Test @MainActor func secondClientCannotReshapeOrEndTheOwnersPane() async throws {
+        let server = try TestServer()
+        defer { server.stop() }
+        let control = try #require(TestControl())
+        let pane = try #require(control.run(.init(op: .newTab)).pane)
+        _ = NSApplication.shared
+        let firstWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 800, height: 500),
+                                   styleMask: [.borderless], backing: .buffered, defer: false)
+        let secondWindow = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 90, height: 60),
+                                    styleMask: [.borderless], backing: .buffered, defer: false)
+        firstWindow.isReleasedWhenClosed = false
+        secondWindow.isReleasedWhenClosed = false
+        defer {
+            firstWindow.contentView = nil; secondWindow.contentView = nil
+            firstWindow.close(); secondWindow.close()
+        }
+        let first = TerminalView(pane: pane, at: .local)
+        firstWindow.contentView = first
+        defer { first.detach() }
+        first.attach()
+        for _ in 0..<300 where !first.canControl { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(first.canControl)
+        let workspace = Workspace(.local)
+        workspace.start()
+        defer { workspace.detachAll() }
+        for _ in 0..<300 where workspace.selectedPane == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let observingView = try #require(workspace.selectedView)
+        for _ in 0..<300 where !observingView.connectionDescription.hasPrefix("Observing") { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(observingView.observing)
+        var rejections: [String] = []
+        workspace.onError = { rejections.append($0) }
+        workspace.closePane()
+        workspace.closeTab()
+        do {
+            _ = try await workspace.perform(.init(op: .resetPane, pane: pane))
+            Issue.record("An observing client reset the shared terminal")
+        } catch {}
+        #expect(rejections.count == 3 && rejections.allSatisfy { $0.contains("Take Control") })
+        let original = first.currentGridSize
+        let second = TerminalView(pane: pane, at: .local)
+        secondWindow.contentView = second
+        defer { second.detach() }
+        second.attach()
+        for _ in 0..<300 where !second.connectionDescription.hasPrefix("Observing") { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(second.observing && second.terminal != nil)
+        // A zero-grid watcher sees server resizes without becoming an owner.
+        let monitor = try #require(TestPane(pane, cols: 0, rows: 0))
+        defer { monitor.close() }
+        first.setFrameSize(NSSize(width: 850, height: 520))
+        let resized = first.currentGridSize
+        #expect(resized != original)
+        #expect(monitor.waitForResize(cols: resized.cols, rows: resized.rows))
+        second.takeControl()
+        for _ in 0..<300 where !second.canControl || !first.observing { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(second.canControl && first.observing)
+        let small = second.currentGridSize
+        #expect(monitor.waitForResize(cols: small.cols, rows: small.rows))
+        second.reconnect()
+        for _ in 0..<300 where !second.canControl { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(second.canControl)
+        second.observe()
+        first.takeControl()
+        for _ in 0..<300 where !first.canControl { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(first.canControl && second.observing)
+        second.detach()
+        monitor.type("printf 'owner-still-running\\n'\r")
+        #expect(monitor.waitForText("owner-still-running"))
+    }
+
     /// The point of the server: what a pane printed is still there, with its
     /// shell running, after the client goes away and a new one attaches.
     @Test func paneOutlivesItsClient() throws {
@@ -136,6 +369,37 @@ import Testing
         try #require(workspace.state.tabs.map(\.id) == expected)
     }
 
+    /// A pre-weighted remote server's split state must reach the workspace,
+    /// rather than leave its existing single-pane presentation frozen.
+    @Test @MainActor func legacyRemoteSplitUpdatesTheVisibleWorkspace() async throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        var fds: [Int32] = [0, 0]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        let peer = Socket(fd: fds[1])
+        let control = Control(socket: Socket(fd: fds[0]))
+        defer { control.close(); peer.close() }
+        let workspace = fixture.workspace
+        workspace.apply(fixture.state(["a"]))
+        var shown: [String] = []
+        workspace.onShow = { shown = $0?.layout.panes ?? [] }
+        control.onState = { workspace.apply($0) }
+        var object = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(fixture.state(["a"], splitFirst: true))) as? [String: Any])
+        var items = try #require(object["items"] as? [[String: Any]])
+        var tab = try #require((items[0]["tab"] as? [String: Any])?["_0"] as? [String: Any])
+        tab["layout"] = ["split": ["id": "a-split", "direction": "right", "ratio": 0.4,
+                                  "first": ["pane": "a-pane"], "second": ["pane": "a-second"]]]
+        items[0] = ["tab": ["_0": tab]]
+        object["items"] = items
+        peer.send(Wire.frame(.state, Array(try JSONSerialization.data(withJSONObject: object))))
+        for _ in 0..<200 {
+            if shown == ["a-pane", "a-second"] { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(shown == ["a-pane", "a-second"])
+        #expect(workspace.focusedPane == "a-pane")
+    }
+
     /// A remote machine's connection is `Koi --stdio` over SSH; without SSH,
     /// the relay must carry the protocol both ways just the same.
     @Test func stdioRelayCarriesTheProtocol() throws {
@@ -221,6 +485,36 @@ import Testing
     }
 }
 
+/// In-memory control stream for deterministic command and watcher ordering.
+private final class RenameTransport: Transport, @unchecked Sendable {
+    private let condition = NSCondition()
+    private var incoming: [(Wire.Kind, [UInt8])] = []
+    private var sent: [Wire.Kind] = []
+    private var stopped = false
+    var frames: [Wire.Kind] { condition.withLock { sent } }
+
+    func send(_ bytes: [UInt8]) {
+        var reader = FrameReader()
+        bytes.withUnsafeBytes { reader.append($0) }
+        guard let frame = try? reader.next() else { return }
+        condition.withLock { sent.append(frame.0) }
+    }
+    func receive(_ kind: Wire.Kind, _ data: Data) {
+        condition.withLock { incoming.append((kind, Array(data))); condition.signal() }
+    }
+    func readFrames(_ handle: (Wire.Kind, ArraySlice<UInt8>) -> Void) {
+        while true {
+            condition.lock()
+            while incoming.isEmpty && !stopped { condition.wait() }
+            guard !stopped else { condition.unlock(); return }
+            let frame = incoming.removeFirst()
+            condition.unlock()
+            handle(frame.0, frame.1[...])
+        }
+    }
+    func close() { condition.withLock { stopped = true; condition.broadcast() } }
+}
+
 extension SessionTests {
     /// An explicit resize hold never delays attachment or output. The shell
     /// keeps its creation size until that independent owner releases the hold.
@@ -257,6 +551,28 @@ extension SessionTests {
 }
 
 extension SessionTests {
+    /// Group searches retain reading order and exact tab/pane destinations.
+    @Test @MainActor func paletteWorkKeepsGroupContextAndNavigationTargets() throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        let tabs = fixture.state(["a", "b", "c", "d"], splitFirst: true).tabs
+        fixture.workspace.apply(.init(items: [
+            .tab(tabs[2]),
+            .group(.init(id: "finance", name: "Finance", tabs: [tabs[0], tabs[1]])),
+            .group(.init(id: "unnamed", name: "", tabs: [tabs[3]])),
+        ]))
+        var destinations: [String] = []
+        let items = PaletteSearch.workItems(in: fixture.workspace) { tab, pane in
+            destinations.append("\(tab):\(pane ?? "tab")")
+        }
+        for item in items {
+            if case .perform(let navigate) = item.operation { navigate() }
+        }
+        #expect(destinations == ["c:c-pane", "a:tab", "a:a-pane", "a:a-second", "b:b-pane", "d:d-pane"])
+        let grouped = PaletteSearch.results(items, query: "finance", recent: [])
+        #expect(grouped.map(\.id) == Array(items[1...4]).map(\.id))
+    }
+
     /// All focus entry points reveal the destination before the coordinator can
     /// install keyboard focus; it must never present a focused, hidden terminal.
     @Test @MainActor func movingFocusOutsideZoomPresentsOneVisibleDestination() throws {

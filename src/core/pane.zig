@@ -29,7 +29,10 @@ pub const Pane = struct {
     release_deadline: ?i64 = null,
     terminal: Terminal,
     mutex: sys.Mutex,
-    clients: std.ArrayList(Transport) = .empty,
+    clients: std.ArrayList(Client) = .empty,
+    owner: ?*anyopaque = null,
+    /// Creator's temporary command proof, consumed by the first actual owner.
+    creationController: ?[]u8 = null,
     size: wire.GridSize,
     shell: []const u8,
     home: []const u8,
@@ -60,6 +63,9 @@ pub const Pane = struct {
     /// echoed raw by the terminal and then again by the shell. A program that
     /// reads cooked input gets it after `input_hold_ms` anyway.
     held_input: std.ArrayList(u8) = .empty,
+    /// Up to 4096 contiguous input ranges, tagged only for negotiated clients;
+    /// null is legacy or server input and survives another client's revocation.
+    held_segments: std.ArrayList(HeldSegment) = .empty,
     input_hold_until: ?i64 = null,
     input_hold_ms: i64 = 2000,
     /// Input/close wakes the reader without shortening its idle poll interval.
@@ -458,49 +464,219 @@ pub const Pane = struct {
         while (c.write(self.wake_pipe[1], &byte, 1) < 0 and sys.errno() == c.EINTR) {}
     }
 
+    const Client = struct { transport: Transport, negotiated: bool = false, controller: ?[]u8 = null };
+    const HeldSegment = struct { len: usize, owner: ?*anyopaque };
+
+    /// Reserve an unpublished pane for its creator; the pane owns the copy.
+    pub fn reserveCreation(self: *Pane, controller: ?[]const u8) !void {
+        const id = controller orelse return;
+        if (!wire.validController(id)) return error.InvalidController;
+        self.creationController = try self.gpa.dupe(u8, id);
+    }
+
+    /// Assign an interactive owner and permanently consume creation authority.
+    /// The caller holds the pane mutex.
+    fn assignOwnerLocked(self: *Pane, owner: *anyopaque) void {
+        if (self.creationController) |id| self.gpa.free(id);
+        self.creationController = null;
+        self.owner = owner;
+    }
+
     /// Adds `transport` after sending the pane's info and snapshot. On an
     /// ended or closing pane it sends `exited` and closes the transport instead.
-    pub fn attach(self: *Pane, transport: Transport, arena: Allocator) !void {
+    pub fn attach(self: *Pane, transport: Transport, arena: Allocator, request: wire.OpenRequest) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        if (request.controller) |id| if (!wire.validController(id)) return error.InvalidController;
         if (self.ended.load(.acquire) or self.closing.load(.acquire)) {
             transport.send(&wire.exitedFrame(self.exit_code));
             transport.close();
             return;
         }
         try self.clients.ensureUnusedCapacity(self.gpa, 1);
+        const controller = if (request.paneControl) if (request.controller) |id| try self.gpa.dupe(u8, id) else null else null;
+        errdefer if (controller) |id| self.gpa.free(id);
         const frame = try wire.frameJson(arena, .attached, try self.infoLocked(arena));
         transport.send(frame);
         const snap = self.terminal.snapshot() orelse return error.Snapshot;
         defer Terminal.freeSnapshot(snap);
         const f = try wire.frame(arena, .snapshot, snap);
         transport.send(f);
-        self.clients.appendAssumeCapacity(transport);
+        self.clients.appendAssumeCapacity(.{ .transport = transport, .negotiated = request.paneControl, .controller = controller });
+        // A negotiated interactive view may attach before layout; claiming an
+        // unowned pane does not require a placeholder resize. Legacy zero-grid
+        // CLI watchers remain passive.
+        if (self.owner == null and !request.observer and (request.paneControl or (request.cols > 0 and request.rows > 0))) {
+            self.assignOwnerLocked(transport.ptr);
+            self.resizeLocked(.{ .cols = request.cols, .rows = request.rows, .cell_width = request.cellWidth, .cell_height = request.cellHeight });
+        }
+        self.notifyOwnershipLocked();
     }
 
     pub fn detach(self: *Pane, transport: Transport) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        for (self.clients.items, 0..) |t, i| {
-            if (t.ptr == transport.ptr) {
+        for (self.clients.items, 0..) |client, i| {
+            if (client.transport.ptr == transport.ptr) {
                 _ = self.clients.swapRemove(i);
+                if (client.controller) |id| self.gpa.free(id);
+                if (self.owner == transport.ptr) {
+                    self.owner = null;
+                    if (client.negotiated) self.discardHeldLocked(transport.ptr);
+                    self.notifyOwnershipLocked();
+                }
                 return;
             }
         }
     }
 
+    /// Explicitly transfers or releases ownership; never promotes another client.
+    pub fn control(self: *Pane, transport: Transport, claim: bool) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.clients.items) |client| {
+            if (client.transport.ptr == transport.ptr and client.negotiated) {
+                if (claim) {
+                    if (self.owner != transport.ptr) if (self.owner) |previous| self.discardHeldLocked(previous);
+                    self.assignOwnerLocked(transport.ptr);
+                } else if (self.owner == transport.ptr) {
+                    self.owner = null;
+                    self.discardHeldLocked(transport.ptr);
+                }
+                self.notifyOwnershipLocked();
+                return;
+            }
+        }
+    }
+
+    /// Checks client permissions while holding the pane mutex.
+    fn canActLocked(self: *Pane, transport: Transport) bool {
+        for (self.clients.items) |client| {
+            if (client.transport.ptr == transport.ptr) return !client.negotiated or self.owner == transport.ptr;
+        }
+        return false;
+    }
+
+    /// Checks the current owner or an unclaimed creation reservation. Null is
+    /// the intentional legacy command path; caller holds the pane mutex.
+    pub fn ownsControllerLocked(self: *Pane, controller: ?[]const u8) bool {
+        const proof = controller orelse return true;
+        if (!wire.validController(proof)) return false;
+        const owner = self.owner orelse {
+            const creator = self.creationController orelse return false;
+            return std.mem.eql(u8, creator, proof);
+        };
+        for (self.clients.items) |client| {
+            if (client.transport.ptr == owner and client.negotiated) {
+                const id = client.controller orelse return false;
+                return std.mem.eql(u8, id, proof);
+            }
+        }
+        return false;
+    }
+
+    /// Removes only a revoked negotiated client's held ranges, preserving order.
+    fn discardHeldLocked(self: *Pane, owner: *anyopaque) void {
+        var read: usize = 0;
+        var write: usize = 0;
+        var kept: usize = 0;
+        for (self.held_segments.items) |segment| {
+            if (segment.owner != owner) {
+                std.mem.copyForwards(u8, self.held_input.items[write..][0..segment.len], self.held_input.items[read..][0..segment.len]);
+                write += segment.len;
+                self.held_segments.items[kept] = segment;
+                kept += 1;
+            }
+            read += segment.len;
+        }
+        self.held_input.items.len = write;
+        self.held_segments.items.len = kept;
+    }
+
+    /// Sends ownership only to clients that negotiated the extension.
+    fn notifyOwnershipLocked(self: *Pane) void {
+        for (self.clients.items) |client| {
+            if (!client.negotiated) continue;
+            const frame = [6]u8{ @backingInt(wire.Kind.ownership), 1, 0, 0, 0, if (self.owner == client.transport.ptr) 1 else 0 };
+            client.transport.send(&frame);
+        }
+    }
+
+    /// Resizes only for the current owner, under the same lock as transfers.
+    pub fn resizeFrom(self: *Pane, transport: Transport, size: wire.GridSize) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (!size.valid()) return;
+        if (self.owner == null) {
+            // Old interactive clients cannot send an explicit claim. A resize
+            // may reacquire an unowned pane, but never displace its current owner.
+            for (self.clients.items) |client| {
+                if (client.transport.ptr == transport.ptr and !client.negotiated) {
+                    self.assignOwnerLocked(transport.ptr);
+                    self.notifyOwnershipLocked();
+                    break;
+                }
+            }
+        }
+        if (self.owner == transport.ptr) self.resizeLocked(size);
+    }
+
     /// Types `bytes` into the shell, waiting (without the mutex) for room
     /// when a large paste fills the PTY; gives up once the pane ends.
     pub fn input(self: *Pane, bytes: []const u8) void {
+        self.inputFromClient(null, bytes);
+    }
+
+    /// Accepts client input only while the client has permission to send it.
+    pub fn inputFrom(self: *Pane, transport: Transport, bytes: []const u8) void {
+        self.inputFromClient(transport, bytes);
+    }
+
+    fn inputFromClient(self: *Pane, transport: ?Transport, bytes: []const u8) void {
         self.mutex.lock();
+        if (transport) |client| {
+            if (!self.canActLocked(client)) {
+                self.mutex.unlock();
+                return;
+            }
+        }
         if (self.input_hold_until != null) {
-            self.held_input.appendSlice(self.gpa, bytes) catch {};
+            var source: ?*anyopaque = null;
+            if (transport) |client| for (self.clients.items) |entry| {
+                if (entry.transport.ptr == client.ptr and entry.negotiated) source = client.ptr;
+            };
+            if (bytes.len == 0) {
+                self.mutex.unlock();
+                return;
+            }
+            const last = if (self.held_segments.items.len > 0) &self.held_segments.items[self.held_segments.items.len - 1] else null;
+            const merge = if (last) |segment| segment.owner == source else false;
+            if (!merge and self.held_segments.items.len >= 4096) {
+                self.mutex.unlock();
+                return;
+            }
+            if (!merge) self.held_segments.ensureUnusedCapacity(self.gpa, 1) catch {
+                self.mutex.unlock();
+                return;
+            };
+            self.held_input.appendSlice(self.gpa, bytes) catch {
+                self.mutex.unlock();
+                return;
+            };
+            if (merge) last.?.len += bytes.len else self.held_segments.appendAssumeCapacity(.{ .len = bytes.len, .owner = source });
             self.mutex.unlock();
             self.wake();
             return;
         }
         self.mutex.unlock();
-        self.writeToPty(bytes);
+        self.writeToPty(transport, bytes);
+    }
+
+    /// Requests a close only if the attached client currently has permission.
+    pub fn killFrom(self: *Pane, transport: Transport) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.canActLocked(transport)) self.kill();
     }
 
     /// Whether the program has taken the terminal: its line editor turned
@@ -521,6 +697,7 @@ pub const Pane = struct {
         if (self.held_input.items.len > 0) {
             self.writePtyNow(self.held_input.items);
             self.held_input.clearRetainingCapacity();
+            self.held_segments.clearRetainingCapacity();
             _ = self.activityLocked(now);
         }
     }
@@ -529,9 +706,13 @@ pub const Pane = struct {
     /// order, so each resizes at the same point in the output. An invalid
     /// grid (`GridSize.valid`) is ignored.
     pub fn resize(self: *Pane, new: wire.GridSize) void {
-        if (!new.valid()) return;
         self.mutex.lock();
         defer self.mutex.unlock();
+        self.resizeLocked(new);
+    }
+
+    fn resizeLocked(self: *Pane, new: wire.GridSize) void {
+        if (!new.valid()) return;
         if (self.ended.load(.acquire) or self.closing.load(.acquire) or std.meta.eql(new, self.size)) return;
         self.size = new;
         pty.setSize(self.master, new.cols, new.rows, pixels(new.cols, new.cell_width), pixels(new.rows, new.cell_height));
@@ -583,8 +764,14 @@ pub const Pane = struct {
     /// as output/attach/resize. All fallible work precedes the swap: a failed
     /// edit leaves the authoritative terminal and every mirror unchanged.
     pub fn edit(self: *Pane, op: wire.Op, appearance: ?wire.Appearance, arena: Allocator) !void {
+        return self.editOwned(op, appearance, arena, null);
+    }
+
+    /// Applies an edit only while its optional controller still owns the pane.
+    pub fn editOwned(self: *Pane, op: wire.Op, appearance: ?wire.Appearance, arena: Allocator, controller: ?[]const u8) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        if (!self.ownsControllerLocked(controller)) return error.NOTOWNER;
         if (self.ended.load(.acquire) or self.closing.load(.acquire)) return error.PaneClosed;
         if (op == .configurePane and appearance == null) return error.MissingAppearance;
         if (appearance) |a| if (!a.valid()) return error.InvalidAppearance;
@@ -634,7 +821,7 @@ pub const Pane = struct {
     }
 
     fn broadcast(self: *Pane, frame: []const u8) void {
-        for (self.clients.items) |t| t.send(frame);
+        for (self.clients.items) |client| client.transport.send(frame);
     }
 
     fn run(self: *Pane) void {
@@ -725,9 +912,10 @@ pub const Pane = struct {
         const code: i32 = if (signal != 0) 128 + signal else (status >> 8) & 0xff;
         self.exit_code = code;
         const frame = wire.exitedFrame(code);
-        for (self.clients.items) |t| {
-            t.send(&frame);
-            t.close();
+        for (self.clients.items) |client| {
+            client.transport.send(&frame);
+            client.transport.close();
+            if (client.controller) |id| self.gpa.free(id);
         }
         self.clients.clearRetainingCapacity();
         self.ended.store(true, .release);
@@ -769,12 +957,15 @@ pub const Pane = struct {
             _ = c.close(fd);
         };
         self.terminal.deinit();
+        if (self.creationController) |id| self.gpa.free(id);
+        for (self.clients.items) |client| if (client.controller) |id| self.gpa.free(id);
         self.clients.deinit(self.gpa);
         self.title.deinit(self.gpa);
         self.cwd.deinit(self.gpa);
         self.program.deinit(self.gpa);
         self.shell_command.deinit(self.gpa);
         self.held_input.deinit(self.gpa);
+        self.held_segments.deinit(self.gpa);
         self.gpa.free(self.shell);
         self.gpa.free(self.home);
         self.gpa.destroy(self);
@@ -793,25 +984,32 @@ pub const Pane = struct {
         }
     }
 
-    /// Writes to the PTY, waiting for room when a large paste fills it.
-    fn writeToPty(self: *Pane, bytes: []const u8) void {
+    /// Writes under the permission lock, waiting outside it for PTY room.
+    fn writeToPty(self: *Pane, transport: ?Transport, bytes: []const u8) void {
         var off: usize = 0;
         while (off < bytes.len and !self.ended.load(.acquire) and !self.closing.load(.acquire)) {
+            self.mutex.lock();
+            if (transport) |client| {
+                if (!self.canActLocked(client)) {
+                    self.mutex.unlock();
+                    return;
+                }
+            }
             const n = c.write(self.master, bytes.ptr + off, bytes.len - off);
+            const err = if (n < 0) sys.errno() else 0;
+            const wake_reader = if (n > 0) self.activityLocked(sys.nowMillis()) else false;
+            self.mutex.unlock();
             if (n > 0) {
                 off += @intCast(n);
-                self.mutex.lock();
-                const wake_reader = self.activityLocked(sys.nowMillis());
-                self.mutex.unlock();
                 if (wake_reader) self.wake();
                 continue;
             }
-            if (n < 0 and sys.errno() == c.EAGAIN) {
+            if (n < 0 and err == c.EAGAIN) {
                 var fds = [_]c.struct_pollfd{.{ .fd = self.master, .events = c.POLLOUT, .revents = 0 }};
                 _ = c.poll(&fds, 1, 1000);
                 continue;
             }
-            if (n < 0 and sys.errno() == c.EINTR) continue;
+            if (n < 0 and err == c.EINTR) continue;
             return;
         }
     }
@@ -1492,7 +1690,7 @@ test "attaching to an ended pane gets exited and a closed transport" {
     defer rec.sent.deinit(std.testing.allocator);
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
-    try pane.attach(.{ .ptr = &rec, .vtable = &Recorder.vtable }, arena_state.allocator());
+    try pane.attach(.{ .ptr = &rec, .vtable = &Recorder.vtable }, arena_state.allocator(), .{ .pane = "testpane", .cols = 0, .rows = 0, .cellWidth = 0, .cellHeight = 0 });
     try std.testing.expectEqual(@as(usize, wire.header_size + 4), rec.sent.items.len);
     try std.testing.expectEqual(@backingInt(wire.Kind.exited), rec.sent.items[0]);
     try std.testing.expect(rec.closed);
@@ -1503,10 +1701,252 @@ test "attaching to an ended pane gets exited and a closed transport" {
 /// Frees only the fields owned by a shell-less engine fixture.
 fn freeMetadataPane(pane: *Pane) void {
     pane.terminal.deinit();
+    if (pane.creationController) |id| pane.gpa.free(id);
+    for (pane.clients.items) |client| if (client.controller) |id| pane.gpa.free(id);
     pane.clients.deinit(pane.gpa);
     pane.title.deinit(pane.gpa);
     pane.cwd.deinit(pane.gpa);
     pane.program.deinit(pane.gpa);
+    pane.held_input.deinit(pane.gpa);
+    pane.held_segments.deinit(pane.gpa);
+}
+
+test "revoking an owner preserves interleaved legacy held input" {
+    var pane = try testMetadataPane();
+    defer freeMetadataPane(&pane);
+    pane.input_hold_until = 1;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var first = Recorder{};
+    defer first.sent.deinit(std.testing.allocator);
+    var legacy = Recorder{};
+    defer legacy.sent.deinit(std.testing.allocator);
+    var second = Recorder{};
+    defer second.sent.deinit(std.testing.allocator);
+    const a = Transport{ .ptr = &first, .vtable = &Recorder.vtable };
+    const cli = Transport{ .ptr = &legacy, .vtable = &Recorder.vtable };
+    const b = Transport{ .ptr = &second, .vtable = &Recorder.vtable };
+    try pane.attach(a, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .controller = "first" });
+    try pane.attach(cli, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16 });
+    try pane.attach(b, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .observer = true, .controller = "second" });
+    pane.inputFrom(cli, "a");
+    pane.inputFrom(a, "discard");
+    pane.inputFrom(cli, "b");
+    pane.control(a, false);
+    try std.testing.expectEqualStrings("ab", pane.held_input.items);
+    pane.control(b, true);
+    pane.inputFrom(b, "discard too");
+    pane.inputFrom(cli, "c");
+    pane.detach(b);
+    try std.testing.expectEqualStrings("abc", pane.held_input.items);
+    pane.control(a, true);
+    pane.inputFrom(a, "discard on transfer");
+    pane.inputFrom(cli, "d");
+    try pane.attach(b, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .observer = true, .controller = "second" });
+    pane.control(b, true);
+    try std.testing.expectEqualStrings("abcd", pane.held_input.items);
+}
+
+test "controller identity is bounded and copied for negotiated owners" {
+    var pane = try testMetadataPane();
+    defer freeMetadataPane(&pane);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var rec = Recorder{};
+    defer rec.sent.deinit(std.testing.allocator);
+    const client = Transport{ .ptr = &rec, .vtable = &Recorder.vtable };
+    var id: [64]u8 = undefined;
+    @memset(&id, 'x');
+    const original = id;
+    try pane.attach(client, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .controller = &id });
+    id[0] = 'y';
+    try std.testing.expect(pane.ownsControllerLocked(&original));
+    try std.testing.expect(!pane.ownsControllerLocked(&id));
+    pane.detach(client);
+    try std.testing.expect(!pane.ownsControllerLocked(&id));
+    try std.testing.expectError(error.InvalidController, pane.attach(client, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .controller = "" }));
+    var too_long: [65]u8 = undefined;
+    @memset(&too_long, 'x');
+    try std.testing.expectError(error.InvalidController, pane.attach(client, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .controller = &too_long }));
+}
+
+test "creation reservation survives observation but not an owner claim or detach" {
+    for ([_]bool{ false, true }) |legacy| {
+        var pane = try testMetadataPane();
+        defer freeMetadataPane(&pane);
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var observer = Recorder{};
+        defer observer.sent.deinit(std.testing.allocator);
+        const client = Transport{ .ptr = &observer, .vtable = &Recorder.vtable };
+        var id = [_]u8{ 'm', 'i', 'n', 'e' };
+        try pane.reserveCreation(&id);
+        id[0] = 'X';
+        try std.testing.expect(pane.ownsControllerLocked("mine"));
+        try std.testing.expect(!pane.ownsControllerLocked("foreign"));
+        try pane.attach(client, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = !legacy, .observer = true, .controller = if (legacy) null else "foreign" });
+        try std.testing.expect(pane.ownsControllerLocked("mine"));
+        if (legacy) {
+            pane.resizeFrom(client, .{ .cols = 80, .rows = 24, .cell_width = 8, .cell_height = 16 });
+        } else {
+            pane.control(client, true);
+            try std.testing.expect(pane.ownsControllerLocked("foreign"));
+        }
+        try std.testing.expect(pane.creationController == null);
+        try std.testing.expect(!pane.ownsControllerLocked("mine"));
+        pane.detach(client);
+        try std.testing.expect(!pane.ownsControllerLocked("mine"));
+        try std.testing.expect(!pane.ownsControllerLocked("foreign"));
+    }
+}
+
+test "interactive attachment consumes creation reservation immediately" {
+    var pane = try testMetadataPane();
+    defer freeMetadataPane(&pane);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var peer = Recorder{};
+    defer peer.sent.deinit(std.testing.allocator);
+    const client = Transport{ .ptr = &peer, .vtable = &Recorder.vtable };
+    try pane.reserveCreation("creator");
+    try pane.attach(client, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .controller = "foreign" });
+    try std.testing.expect(pane.creationController == null);
+    try std.testing.expect(!pane.ownsControllerLocked("creator"));
+    try std.testing.expect(pane.ownsControllerLocked("foreign"));
+    pane.detach(client);
+    try std.testing.expect(!pane.ownsControllerLocked("creator"));
+}
+
+test "pane control requires explicit transfer and never promotes detached clients" {
+    var pane = try testMetadataPane();
+    defer freeMetadataPane(&pane);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var first = Recorder{};
+    defer first.sent.deinit(std.testing.allocator);
+    var second = Recorder{};
+    defer second.sent.deinit(std.testing.allocator);
+    const a = Transport{ .ptr = &first, .vtable = &Recorder.vtable };
+    const b = Transport{ .ptr = &second, .vtable = &Recorder.vtable };
+    const request = wire.OpenRequest{ .pane = "metadata", .cols = 80, .rows = 24, .cellWidth = 8, .cellHeight = 16, .paneControl = true };
+    try pane.attach(a, arena_state.allocator(), request);
+    var observer = request;
+    observer.observer = true;
+    try pane.attach(b, arena_state.allocator(), observer);
+    const larger = wire.GridSize{ .cols = 100, .rows = 30, .cell_width = 8, .cell_height = 16 };
+    pane.resizeFrom(b, larger);
+    try std.testing.expectEqual(@as(u16, 80), pane.size.cols);
+    try std.testing.expect(!pane.canActLocked(b));
+    pane.control(b, true);
+    try std.testing.expect(pane.canActLocked(b));
+    try std.testing.expect(!pane.canActLocked(a));
+    pane.resizeFrom(b, larger);
+    try std.testing.expectEqual(@as(u16, 100), pane.size.cols);
+    pane.resizeFrom(a, requestToSize(request));
+    try std.testing.expectEqual(@as(u16, 100), pane.size.cols);
+    pane.control(b, false);
+    try std.testing.expect(pane.owner == null);
+    try std.testing.expect(!pane.canActLocked(b));
+    pane.control(a, true);
+    pane.detach(a);
+    try std.testing.expect(pane.owner == null);
+    try std.testing.expect(!pane.canActLocked(b));
+
+    var frames = wire.FrameReader.init(std.testing.allocator);
+    defer frames.deinit();
+    try frames.append(second.sent.items);
+    try std.testing.expectEqual(wire.Kind.attached, (try frames.next()).?.kind);
+    try std.testing.expectEqual(wire.Kind.snapshot, (try frames.next()).?.kind);
+    const initial = (try frames.next()).?;
+    try std.testing.expectEqual(wire.Kind.ownership, initial.kind);
+    try std.testing.expectEqualSlices(u8, &.{0}, initial.payload);
+}
+
+/// Converts an open grid to the resize payload used in ownership tests.
+fn requestToSize(request: wire.OpenRequest) wire.GridSize {
+    return .{ .cols = request.cols, .rows = request.rows, .cell_width = request.cellWidth, .cell_height = request.cellHeight };
+}
+
+test "legacy zero grid attachment stays passive until resizing an unowned pane" {
+    var pane = try testMetadataPane();
+    defer freeMetadataPane(&pane);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var legacy = Recorder{};
+    defer legacy.sent.deinit(std.testing.allocator);
+    var modern = Recorder{};
+    defer modern.sent.deinit(std.testing.allocator);
+    var later = Recorder{};
+    defer later.sent.deinit(std.testing.allocator);
+    const old = Transport{ .ptr = &legacy, .vtable = &Recorder.vtable };
+    const new = Transport{ .ptr = &modern, .vtable = &Recorder.vtable };
+    const other = Transport{ .ptr = &later, .vtable = &Recorder.vtable };
+    try pane.attach(old, arena_state.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 0, .cellHeight = 0 });
+    try std.testing.expect(pane.owner == null);
+    try std.testing.expect(pane.canActLocked(old));
+    try pane.attach(new, arena_state.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true });
+    try std.testing.expect(pane.owner == new.ptr);
+    try pane.attach(other, arena_state.allocator(), .{ .pane = "metadata", .cols = 120, .rows = 40, .cellWidth = 8, .cellHeight = 16 });
+    pane.resizeFrom(other, .{ .cols = 120, .rows = 40, .cell_width = 8, .cell_height = 16 });
+    try std.testing.expectEqual(@as(u16, 80), pane.size.cols);
+    pane.control(new, false);
+    pane.resizeFrom(old, .{ .cols = 100, .rows = 30, .cell_width = 8, .cell_height = 16 });
+    try std.testing.expectEqual(@as(u16, 100), pane.size.cols);
+    var frames = wire.FrameReader.init(std.testing.allocator);
+    defer frames.deinit();
+    try frames.append(legacy.sent.items);
+    try std.testing.expectEqual(wire.Kind.attached, (try frames.next()).?.kind);
+    try std.testing.expectEqual(wire.Kind.snapshot, (try frames.next()).?.kind);
+    try std.testing.expectEqual(wire.Kind.resized, (try frames.next()).?.kind);
+    try std.testing.expect((try frames.next()) == null);
+}
+
+test "observer input and kill require current ownership" {
+    var pane = try testMetadataPane();
+    defer freeMetadataPane(&pane);
+    pane.input_hold_until = 1;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var rec = Recorder{};
+    defer rec.sent.deinit(std.testing.allocator);
+    const client = Transport{ .ptr = &rec, .vtable = &Recorder.vtable };
+    try pane.attach(client, arena_state.allocator(), .{ .pane = "metadata", .cols = 80, .rows = 24, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .observer = true });
+    pane.inputFrom(client, "denied");
+    pane.killFrom(client);
+    try std.testing.expectEqualStrings("", pane.held_input.items);
+    try std.testing.expect(!pane.closing.load(.acquire));
+    pane.control(client, true);
+    pane.inputFrom(client, "accepted");
+    try std.testing.expectEqualStrings("accepted", pane.held_input.items);
+    pane.control(client, false);
+    try std.testing.expectEqualStrings("", pane.held_input.items);
+    pane.inputFrom(client, "denied");
+    pane.killFrom(client);
+    try std.testing.expectEqualStrings("", pane.held_input.items);
+    try std.testing.expect(!pane.closing.load(.acquire));
+    pane.control(client, true);
+    pane.killFrom(client);
+    try std.testing.expect(pane.closing.load(.acquire));
+}
+
+test "detaching an observer leaves its shell alive" {
+    const pane = try Pane.create(std.testing.allocator, "testpane".*, .{ .cols = 80, .rows = 24, .cell_width = 8, .cell_height = 16 }, "/tmp", &.{}, null, null);
+    try pane.start();
+    try pane.releaseExecution();
+    defer {
+        pane.kill();
+        while (!pane.ended.load(.acquire)) sys.sleepMillis(10);
+        pane.destroy();
+    }
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var rec = Recorder{};
+    defer rec.sent.deinit(std.testing.allocator);
+    const transport = Transport{ .ptr = &rec, .vtable = &Recorder.vtable };
+    try pane.attach(transport, arena_state.allocator(), .{ .pane = "testpane", .cols = 80, .rows = 24, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .observer = true });
+    pane.detach(transport);
+    try std.testing.expect(!pane.closing.load(.acquire));
+    try std.testing.expectEqual(@as(c_int, 0), c.kill(pane.pid, 0));
 }
 
 test "clear snapshots preserve active screen modes and unfinished parser input" {
@@ -1517,7 +1957,7 @@ test "clear snapshots preserve active screen modes and unfinished parser input" 
     pane.terminal.write("visible\x1b[?2004h\x1b]2;unfinished");
     var rec = Recorder{};
     defer rec.sent.deinit(std.testing.allocator);
-    try pane.clients.append(pane.gpa, .{ .ptr = &rec, .vtable = &Recorder.vtable });
+    try pane.clients.append(pane.gpa, .{ .transport = .{ .ptr = &rec, .vtable = &Recorder.vtable } });
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     try pane.edit(.clearPane, null, arena_state.allocator());
@@ -1558,8 +1998,8 @@ test "reset replaces parser and alternate screen with the same configured defaul
     defer first.sent.deinit(std.testing.allocator);
     var second = Recorder{};
     defer second.sent.deinit(std.testing.allocator);
-    try pane.clients.append(pane.gpa, .{ .ptr = &first, .vtable = &Recorder.vtable });
-    try pane.clients.append(pane.gpa, .{ .ptr = &second, .vtable = &Recorder.vtable });
+    try pane.clients.append(pane.gpa, .{ .transport = .{ .ptr = &first, .vtable = &Recorder.vtable } });
+    try pane.clients.append(pane.gpa, .{ .transport = .{ .ptr = &second, .vtable = &Recorder.vtable } });
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

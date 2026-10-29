@@ -10,7 +10,7 @@ enum Remote {
     static let remoteDir = "$HOME/.local/share/koi"
 
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var links: [String: LinkClient] = [:] // guarded by lock
+    nonisolated(unsafe) private static var links: [String: RemoteLinkState<LinkClient>] = [:] // guarded by lock
 
     struct Failure: Error, CustomStringConvertible {
         var description: String
@@ -71,11 +71,16 @@ enum Remote {
         }
     }
 
-    /// Opens the UDP link to `host`'s server, if there is not one: asks it
-    /// for an offer over SSH, then dials the port. Without an answer (UDP
-    /// blocked), connections use the SSH relay instead.
+    /// Tries one UDP probe when the host is due, including calls from prepare.
     static func openLink(_ host: String) {
-        if let link = lock.withLock({ links[host] }), !link.isClosed { return }
+        let token = lock.withLock { () -> UInt64? in
+            var state = links[host] ?? RemoteLinkState()
+            let token = state.beginProbe(now: ProcessInfo.processInfo.systemUptime)
+            links[host] = state
+            return token
+        }
+        guard let token else { return }
+        defer { lock.withLock { links[host]?.endProbe(token) } }
         let reply: String
         do { reply = try run(host, "exec \(remoteDir)/koi --offer") } catch {
             log("\(host): no offer: \(error)")
@@ -92,18 +97,10 @@ enum Remote {
         let secret = Wire.secretBytes(offer.secret)
         guard secret.count == 32, let link = LinkClient(host: address, port: offer.port, secret: secret) else {
             log("\(host): UDP to \(address):\(offer.port) unanswered; using the SSH relay")
-            // A firewall rarely opens within minutes: each probe costs an SSH
-            // round trip, so an unanswered host waits a while before the next.
-            lock.withLock { nextProbe[host] = Date().addingTimeInterval(unansweredBackoff) }
+            lock.withLock { links[host]?.probeUnanswered(token, now: ProcessInfo.processInfo.systemUptime) }
             return
         }
-        // Two openLink calls can race (connect's retry and prepare); the first
-        // live link stays, so streams already opened on it keep their link.
-        let won = lock.withLock {
-            if let current = links[host], !current.isClosed { return false }
-            links[host] = link
-            return true
-        }
+        let won = lock.withLock { links[host]?.install(link, token: token) ?? false }
         if won { log("\(host): link up to \(address):\(offer.port)") }
     }
 
@@ -111,23 +108,38 @@ enum Remote {
         FileHandle.standardError.write(Data("[koi] \(message)\n".utf8))
     }
 
-    /// A connection to the server on `host`: a stream of its link, or,
-    /// without one, a relay over SSH, while the link is tried again now and
-    /// then in the background (a firewall may open, a network may change).
+    /// Opens a cached link stream or uses SSH while a UDP probe is due.
     static func connect(_ host: String) -> Transport? {
-        if let link = lock.withLock({ links[host] }), !link.isClosed, let stream = link.open() { return stream }
-        let retry = lock.withLock {
-            let due = Date() >= (nextProbe[host] ?? .distantPast)
-            if due { nextProbe[host] = Date().addingTimeInterval(30) }
-            return due
+        let (stream, retired): (LinkStream?, LinkClient?) = lock.withLock {
+            guard let link = links[host]?.owner else { return (nil, nil) }
+            if !link.isClosed {
+                if let stream = link.open() { return (stream, nil) }
+                if !link.isClosed { return (nil, nil) }
+            }
+            links[host]?.quarantine(link, now: ProcessInfo.processInfo.systemUptime)
+            return (nil, link)
         }
-        if retry { DispatchQueue.global().async { openLink(host) } }
+        withExtendedLifetime(retired) {}
+        if let stream { return stream }
+        DispatchQueue.global().async { openLink(host) }
         return relay(host)
     }
-    /// When each host's link may next be tried; an unanswered probe pushes
-    /// it out by `unansweredBackoff`. Guarded by `lock`.
-    nonisolated(unsafe) private static var nextProbe: [String: Date] = [:]
-    private static let unansweredBackoff: TimeInterval = 10 * 60
+
+    /// Reports an attach or handshake failure without closing other streams.
+    static func connectionFailed(_ endpoint: Endpoint, transport: Transport) {
+        guard case .ssh(let host) = endpoint, let stream = transport as? LinkStream else { return }
+        quarantine(host, owner: stream.owner)
+    }
+
+    /// Removes only the failed owner; its streams retain it until they finish.
+    private static func quarantine(_ host: String, owner: LinkClient) {
+        lock.withLock {
+            links[host]?.quarantine(owner, now: ProcessInfo.processInfo.systemUptime)
+        }
+        // `owner` stays retained through the lock, so native destruction cannot
+        // wait for link workers while holding the cache lock.
+        withExtendedLifetime(owner) {}
+    }
 
     /// The address SSH reaches `host` at, after `~/.ssh/config`.
     private static func address(of host: String) -> String? {
@@ -220,5 +232,44 @@ enum Remote {
             throw Failure(description: message.isEmpty ? "ssh \(host) failed" : message)
         }
         return String(decoding: output, as: UTF8.self)
+    }
+}
+
+/// Per-host cache and probe policy. Callers serialize access and retain a
+/// removed owner until after releasing their lock.
+struct RemoteLinkState<Owner: AnyObject> {
+    private(set) var owner: Owner?
+    private(set) var nextProbe: TimeInterval = 0
+    private var generation: UInt64 = 0
+    private var probing = false
+
+    mutating func beginProbe(now: TimeInterval) -> UInt64? {
+        guard owner == nil, !probing, now >= nextProbe else { return nil }
+        probing = true
+        nextProbe = now + 30
+        generation &+= 1
+        return generation
+    }
+
+    mutating func endProbe(_ token: UInt64) {
+        if token == generation { probing = false }
+    }
+
+    mutating func probeUnanswered(_ token: UInt64, now: TimeInterval) {
+        if token == generation { nextProbe = now + 10 * 60 }
+    }
+
+    mutating func install(_ candidate: Owner, token: UInt64) -> Bool {
+        guard probing, token == generation, owner == nil else { return false }
+        owner = candidate
+        return true
+    }
+
+    mutating func quarantine(_ failed: Owner, now: TimeInterval) {
+        guard owner === failed else { return }
+        owner = nil
+        nextProbe = now + 30
+        generation &+= 1
+        probing = false
     }
 }

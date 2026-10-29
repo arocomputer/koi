@@ -160,20 +160,28 @@ import SwiftUI
 
     /// Builds one directly focusable result per pane. Split tabs also get a
     /// tab result, while program/status searches point at individual panes.
+    /// Walks the tree once, preserving display order and group search metadata.
     static func workItems(in workspace: Workspace, navigate: @escaping @MainActor (String, String?) -> Void) -> [PaletteItem] {
         var items: [PaletteItem] = []
-        for tab in workspace.state.tabs {
-            let group = workspace.tab(tab.id)?.group?.name ?? ""
+        /// Adds destinations using the group context already known by the traversal.
+        func appendWork(for tab: Wire.TabInfo, groupName: String) {
             if tab.panes.count > 1 {
                 let title = tab.name.flatMap { $0.isEmpty ? nil : $0 } ?? "Tab with \(tab.panes.count) panes"
                 items.append(.init(id: "tab:\(workspace.endpoint.key):\(tab.id)", title: title,
                                    detail: "\(workspace.endpoint.title) · \(tab.panes.count) panes", symbol: "rectangle.stack",
-                                   keywords: [title, group, workspace.endpoint.title, "tab"], kind: .tab,
+                                   keywords: [title, groupName, workspace.endpoint.title, "tab"], kind: .tab,
                                    operation: .perform { navigate(tab.id, nil) }))
             }
             for pane in tab.panes {
-                items.append(paneItem(pane, tabName: tab.name, group: group, endpoint: workspace.endpoint,
+                items.append(paneItem(pane, tabName: tab.name, group: groupName, endpoint: workspace.endpoint,
                                       isSplit: tab.panes.count > 1, navigate: { navigate(tab.id, pane.id) }))
+            }
+        }
+        for item in workspace.state.items {
+            switch item {
+            case .tab(let tab): appendWork(for: tab, groupName: "")
+            case .group(let group):
+                for tab in group.tabs { appendWork(for: tab, groupName: group.name) }
             }
         }
         return items
@@ -591,21 +599,20 @@ private struct PaletteRow: View {
 extension Action {
     /// Presentation metadata supplements the existing selector and keybinding;
     /// the palette never defines a second implementation of these actions.
-    var paletteCategory: String {
+    var paletteCategory: PaletteItem.Category {
         switch self {
-        case .newWindow, .fullScreen: "Window"
-        case .copy, .selectAll, .find, .clearScrollback, .resetTerminal, .previousPrompt, .nextPrompt, .insertPath, .goDirectory: "Terminal"
-        case .saveProject, .openProject: "Tabs"
-        case .showActivity: "Terminal"
-        case .checkUpdates, .diagnostics: "Settings"
-        case .newTab, .closeTab, .nextTab, .previousTab: "Tabs"
+        case .newWindow, .fullScreen: .window
+        case .copy, .selectAll, .find, .clearScrollback, .resetTerminal, .previousPrompt, .nextPrompt, .insertPath, .goDirectory: .terminal
+        case .saveProject, .openProject: .tabs
+        case .showActivity: .terminal
+        case .checkUpdates, .diagnostics: .settings
+        case .newTab, .closeTab, .nextTab, .previousTab: .tabs
         case .closePane, .newSplit, .newSplitDown, .toggleZoom, .focusSplitLeft,
-             .focusSplitRight, .focusSplitUp, .focusSplitDown, .nextPane, .previousPane: "Panes"
-        case .toggleSidebar: "Appearance"
-        case .increaseFontSize, .decreaseFontSize, .resetFontSize: "Terminal"
-        case .openConfig, .reloadConfig: "Settings"
-        case .paste: "Terminal"
-        case .commandPalette: "App"
+             .focusSplitRight, .focusSplitUp, .focusSplitDown, .nextPane, .previousPane: .panes
+        case .toggleSidebar: .appearance
+        case .increaseFontSize, .decreaseFontSize, .resetFontSize: .terminal
+        case .openConfig, .reloadConfig, .commandPalette: .settings
+        case .paste: .terminal
         }
     }
 

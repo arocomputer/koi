@@ -6,6 +6,8 @@ import Foundation
 /// another machine. Reads block the calling thread; writes queue, up to a
 /// bound, and a peer that falls too far behind is disconnected.
 protocol Transport: AnyObject, Sendable {
+    /// Monotonic received-byte count, including partial frames during initialization.
+    var receivedBytes: UInt64 { get }
     func send(_ bytes: [UInt8])
     /// Reads frames until the peer closes or breaks the protocol, calling
     /// `handle` for each on the calling thread.
@@ -14,6 +16,7 @@ protocol Transport: AnyObject, Sendable {
 }
 
 extension Transport {
+    var receivedBytes: UInt64 { 0 }
     func send(_ kind: Wire.Kind, _ payload: some Collection<UInt8> = [UInt8]()) {
         send(Wire.frame(kind, payload))
     }
@@ -38,6 +41,8 @@ final class Socket: Transport, @unchecked Sendable {
     private let writes = DispatchQueue(label: "koi.socket.write")
     private let lock = NSLock()
     private var closed = false
+    private var bytesRead: UInt64 = 0
+    var receivedBytes: UInt64 { lock.withLock { bytesRead } }
     private var queued = 0
     private var queuedWrites = 0
     /// Runs once the socket is closed, as for ending the SSH process that
@@ -102,6 +107,7 @@ final class Socket: Transport, @unchecked Sendable {
             let n = buf.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
             if n < 0 && errno == EINTR { continue }
             guard n > 0 else { break }
+            lock.withLock { bytesRead &+= UInt64(n) }
             buf.withUnsafeBytes { reader.append(UnsafeRawBufferPointer(rebasing: $0[0..<n])) }
             do {
                 while let (kind, payload) = try reader.next() { handle(kind, payload) }
@@ -167,8 +173,11 @@ final class LinkClient: @unchecked Sendable {
 /// like a socket. It holds its `LinkClient` strongly, so the native stream
 /// stays valid for as long as anyone can use it.
 final class LinkStream: Transport, @unchecked Sendable {
+    private let progressLock = NSLock()
+    private var bytesRead: UInt64 = 0
+    var receivedBytes: UInt64 { progressLock.withLock { bytesRead } }
     private let raw: OpaquePointer
-    private let owner: LinkClient
+    let owner: LinkClient
 
     fileprivate init(_ raw: OpaquePointer, owner: LinkClient) {
         self.raw = raw
@@ -190,6 +199,7 @@ final class LinkStream: Transport, @unchecked Sendable {
         while true {
             let n = buf.withUnsafeMutableBufferPointer { koi_stream_read(raw, $0.baseAddress, $0.count) }
             guard n > 0 else { break }
+            progressLock.withLock { bytesRead &+= UInt64(n) }
             buf.withUnsafeBytes { reader.append(UnsafeRawBufferPointer(rebasing: $0[0..<n])) }
             do {
                 while let (kind, payload) = try reader.next() { handle(kind, payload) }
