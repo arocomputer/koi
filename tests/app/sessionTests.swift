@@ -717,7 +717,7 @@ extension SessionTests {
 
     init() throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("koi-workspace-\(UUID())")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Paths.ensurePrivateDirectory(directory)
         setenv("KOI_DIR", directory.path, 1)
     }
 

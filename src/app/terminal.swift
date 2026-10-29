@@ -33,6 +33,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var hasRestored = false
     static let cursorGrace: UInt64 = 2_000_000_000
     private(set) var terminal: VTTerminal?
+    /// The focused pane's application copy destination; tests inject a private sink.
+    var clipboardWriter: (String) -> Bool = { text in
+        NSPasteboard.general.clearContents()
+        return NSPasteboard.general.setString(text, forType: .string)
+    }
     private var connection: PaneConnection?
     private var wantsConnection = false
     private var reconnectTask: Task<Void, Never>?
@@ -434,10 +439,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         selection = nil
         terminal = restored
         renderer?.bind(to: restored)
-        restored.onClipboardWrite = { text in
+        restored.onClipboardWrite = { [weak self] text in
             MainActor.assumeIsolated {
-                NSPasteboard.general.clearContents()
-                return NSPasteboard.general.setString(text, forType: .string)
+                guard let self, self.window?.isKeyWindow == true,
+                      self.window?.firstResponder === self else { return false }
+                return self.clipboardWriter(text)
             }
         }
         applyTerminalConfiguration()

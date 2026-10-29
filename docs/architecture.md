@@ -184,7 +184,9 @@ streams, allowing the failed connection to retry over SSH. While the relay
 serves, the link is tried again every 30 seconds, except that a probe UDP
 left unanswered is not repeated for ten minutes: each costs an SSH round
 trip and a blocked port rarely opens within minutes. Bundled server
-builds support Apple silicon macOS and x86_64 Linux. See
+builds support Apple silicon macOS and x86_64 Linux. Setup commands have a
+60-second deadline and retain at most 1 MiB each of stdout and stderr;
+cancellation stops and reaps the local SSH process. See
 [`remote.swift`](../src/app/remote.swift) and
 [`link.zig`](../src/core/link.zig) for the connection implementation.
 
@@ -377,8 +379,9 @@ field, and only when it contains no configured host alias.
 ## Terminal text and activity
 
 App mirrors handle OSC 52 text clipboard writes through the engine callback,
-after snapshot restoration. A complete UTF-8 text value up to 1 MiB is copied
-to the Mac pasteboard. A clear request writes empty text; primary and
+after snapshot restoration. Only the keyboard-focused pane in the active window
+may copy a complete UTF-8 text value up to 1 MiB to the Mac pasteboard.
+A clear request writes empty text; primary and
 selection destinations are unsupported. Terminal clipboard reads are not exposed. Local
 Shift-drag selection and Cmd-C remain independent of application-owned mouse
 selections.
@@ -480,11 +483,17 @@ files together in one directory; it does not relocate UserDefaults.
 Long socket paths move the runtime directory to `/tmp/koi-<uid>`.
 
 The socket is what authorizes a client to read and drive panes, so its
-directory is the security boundary. The server refuses to start unless that
-directory is one this user owns and no other user can create or replace
-entries in (group and other write bits clear), which is why it is never put
-directly in a shared `/tmp`. A refusal appears as `cannot serve from …:
-InsecureDirectory` in the server log.
+directory is the security boundary. The app and server create the state and
+runtime directories (and the SSH control directory) private to the user, and
+refuse to use one that is not: it must be owned by this user with mode 0700
+and not itself a symlink. Symlinks among its existing ancestors are resolved,
+and every resolved ancestor must be owned by root or this user and writable by
+no one else: a root-owned sticky directory such as `/tmp` is accepted, and on
+Linux so is a directory of this user's writable by their own primary group,
+which `umask 002` produces. Existing permissions are never repaired. The runtime directory is never `/tmp`
+itself, and the server also accepts a connection only from a peer running as
+the same user. A refusal appears as `cannot serve from …: UnsafeDirectory` in
+the server log.
 
 Project recipes whitelist names, directories, tab/group order, topology and
 relative split weights, with fresh IDs on restore. The PTY launcher uses `/` if a saved directory cannot be entered.

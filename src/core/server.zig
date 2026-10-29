@@ -183,6 +183,7 @@ pub const Server = struct {
     pub fn connect(gpa: Allocator) ?Socket {
         const paths = paths_mod.Paths.init(gpa) catch return null;
         defer paths.deinit(gpa);
+        paths.ensureDirs() catch return null;
         if (Socket.connect(paths.socket)) |s| return s;
         start(gpa, paths) catch return null;
         var i: usize = 0;
@@ -230,6 +231,10 @@ pub const Server = struct {
                 }
                 log("accept failed, retrying: {d}", .{e});
                 sys.sleepMillis(100);
+                continue;
+            }
+            if (!sys.sameUserPeer(fd)) {
+                _ = c.close(fd);
                 continue;
             }
             _ = c.fcntl(fd, c.F_SETFD, c.FD_CLOEXEC);

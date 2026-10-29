@@ -136,7 +136,7 @@ PY
     KOI_TEST_ROOT="$test_root/tmp"
     KOI_DIR="$test_root/state"
     export TMPDIR KOI_TEST_ROOT KOI_DIR
-    mkdir -p "$TMPDIR" "$KOI_DIR"
+    mkdir -m 700 -p "$TMPDIR" "$KOI_DIR"
     # Serialize the entire pipeline for this checkout, including compilation
     # against shared build outputs. The OS releases the lock on process exit.
     python3 - "$root" "$test_root/koi" "${KOI_SERVER_BIN:-}" "$test_mode" "$test_filter" <<'PY'
@@ -162,7 +162,7 @@ with os.fdopen(fd, 'r+') as guard:
         environment.pop('KOI_SERVER_BIN', None)
     # Hosted Macs do not reliably expose Metal. This is an explicit subset,
     # not a claim that all non-GPU suites or integration fixtures are covered.
-    suites = ('ConfigTests|KeyboardTests|WireTests|SocketTests|ClientTests|PredictionTests|'
+    suites = ('ConfigTests|KeyboardTests|WireTests|SocketTests|ClientTests|RemoteTests|PredictionTests|'
               'ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|'
               'IntegrationsTests|UpdatesTests|DiagnosticsTests|DiagnosticIssuesTests|'
               'TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests|'

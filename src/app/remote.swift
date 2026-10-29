@@ -153,12 +153,8 @@ enum Remote {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         p.arguments = ["-G", host]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        try? p.run()
-        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        p.waitUntilExit()
+        guard let result = try? runProcess(p) else { return nil }
+        let text = String(decoding: result.output, as: UTF8.self)
         for line in text.split(separator: "\n") {
             let words = line.split(separator: " ", maxSplits: 1)
             if words.count == 2, words[0] == "hostname" { return String(words[1]) }
@@ -169,12 +165,13 @@ enum Remote {
     /// An SSH channel running `koi --stdio` on `host`, which relays to that
     /// machine's server.
     private static func relay(_ host: String) -> Socket? {
+        guard let options = try? sshOptions else { return nil }
         var fds: [Int32] = [0, 0]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0 else { return nil }
         let theirs = FileHandle(fileDescriptor: fds[1], closeOnDealloc: true)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        p.arguments = sshOptions + ["-T", host, "exec \(remoteDir)/koi --stdio"]
+        p.arguments = options + ["-T", host, "exec \(remoteDir)/koi --stdio"]
         p.standardInput = theirs
         p.standardOutput = theirs
         p.standardError = FileHandle.nullDevice
@@ -204,13 +201,16 @@ enum Remote {
     }
 
     /// Options for every SSH Koi runs: no prompts (Koi has no terminal to
-    /// show them in), and one shared master connection per host.
+    /// show them in), and one shared master connection per host in a verified
+    /// private directory. Unsafe paths fail before SSH starts.
     static var sshOptions: [String] {
-        let dir = "/tmp/koi-\(getuid())"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-                "-o", "ControlMaster=auto", "-o", "ControlPath=\(dir)/cm-%C", "-o", "ControlPersist=600",
-                "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
+        get throws {
+            let dir = "/tmp/koi-\(getuid())"
+            try Paths.ensurePrivateDirectory(URL(fileURLWithPath: dir))
+            return ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                    "-o", "ControlMaster=auto", "-o", "ControlPath=\(dir)/cm-%C", "-o", "ControlPersist=600",
+                    "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3"]
+        }
     }
 
     /// Runs a shell command on `host` and returns its output; throws with
@@ -218,27 +218,95 @@ enum Remote {
     private static func run(_ host: String, _ command: String, input: Data? = nil) throws -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        p.arguments = sshOptions + ["-T", host, command]
-        let out = Pipe(), err = Pipe()
-        p.standardOutput = out
-        p.standardError = err
-        let inPipe = Pipe()
-        p.standardInput = input == nil ? FileHandle.nullDevice : inPipe
-        try p.run()
-        if let input {
-            DispatchQueue.global().async {
-                inPipe.fileHandleForWriting.write(input)
-                try? inPipe.fileHandleForWriting.close()
-            }
-        }
-        let output = out.fileHandleForReading.readDataToEndOfFile()
-        let errors = err.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
+        p.arguments = try sshOptions + ["-T", host, command]
+        // Uploading the server binary can take minutes on a slow uplink: allow
+        // 32 KB/s (about 256 kbit/s) for the input on top of the base deadline.
+        let result = try runProcess(p, input: input, timeout: 60 + Double(input?.count ?? 0) / 32_000)
         guard p.terminationStatus == 0 else {
-            let message = String(decoding: errors, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            let message = String(decoding: result.errors, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw Failure(description: message.isEmpty ? "ssh \(host) failed" : message)
         }
-        return String(decoding: output, as: UTF8.self)
+        return String(decoding: result.output, as: UTF8.self)
+    }
+
+    /// Runs a disposable command on the caller's background thread. Multiplexed,
+    /// nonblocking I/O bounds both streams and input lifetime; every exit reaps the child.
+    static func runProcess(_ process: Process, input: Data? = nil,
+                           outputLimit: Int = 1024 * 1024, timeout: TimeInterval = 60) throws
+        -> (output: Data, errors: Data) {
+        guard outputLimit >= 0, timeout > 0, timeout.isFinite else { throw POSIXError(.EINVAL) }
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out
+        process.standardError = err
+        var sockets: [Int32] = [-1, -1]
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else { throw POSIXError(.EIO) }
+        let childInput = FileHandle(fileDescriptor: sockets[1], closeOnDealloc: true)
+        defer { try? childInput.close(); Darwin.close(sockets[0]) }
+        defer { try? out.fileHandleForReading.close(); try? err.fileHandleForReading.close() }
+        var noSignal: Int32 = 1
+        guard setsockopt(sockets[0], SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
+                         socklen_t(MemoryLayout<Int32>.size)) == 0 else { throw POSIXError(.EIO) }
+        let descriptors = [out.fileHandleForReading.fileDescriptor, err.fileHandleForReading.fileDescriptor, sockets[0]]
+        for fd in descriptors {
+            let flags = fcntl(fd, F_GETFL)
+            guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { throw POSIXError(.EIO) }
+        }
+        guard !Task<Never, Never>.isCancelled else { throw CancellationError() }
+        process.standardInput = childInput
+        try process.run()
+        defer {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+        }
+        try childInput.close()
+        try out.fileHandleForWriting.close()
+        try err.fileHandleForWriting.close()
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        var streams = [Data(), Data()]
+        var ended = [false, false]
+        var sent = 0
+        let input = input ?? Data()
+        var inputClosed = false
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        while true {
+            if Task<Never, Never>.isCancelled { throw CancellationError() }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw Failure(description: "Remote command timed out")
+            }
+            // Read each ready stream once per turn so neither can starve the other.
+            for index in 0..<2 where !ended[index] {
+                let count = Darwin.read(descriptors[index], &buffer, buffer.count)
+                if count > 0 {
+                    guard count <= outputLimit - streams[index].count else {
+                        throw Failure(description: "Remote command output exceeded its limit")
+                    }
+                    streams[index].append(contentsOf: buffer.prefix(count))
+                } else if count == 0 { ended[index] = true }
+                else if errno != EAGAIN && errno != EINTR { throw POSIXError(.EIO) }
+            }
+            if !inputClosed {
+                if sent < input.count {
+                    let count = input.withUnsafeBytes {
+                        Darwin.write(sockets[0], $0.baseAddress! + sent, min(16 * 1024, input.count - sent))
+                    }
+                    if count > 0 { sent += count }
+                    else if count < 0 && errno != EAGAIN && errno != EINTR {
+                        shutdown(sockets[0], SHUT_WR)
+                        inputClosed = true
+                    }
+                } else {
+                    shutdown(sockets[0], SHUT_WR)
+                    inputClosed = true
+                }
+            }
+            if ended.allSatisfy({ $0 }) && !process.isRunning { break }
+            var waiting = descriptors.enumerated().map { index, fd in
+                pollfd(fd: (index < 2 && ended[index]) || (index == 2 && inputClosed) ? -1 : fd,
+                       events: Int16(index < 2 ? POLLIN : POLLOUT), revents: 0)
+            }
+            _ = poll(&waiting, nfds_t(waiting.count), 10)
+        }
+        return (streams[0], streams[1])
     }
 }
 

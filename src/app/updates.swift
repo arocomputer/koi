@@ -98,11 +98,11 @@ struct UpdateRelease: Equatable {
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private let fetch: (URLRequest) async throws -> (Data, URLResponse)
 
-    /// Inject fetch in tests. The default URLSession is contacted only by checkFromUserAction.
+    /// Inject fetch in tests. The default bounded download starts only on a user check.
     init(currentVersion: String = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
          sourceURL: URL? = nil,
          fetch: @escaping (URLRequest) async throws -> (Data, URLResponse) = {
-             try await URLSession.shared.data(for: $0)
+             try await ReleaseFeedDownload.fetch($0)
          }) {
         self.currentVersion = currentVersion
         self.sourceURL = sourceURL
@@ -128,7 +128,7 @@ struct UpdateRelease: Equatable {
             guard let http = response as? HTTPURLResponse else { throw Failure.invalidFeed }
             guard let finalURL = http.url, Self.safeURL(finalURL) else { throw Failure.invalidURL }
             guard http.statusCode == 200 else { throw Failure.http(http.statusCode) }
-            guard data.count <= 2 * 1024 * 1024 else { throw Failure.invalidFeed }
+            guard data.count <= ReleaseFeedDownload.limit else { throw Failure.invalidFeed }
             let release = try Self.latestRelease(in: data)
             guard let latest = ReleaseVersion(release.version) else { throw Failure.invalidFeed }
             state = latest > current ? .available(release) : .upToDate
@@ -208,6 +208,86 @@ struct UpdateRelease: Equatable {
 
     private static func safeURL(_ url: URL) -> Bool {
         url.scheme?.lowercased() == "https" && url.host?.isEmpty == false && url.user == nil && url.password == nil
+    }
+}
+
+/// Streams a single feed with a strict retained-byte limit. Its private session is
+/// invalidated after completion; task cancellation also cancels the network request.
+final class ReleaseFeedDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    static let limit = 2 * 1024 * 1024
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+    private var cancelled = false
+    private var continuation: CheckedContinuation<(Data, URLResponse), any Error>?
+    private var data = Data()
+    private var response: URLResponse?
+    private var failure: (any Error)?
+
+    /// Configuration injection allows URLProtocol fixtures without external requests.
+    static func fetch(_ request: URLRequest,
+                      configuration: URLSessionConfiguration = .ephemeral) async throws -> (Data, URLResponse) {
+        let download = ReleaseFeedDownload()
+        configuration.timeoutIntervalForResource = 30
+        configuration.urlCache = nil
+        let session = URLSession(configuration: configuration, delegate: download, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                download.lock.withLock {
+                    download.continuation = continuation
+                    let task = session.dataTask(with: request)
+                    download.task = task
+                    if download.cancelled { task.cancel() }
+                    task.resume()
+                }
+            }
+        } onCancel: {
+            download.lock.withLock {
+                download.cancelled = true
+                download.task?.cancel()
+            }
+        }
+    }
+
+    /// Reject oversized declared responses before receiving their bodies.
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        let allowed = lock.withLock {
+            self.response = response
+            if response.expectedContentLength > Int64(Self.limit) {
+                failure = UpdateChecker.Failure.invalidFeed
+                return false
+            }
+            return true
+        }
+        if !allowed { dataTask.cancel() }
+        completionHandler(allowed ? .allow : .cancel)
+    }
+
+    /// Enforce the limit on received bytes too, including unknown-length responses.
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        let overflow = lock.withLock {
+            guard failure == nil else { return true }
+            guard chunk.count <= Self.limit - data.count else {
+                failure = UpdateChecker.Failure.invalidFeed
+                return true
+            }
+            data.append(chunk)
+            return false
+        }
+        if overflow { dataTask.cancel() }
+    }
+
+    /// Complete exactly once after URLSession stops delivering data.
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        let result: (CheckedContinuation<(Data, URLResponse), any Error>?, Result<(Data, URLResponse), any Error>) = lock.withLock {
+            defer { continuation = nil; self.task = nil; data = Data() }
+            if let error = failure ?? error { return (continuation, .failure(error)) }
+            guard let response else { return (continuation, .failure(UpdateChecker.Failure.invalidFeed)) }
+            return (continuation, .success((data, response)))
+        }
+        result.0?.resume(with: result.1)
     }
 }
 

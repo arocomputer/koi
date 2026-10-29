@@ -12,6 +12,12 @@ const sys = @import("sys.zig");
 const c = sys.c;
 const wire = @import("wire.zig");
 
+/// Match Swift's treatment of unset and empty directory overrides.
+fn nonemptyEnv(name: [:0]const u8) ?[]const u8 {
+    const value = sys.getenv(name.ptr) orelse return null;
+    return if (value.len == 0) null else value;
+}
+
 pub const Paths = struct {
     state: []const u8,
     runtime: []const u8,
@@ -21,8 +27,8 @@ pub const Paths = struct {
 
     pub fn init(gpa: std.mem.Allocator) !Paths {
         const home = sys.getenv("HOME") orelse "/";
-        const override = sys.getenv("KOI_DIR");
-        const state = if (override) |dir| try gpa.dupe(u8, dir) else if (sys.getenv("XDG_STATE_HOME")) |x|
+        const override = nonemptyEnv("KOI_DIR");
+        const state = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv("XDG_STATE_HOME")) |x|
             try std.fs.path.join(gpa, &.{ x, "koi" })
         else
             try std.fs.path.join(gpa, &.{ home, ".local/state/koi" });
@@ -30,10 +36,9 @@ pub const Paths = struct {
         // Without a per-user runtime or temporary directory, the fallback in
         // shared /tmp is per user too: a single /tmp/koi would belong to
         // whichever user started first, and `ensureDirs` refuses everyone else.
-        // An empty variable counts as unset, as in the app (paths.swift).
-        var runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (nonEmpty(sys.getenv("XDG_RUNTIME_DIR"))) |x|
+        var runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv("XDG_RUNTIME_DIR")) |x|
             try std.fs.path.join(gpa, &.{ x, "koi" })
-        else if (nonEmpty(sys.getenv("TMPDIR"))) |t|
+        else if (nonemptyEnv("TMPDIR")) |t|
             try std.fs.path.join(gpa, &.{ t, "koi" })
         else
             try std.fmt.allocPrint(gpa, "/tmp/koi-{d}", .{c.getuid()});
@@ -66,13 +71,12 @@ pub const Paths = struct {
         inline for (.{ self.state, self.runtime, self.socket, self.lock, self.log }) |path| gpa.free(path);
     }
 
-    /// Makes the state and runtime directories, private to the user. Fails
-    /// rather than serving from a directory another local user could write to:
-    /// the socket's permissions are the only thing authenticating a client.
+    /// Creates or verifies the private state and runtime directories, the
+    /// socket's included; fails closed rather than serving from a directory
+    /// another local user could write to.
     pub fn ensureDirs(self: Paths) !void {
-        try mkdirAll(self.state);
-        try mkdirAll(self.runtime);
-        try requirePrivate(self.runtime);
+        try ensurePrivateDir(self.state);
+        try ensurePrivateDir(self.runtime);
     }
 };
 
@@ -86,94 +90,122 @@ test "path allocation failures release every owned string" {
     }.run, .{});
 }
 
-fn nonEmpty(value: ?[]const u8) ?[]const u8 {
-    const v = value orelse return null;
-    return if (v.len == 0) null else v;
+/// Walk without following symlinks. Ancestors must be owned by root or this user
+/// and not writable by others, except root-owned sticky directories such as /tmp.
+/// Existing leaf directories must already be private; never repair permissions.
+/// Symlinks among the existing ancestors (`/home` on an image-based system,
+/// `/tmp` on macOS) are resolved first, and every resolved directory is checked.
+pub fn ensurePrivateDir(path: []const u8) !void {
+    if (path.len == 0 or path[0] != '/' or std.mem.indexOfScalar(u8, path, 0) != null)
+        return error.UnsafeDirectory;
+    const trimmed = std.mem.trimEnd(u8, path, "/");
+    const slash = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return error.UnsafeDirectory;
+    const leaf = trimmed[slash + 1 ..];
+    var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const parent = try resolveExisting(if (slash == 0) "/" else trimmed[0..slash], &resolved_buf);
+    var full_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full = std.fmt.bufPrint(&full_buf, "{s}/{s}", .{ parent, leaf }) catch return error.PathTooLong;
+    var fd = sys.c.open("/", sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_CLOEXEC);
+    if (fd < 0) return error.UnsafeDirectory;
+    defer _ = sys.c.close(fd);
+    var parts = std.mem.tokenizeScalar(u8, full, '/');
+    var found = false;
+    while (parts.next()) |part| {
+        found = true;
+        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return error.UnsafeDirectory;
+        var buf: [256]u8 = undefined;
+        const name = std.fmt.bufPrintSentinel(&buf, "{s}", .{part}, 0) catch return error.PathTooLong;
+        if (sys.c.mkdirat(fd, name, 0o700) != 0 and sys.errno() != sys.c.EEXIST) return error.CreateDirectory;
+        const next = sys.c.openat(fd, name, sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_NOFOLLOW | sys.c.O_CLOEXEC);
+        if (next < 0) return error.UnsafeDirectory;
+        _ = sys.c.close(fd);
+        fd = next;
+        const st = try sys.directoryInfo(fd);
+        if (parts.peek() == null) {
+            if (st.uid != sys.c.getuid() or st.mode & 0o777 != 0o700) return error.UnsafeDirectory;
+        } else if (!safeAncestor(st.uid, st.gid, st.mode)) {
+            return error.UnsafeDirectory;
+        }
+    }
+    if (!found) return error.UnsafeDirectory;
 }
 
-/// A NUL-terminated copy of `path` in `buf`, for the libc calls that need one.
-fn cstr(buf: []u8, path: []const u8) ![:0]u8 {
-    if (path.len == 0 or path.len >= buf.len) return error.NameTooLong;
-    @memcpy(buf[0..path.len], path);
-    buf[path.len] = 0;
-    return buf[0..path.len :0];
+/// Owned by root or this user, and writable by no one else: other users only
+/// through a root-owned sticky directory such as /tmp. On Linux a directory
+/// this user owns may also be writable by the user's own primary group, which
+/// `umask 002` systems give every new directory (user private groups); macOS
+/// users share `staff`, so there it still counts as writable by others.
+fn safeAncestor(uid: c.uid_t, gid: c.gid_t, mode: u32) bool {
+    const me = sys.c.getuid();
+    if (uid != 0 and uid != me) return false;
+    const sticky_root = uid == 0 and mode & 0o1000 != 0;
+    if (mode & 0o002 != 0 and !sticky_root) return false;
+    if (mode & 0o020 != 0 and !sticky_root) {
+        const private_group = builtin.os.tag == .linux and uid == me and gid == sys.c.getgid();
+        if (!private_group) return false;
+    }
+    return true;
 }
 
-/// mkdir -p, with each directory private to the user. An existing directory
-/// keeps its own mode, so `requirePrivate` checks the result separately.
-fn mkdirAll(path: []const u8) !void {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const z = try cstr(&buf, path);
-    var i: usize = 1;
-    while (i <= z.len) : (i += 1) {
-        if (i != z.len and z[i] != '/') continue;
-        const saved = z[i];
-        z[i] = 0;
-        const rc = c.mkdir(z.ptr, 0o700);
-        z[i] = saved;
-        // An existing ancestor can answer EROFS or EACCES rather than EEXIST
-        // (a sealed system volume, a parent this user cannot write), so only
-        // the directory itself decides.
-        if (rc != 0 and i == z.len and sys.errno() != c.EEXIST) return error.MakeDir;
+/// The longest existing prefix of `path` with its symlinks resolved, followed
+/// by the components that do not exist yet.
+fn resolveExisting(path: []const u8, out: *[std.fs.max_path_bytes]u8) ![]const u8 {
+    var prefix = path;
+    while (true) {
+        var zbuf: [std.fs.max_path_bytes]u8 = undefined;
+        const z = std.fmt.bufPrintSentinel(&zbuf, "{s}", .{prefix}, 0) catch return error.PathTooLong;
+        var real: [std.fs.max_path_bytes]u8 = undefined;
+        if (sys.c.realpath(z.ptr, &real) != null) {
+            const head = std.mem.sliceTo(&real, 0);
+            const rest = path[prefix.len..];
+            const joined = std.fmt.bufPrint(out, "{s}{s}", .{ if (head.len == 1) "" else head, rest }) catch return error.PathTooLong;
+            return if (joined.len == 0) "/" else joined;
+        }
+        if (sys.errno() != sys.c.ENOENT) return error.UnsafeDirectory;
+        const slash = std.mem.lastIndexOfScalar(u8, prefix, '/') orelse return error.UnsafeDirectory;
+        prefix = if (slash == 0) "/" else prefix[0..slash];
     }
 }
 
-/// Fails unless `dir` is a directory this user owns and no other user can
-/// create or replace entries in it. Writing to the directory is what would let
-/// another local user bind or answer for the socket, and the socket is what
-/// authorizes driving panes; reading it only lists a name that is predictable
-/// anyway, so `/tmp` itself is still refused for being writable.
-fn requirePrivate(dir: []const u8) !void {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const z = try cstr(&buf, dir);
-    const st = try ownerAndMode(z);
-    if ((st.mode & c.S_IFMT) != c.S_IFDIR) return error.NotDirectory;
-    if (st.uid != c.getuid()) return error.NotOwned;
-    if ((st.mode & 0o022) != 0) return error.InsecureDirectory;
-}
-
-/// The owner and mode of `path`, following symlinks. musl's `struct stat`
-/// has fields translate-c turns opaque, so Linux asks the kernel through
-/// `statx` (4.11 and later) instead.
-fn ownerAndMode(path: [:0]const u8) !struct { uid: c.uid_t, mode: c.mode_t } {
+test "private directories reject public modes and symlinks without changing them" {
+    var template = "/tmp/koi-private-XXXXXXXX".*;
+    const root = sys.c.mkdtemp(&template) orelse return error.CreateDirectory;
+    defer _ = sys.c.rmdir(root);
+    try ensurePrivateDir(std.mem.span(root));
+    var buf: [256]u8 = undefined;
+    const child = try std.fmt.bufPrintSentinel(&buf, "{s}/child", .{root}, 0);
+    try ensurePrivateDir(child);
+    defer _ = sys.c.rmdir(child);
+    try std.testing.expectEqual(0, sys.c.chmod(child, 0o755));
+    try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(child));
+    const child_fd = sys.c.open(child, sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_NOFOLLOW | sys.c.O_CLOEXEC);
+    try std.testing.expect(child_fd >= 0);
+    defer _ = sys.c.close(child_fd);
+    const st = try sys.directoryInfo(child_fd);
+    try std.testing.expectEqual(@as(u32, 0o755), st.mode & 0o777);
+    var link_buf: [256]u8 = undefined;
+    const link = try std.fmt.bufPrintSentinel(&link_buf, "{s}/link", .{root}, 0);
+    try std.testing.expectEqual(0, sys.c.symlink(child, link));
+    defer _ = sys.c.unlink(link);
+    try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(link));
+    // A symlinked ancestor is followed, and its target is checked like any other.
+    var nested_buf: [256]u8 = undefined;
+    const nested = try std.fmt.bufPrintSentinel(&nested_buf, "{s}/nested", .{link}, 0);
+    try ensurePrivateDir(nested);
+    var nested_real_buf: [256]u8 = undefined;
+    const nested_real = try std.fmt.bufPrintSentinel(&nested_real_buf, "{s}/nested", .{child}, 0);
+    try std.testing.expectEqual(0, sys.c.rmdir(nested_real));
+    try std.testing.expectEqual(0, sys.c.chmod(child, 0o757));
+    try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(nested));
+    // `umask 002` leaves new directories writable by the user's primary group,
+    // private on Linux and shared (`staff`) on macOS.
+    try std.testing.expectEqual(0, sys.c.chmod(child, 0o775));
     if (builtin.os.tag == .linux) {
-        const linux = std.os.linux;
-        var sx: linux.Statx = undefined;
-        const rc = linux.statx(linux.AT.FDCWD, path.ptr, 0, .{ .TYPE = true, .MODE = true, .UID = true }, &sx);
-        if (linux.errno(rc) != .SUCCESS) return error.Stat;
-        if (!sx.mask.TYPE or !sx.mask.MODE or !sx.mask.UID) return error.Stat;
-        return .{ .uid = sx.uid, .mode = sx.mode };
+        try ensurePrivateDir(nested);
+        try std.testing.expectEqual(0, sys.c.rmdir(nested_real));
+    } else {
+        try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(nested));
     }
-    var st: c.struct_stat = undefined;
-    if (c.stat(path.ptr, &st) != 0) return error.Stat;
-    return .{ .uid = st.st_uid, .mode = st.st_mode };
-}
-
-test "ensureDirs refuses a runtime directory other users can write to" {
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    // testing.tmpDir lives under .zig-cache/tmp in the working directory, so the
-    // paths here stay relative and the libc calls resolve them the same way.
-    var subbuf: [64]u8 = undefined;
-    const root = try std.fmt.bufPrint(&subbuf, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
-    const gpa = std.testing.allocator;
-    const state = try std.fs.path.join(gpa, &.{ root, "state" });
-    const runtime = try std.fs.path.join(gpa, &.{ root, "runtime" });
-    const paths = Paths{
-        .state = state,
-        .runtime = runtime,
-        .socket = try std.fs.path.join(gpa, &.{ runtime, "server-1.sock" }),
-        .lock = try std.fs.path.join(gpa, &.{ runtime, "server.lock" }),
-        .log = try std.fs.path.join(gpa, &.{ state, "server.log" }),
-    };
-    defer paths.deinit(gpa);
-
-    // A fresh directory is created private and accepted.
-    try paths.ensureDirs();
-
-    // Anything the group or other bits can reach is refused: the socket inside
-    // it would no longer be the boundary between this server and other users.
-    var pathbuf: [std.fs.max_path_bytes]u8 = undefined;
-    try std.testing.expectEqual(@as(c_int, 0), c.chmod(try cstr(&pathbuf, runtime), 0o777));
-    try std.testing.expectError(error.InsecureDirectory, paths.ensureDirs());
+    try std.testing.expectEqual(0, sys.c.chmod(child, 0o755));
+    try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir("/"));
 }

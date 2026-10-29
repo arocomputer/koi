@@ -211,7 +211,7 @@ extension SessionTests {
 /// Gives a synchronous check its own config and restores the exact environment.
 private func withTemporaryConfig(_ body: (URL) throws -> Void) throws {
     let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("koi-config-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Paths.ensurePrivateDirectory(dir)
     let previous = ProcessInfo.processInfo.environment["KOI_DIR"]
     setenv("KOI_DIR", dir.path, 1)
     defer {

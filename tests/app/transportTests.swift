@@ -3,6 +3,65 @@ import Testing
 @testable import Koi
 
 @Suite struct SocketTests {
+    /// Kernel credentials must work on private socket pairs and fail on invalid fds.
+    @Test func localPeerIdentityFailsClosed() {
+        let (a, b) = pair()
+        defer { Darwin.close(a); Darwin.close(b) }
+        #expect(Socket.sameUserPeer(a))
+        #expect(Socket.sameUserPeer(b))
+        #expect(!Socket.sameUserPeer(-1))
+    }
+
+    /// Existing public directories and symlinked leaves are rejected without repairing them.
+    @Test func privateDirectoriesRejectUnsafeModesAndSymlinks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("koi-private-\(UUID().uuidString)")
+        try Paths.ensurePrivateDirectory(root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let child = root.appendingPathComponent("child")
+        try Paths.ensurePrivateDirectory(child)
+        try Paths.ensurePrivateDirectory(child)
+        #expect(chmod(child.path, 0o755) == 0)
+        #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(child) }
+        var info = stat()
+        #expect(lstat(child.path, &info) == 0)
+        #expect(info.st_mode & 0o777 == 0o755)
+        let link = root.appendingPathComponent("link")
+        #expect(symlink(child.path, link.path) == 0)
+        #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(link) }
+        // A symlinked ancestor is followed and its target checked like any other.
+        try Paths.ensurePrivateDirectory(link.appendingPathComponent("nested"))
+        #expect(rmdir(child.appendingPathComponent("nested").path) == 0)
+        #expect(chmod(child.path, 0o757) == 0)
+        #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(link.appendingPathComponent("nested")) }
+        #expect(chmod(child.path, 0o755) == 0)
+        let file = root.appendingPathComponent("file")
+        try Data().write(to: file)
+        #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(file.appendingPathComponent("nested")) }
+    }
+
+    /// A real local connect authenticates its peer and refuses public socket directories.
+    @Test func localConnectRequiresPrivateDirectory() throws {
+        let root = URL(fileURLWithPath: "/tmp").appendingPathComponent("koi-socket-\(UUID().uuidString)")
+        try Paths.ensurePrivateDirectory(root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("server.sock").path
+        let listener = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        #expect(listener >= 0)
+        defer { Darwin.close(listener) }
+        var address = sockaddr_un.make(path)
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        #expect(bound == 0)
+        #expect(listen(listener, 1) == 0)
+        let connection = try #require(Socket.connect(path: path))
+        connection.close()
+        #expect(chmod(root.path, 0o755) == 0)
+        #expect(Socket.connect(path: path) == nil)
+    }
+
     /// A connected pair with small kernel buffers, so a peer that never reads
     /// stalls the writer after a few KiB.
     private func pair() -> (Int32, Int32) {

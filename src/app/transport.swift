@@ -61,8 +61,18 @@ final class Socket: Transport, @unchecked Sendable {
 
     deinit { Darwin.close(fd) }
 
-    /// Connects to the socket at `path`; nil if nothing listens there.
+    /// True only when the kernel identifies a connected Unix peer as this user.
+    static func sameUserPeer(_ fd: Int32) -> Bool {
+        var uid: uid_t = 0
+        var gid: gid_t = 0
+        return getpeereid(fd, &uid, &gid) == 0 && uid == getuid()
+    }
+
+    /// Connects to a verified private directory and same-user peer; nil on failure.
     static func connect(path: String) -> Socket? {
+        guard !path.utf8.contains(0), path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else { return nil }
+        do { try Paths.ensurePrivateDirectory(URL(fileURLWithPath: path).deletingLastPathComponent()) }
+        catch { return nil }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         var addr = sockaddr_un.make(path)
@@ -71,7 +81,7 @@ final class Socket: Transport, @unchecked Sendable {
                 Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard ok == 0 else { Darwin.close(fd); return nil }
+        guard ok == 0, sameUserPeer(fd) else { Darwin.close(fd); return nil }
         return Socket(fd: fd)
     }
 

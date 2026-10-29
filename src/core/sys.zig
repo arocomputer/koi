@@ -146,6 +146,40 @@ pub fn selfPath(gpa: std.mem.Allocator) ![]const u8 {
     return gpa.dupe(u8, buf[0..@intCast(n)]);
 }
 
+/// Authenticate a connected Unix peer using kernel credentials, never socket-file metadata.
+pub fn sameUserPeer(fd: c_int) bool {
+    if (builtin.os.tag == .macos) {
+        var uid: c.uid_t = undefined;
+        var gid: c.gid_t = undefined;
+        return c.getpeereid(fd, &uid, &gid) == 0 and uid == c.getuid();
+    } else {
+        // `struct ucred` is only visible to C with _GNU_SOURCE, which also
+        // turns glibc's sockaddr arguments into transparent unions; its
+        // layout is the same on every Linux architecture.
+        const Ucred = extern struct { pid: i32, uid: u32, gid: u32 };
+        var cred: Ucred = undefined;
+        var len: c.socklen_t = @sizeOf(Ucred);
+        return c.getsockopt(fd, c.SOL_SOCKET, std.os.linux.SO.PEERCRED, &cred, &len) == 0 and
+            len == @sizeOf(Ucred) and cred.uid == c.getuid();
+    }
+}
+
+/// Read ownership and mode from an opened directory. Linux statx avoids musl's
+/// opaque translated stat/timespec layout and validates the returned field mask.
+pub fn directoryInfo(fd: c_int) !struct { uid: c.uid_t, gid: c.gid_t, mode: u32 } {
+    if (builtin.os.tag == .macos) {
+        var st: c.struct_stat = undefined;
+        if (c.fstat(fd, &st) != 0) return error.UnsafeDirectory;
+        return .{ .uid = st.st_uid, .gid = st.st_gid, .mode = st.st_mode };
+    } else {
+        const linux = std.os.linux;
+        var st: linux.Statx = undefined;
+        if (linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .UID = true, .GID = true, .MODE = true }, &st) != 0 or
+            !st.mask.UID or !st.mask.GID or !st.mask.MODE) return error.UnsafeDirectory;
+        return .{ .uid = st.uid, .gid = st.gid, .mode = st.mode };
+    }
+}
+
 test "writeAll reports a failed write instead of treating it as delivered" {
     const fd = c.open("/dev/null", c.O_RDONLY);
     try std.testing.expect(fd >= 0);

@@ -196,7 +196,9 @@ pub const Link = struct {
     }
 
     /// Resolves UDP addresses and proves each path with pings at 400 ms
-    /// intervals, allowing at most 2.5 seconds per candidate address.
+    /// intervals, allowing at most 2.5 seconds per candidate address. One link
+    /// retains packet numbering and replay state for the entire offered secret;
+    /// failed paths stop locally without sending CLOSE to the server.
     pub fn connect(gpa: Allocator, host: []const u8, port: u16, secret: [32]u8) !*Link {
         const host_z = try gpa.dupeSentinel(u8, host, 0);
         defer gpa.free(host_z);
@@ -207,21 +209,16 @@ pub const Link = struct {
         var first: ?*c.struct_addrinfo = null;
         if (c.getaddrinfo(host_z.ptr, service_z.ptr, &hints, &first) != 0) return error.Unreachable;
         defer c.freeaddrinfo(first);
+        const self = try create(gpa, -1, secret, false);
+        errdefer {
+            self.stopAttempt();
+            self.free();
+        }
         var candidate = first;
         while (candidate) |ai| : (candidate = ai.ai_next) {
             if (ai.ai_addrlen > @sizeOf(c.struct_sockaddr_storage)) continue;
             const fd = socket(ai.ai_family) catch continue;
-            const self = create(gpa, fd, secret, false) catch |err| {
-                _ = c.close(fd);
-                return err;
-            };
-            @memcpy(std.mem.asBytes(&self.peer)[0..ai.ai_addrlen], @as([*]const u8, @ptrCast(ai.ai_addr))[0..ai.ai_addrlen]);
-            self.peer_len = ai.ai_addrlen;
-            self.start() catch |err| {
-                _ = c.close(fd);
-                self.free();
-                return err;
-            };
+            try self.startAttempt(fd, @as([*]const u8, @ptrCast(ai.ai_addr))[0..ai.ai_addrlen]);
             const deadline = sys.nowMillis() + 2500;
             while (sys.nowMillis() < deadline) {
                 self.mutex.lockUncancelable(self.runtime.io());
@@ -240,10 +237,38 @@ pub const Link = struct {
                 if (answered) return self;
                 if (closed) break;
             }
-            self.close();
-            self.destroy();
+            self.stopAttempt();
         }
         return error.Unreachable;
+    }
+
+    /// Takes ownership of a candidate socket after the previous workers joined.
+    /// Packet counters/replay bits survive; delayed authenticated replies may
+    /// roam back to an earlier address, but cannot be accepted twice.
+    fn startAttempt(self: *Link, fd: c_int, address: []const u8) !void {
+        std.debug.assert(self.fd == -1 and self.receive_thread == null and self.timer_thread == null);
+        self.fd = fd;
+        self.closed = false;
+        self.close_notified = false;
+        self.peer = std.mem.zeroes(c.struct_sockaddr_storage);
+        @memcpy(std.mem.asBytes(&self.peer)[0..address.len], address);
+        self.peer_len = @intCast(address.len);
+        self.last_received = sys.nowMillis();
+        try self.start();
+    }
+
+    /// Stops an unpublished candidate silently, joining workers before closing
+    /// or replacing its socket. Retains the offered secret's cryptographic state.
+    fn stopAttempt(self: *Link) void {
+        self.mutex.lockUncancelable(self.runtime.io());
+        self.finish();
+        self.unlockAndNotify();
+        if (self.receive_thread) |thread| thread.join();
+        if (self.timer_thread) |thread| thread.join();
+        self.receive_thread = null;
+        self.timer_thread = null;
+        if (self.fd >= 0) _ = c.close(self.fd);
+        self.fd = -1;
     }
 
     /// Allocates a locally initiated stream (odd client IDs, even server IDs).
@@ -311,7 +336,10 @@ pub const Link = struct {
     fn start(self: *Link) !void {
         self.receive_thread = try std.Thread.spawn(.{}, receiveLoop, .{self});
         self.timer_thread = std.Thread.spawn(.{}, timerLoop, .{self}) catch |err| {
-            self.close();
+            // Startup failure must not cancel the remote offer during fallback.
+            self.mutex.lockUncancelable(self.runtime.io());
+            self.finish();
+            self.unlockAndNotify();
             self.receive_thread.?.join();
             self.receive_thread = null;
             return err;
@@ -1233,6 +1261,85 @@ test "UDP streams echo wire frames in order through 15 percent packet loss" {
     }
     try std.testing.expect(!deadline.expired.load(.acquire));
     try std.testing.expect(!echo.failed.load(.acquire));
+}
+
+test "UDP retry preserves packet numbers and replay state without sending CLOSE" {
+    const Fixture = struct {
+        /// Binds a private packet sink; no Koi server or application is involved.
+        fn sink() !struct { fd: c_int, address: c.struct_sockaddr_in } {
+            const fd = try socket(c.AF_INET);
+            errdefer _ = c.close(fd);
+            var address = std.mem.zeroes(c.struct_sockaddr_in);
+            address.sin_family = c.AF_INET;
+            address.sin_addr.s_addr = std.mem.nativeToBig(u32, 0x7f000001);
+            if (c.bind(fd, @ptrCast(&address), @sizeOf(@TypeOf(address))) != 0) return error.Bind;
+            var length: c.socklen_t = @sizeOf(@TypeOf(address));
+            if (c.getsockname(fd, @ptrCast(&address), &length) != 0) return error.Socket;
+            return .{ .fd = fd, .address = address };
+        }
+
+        /// Reads one fixture datagram with a bounded wait.
+        fn packet(fd: c_int, buf: []u8) ![]const u8 {
+            var pollfd = c.struct_pollfd{ .fd = fd, .events = c.POLLIN, .revents = 0 };
+            if (c.poll(&pollfd, 1, 1000) != 1) return error.MissingPacket;
+            const n = c.recv(fd, buf.ptr, buf.len, 0);
+            if (n <= 0) return error.MissingPacket;
+            return buf[0..@intCast(n)];
+        }
+    };
+    const first = try Fixture.sink();
+    defer _ = c.close(first.fd);
+    const second = try Fixture.sink();
+    defer _ = c.close(second.fd);
+    const client = try Link.create(std.testing.allocator, -1, @splat(0x31), false);
+    defer {
+        client.stopAttempt();
+        client.free();
+    }
+    try client.startAttempt(try socket(c.AF_INET), std.mem.asBytes(&first.address));
+    client.mutex.lockUncancelable(client.runtime.io());
+    client.sendPacket(&pingFrame(.ping, 1));
+    var from = std.mem.zeroes(c.struct_sockaddr_storage);
+    @memcpy(std.mem.asBytes(&from)[0..@sizeOf(@TypeOf(first.address))], std.mem.asBytes(&first.address));
+    var reply: [35]u8 = undefined;
+    _ = sealPacket(&reply, &pingFrame(.pong, 1), 100, client.open_key);
+    client.handle(&reply, from, @sizeOf(@TypeOf(first.address)));
+    client.mutex.unlock(client.runtime.io());
+    var buf: [2048]u8 = undefined;
+    const before = get(u64, try Fixture.packet(first.fd, &buf), 2);
+    client.stopAttempt();
+    try std.testing.expectEqual(before, client.send_number);
+    try std.testing.expectEqual(@as(u64, 100), client.recv_max);
+    try std.testing.expectEqual(@as(u64, 1), client.recv_seen);
+    // A CLOSE, including one emitted by cleanup, would be observable here.
+    var pollfd = c.struct_pollfd{ .fd = first.fd, .events = c.POLLIN, .revents = 0 };
+    try std.testing.expectEqual(@as(c_int, 0), c.poll(&pollfd, 1, 0));
+
+    try client.startAttempt(try socket(c.AF_INET), std.mem.asBytes(&second.address));
+    client.mutex.lockUncancelable(client.runtime.io());
+    const generation = client.pong_generation;
+    // A delayed duplicate from the old path must neither prove the new path
+    // nor roam back. A previously unseen delayed packet remains legitimate.
+    client.handle(&reply, from, @sizeOf(@TypeOf(first.address)));
+    const duplicate_rejected = client.pong_generation == generation and
+        std.mem.eql(u8, std.mem.asBytes(&client.peer)[0..@sizeOf(@TypeOf(second.address))], std.mem.asBytes(&second.address));
+    _ = sealPacket(&reply, &pingFrame(.pong, 2), 99, client.open_key);
+    client.handle(&reply, from, @sizeOf(@TypeOf(first.address)));
+    const delayed_accepted = client.pong_generation == generation + 1;
+    client.handle(&reply, from, @sizeOf(@TypeOf(first.address)));
+    const delayed_replay_rejected = client.pong_generation == generation + 1;
+    client.sendPacket(&pingFrame(.ping, 2));
+    client.mutex.unlock(client.runtime.io());
+    try std.testing.expect(duplicate_rejected and delayed_accepted and delayed_replay_rejected);
+    // The fresh delayed packet roamed to the first sink; numbering still must
+    // advance across the socket replacement, with a different GCM nonce.
+    const after = get(u64, try Fixture.packet(first.fd, &buf), 2);
+    try std.testing.expectEqual(before + 1, after);
+    try std.testing.expect(!std.mem.eql(u8, &nonce(before), &nonce(after)));
+    client.stopAttempt();
+    try std.testing.expectEqual(@as(u64, 100), client.recv_max);
+    try std.testing.expectEqual(@as(u64, 3), client.recv_seen);
+    try std.testing.expectEqual(@as(c_int, 0), c.poll(&pollfd, 1, 0));
 }
 
 test "UDP connect with a wrong secret is unreachable" {
