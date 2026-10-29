@@ -5,6 +5,7 @@ import Testing
 /// Throughput and latency of the engine, the renderer and a keystroke's
 /// round trip. Throughput and frame/keystroke latency have regression bounds;
 /// snapshot timings are informational and restored screen contents are checked.
+/// Run explicitly with `./x bench`, outside routine correctness checks.
 /// They run in the serialized
 /// suite so parallel fixtures neither skew them nor get starved by them.
 @MainActor extension SessionTests {

@@ -25,8 +25,6 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var metrics: FontMetrics
     /// What `metrics` was built from, so unchanged inputs reuse it.
     private var metricsKey: (size: CGFloat, scale: CGFloat)
-    /// How many times the metrics and glyph atlas were rebuilt.
-    private(set) var metricsBuilds = 0
     /// The first snapshot showed an empty screen: the cursor is held back
     /// until the shell's first output or input, so it does not sit alone
     /// before the prompt however slowly the shell starts; `cursorGrace` only
@@ -496,7 +494,6 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         if force || key != metricsKey {
             metrics = FontMetrics(size: key.size, scale: key.scale)
             metricsKey = key
-            metricsBuilds += 1
             renderer?.setMetrics(metrics)
             metalLayer.contentsScale = scale
         }

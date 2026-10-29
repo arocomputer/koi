@@ -120,17 +120,40 @@ esac''')
         (self.root / 'head').write_text('different')
         self.assertNotEqual(self.run_script('build-core.sh').returncode, 0)
 
-    def test_core_cache_requires_all_outputs_and_source_only_skips_framework(self):
+    def test_core_targets_validate_independently_and_source_only_skips_framework(self):
         self.assertEqual(self.run_script('build-ghostty-vt.sh', '--source-only').returncode, 0)
         self.assertFalse((self.root / 'zig-log').exists())
-        self.assertEqual(self.run_script('build-core.sh').returncode, 0)
+        self.assertEqual(self.run_script('build-core.sh', '--mac-only').returncode, 0)
         log = self.root / 'zig-log'
+        self.assertEqual(len(log.read_text().splitlines()), 1)
+        self.assertFalse((self.root / 'build/core/koi-linux-x86_64').exists())
+        self.assertEqual(self.run_script('build-core.sh').returncode, 0)
+        self.assertEqual(len(log.read_text().splitlines()), 2)
+        self.assertIn('x86_64-linux-musl', log.read_text().splitlines()[-1])
+        first = log.read_text()
+        (self.root / 'vendor/libkoi/lib/libkoi.a').unlink()
+        self.assertEqual(self.run_script('build-core.sh').returncode, 0)
+        lines = log.read_text()[len(first):].splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn('aarch64-macos', lines[0])
+        first = log.read_text()
+        (self.root / 'build/core/koi-linux-x86_64').unlink()
+        self.assertEqual(self.run_script('build-core.sh').returncode, 0)
+        lines = log.read_text()[len(first):].splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn('x86_64-linux-musl', lines[0])
         first = log.read_text()
         self.assertEqual(self.run_script('build-core.sh').returncode, 0)
         self.assertEqual(log.read_text(), first)
-        (self.root / 'vendor/libkoi/lib/libkoi.a').unlink()
-        self.assertEqual(self.run_script('build-core.sh').returncode, 0)
-        self.assertNotEqual(log.read_text(), first)
+
+    def test_bundle_revalidates_both_targets_after_mac_only_build(self):
+        self.assertEqual(self.run_script('build-core.sh', '--mac-only').returncode, 0)
+        (self.root / 'src/core/main.zig').write_text('changed')
+        result = self.run_script('bundle.sh', KOI_BUNDLE_OUTPUT=str(self.root / 'release/Test.app'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = (self.root / 'zig-log').read_text().splitlines()
+        self.assertEqual(sum('aarch64-macos' in line for line in lines), 2)
+        self.assertEqual(sum('x86_64-linux-musl' in line for line in lines), 1)
 
     def test_failed_initial_fetch_can_be_retried_without_manual_cleanup(self):
         # A real local repository exercises unborn HEADs without network access.

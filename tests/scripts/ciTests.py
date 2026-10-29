@@ -19,17 +19,23 @@ class CITests(unittest.TestCase):
 
     def test_docs_and_catalog_skip_native_but_packaged_files_do_not(self):
         self.assertEqual(ci.select(["docs/cli.md", "src/app/resources/programs/logos/new.svg"]),
-                         {"core": False, "app": False})
+                         {"core": False, "app": False, "bundle": False})
         for path in ("THIRD_PARTY_NOTICES.md", "licenses/new.txt", "src/app/resources/shell/koi.zsh"):
             with self.subTest(path=path):
-                self.assertTrue(ci.select([path])["app"])
+                self.assertTrue(ci.select([path])["bundle"])
 
     def test_app_core_and_unknown_changes_select_their_consumers(self):
-        self.assertEqual(ci.select(["tests/app/wireTests.swift"]), {"core": False, "app": True})
+        self.assertEqual(ci.select(["tests/app/wireTests.swift"]), {"core": False, "app": True, "bundle": False})
+        self.assertEqual(ci.select(["src/app/wire.swift"]), {"core": False, "app": True, "bundle": False})
+        self.assertEqual(ci.select(["tests/scripts/ciTests.py", "scripts/update-actions.py"]),
+                         {"core": False, "app": False, "bundle": False})
+        self.assertEqual(ci.select(["tests/scripts/koid-test-isolation.sh"]),
+                         {"core": False, "app": True, "bundle": False})
+        self.assertFalse(ci.select(["LICENSE"])["app"])
         for path in ("src/core/wire.zig", "build.zig.zon", "scripts/bundle.sh",
                      ".github/workflows/ci.yml", "x", "new-build-input"):
             with self.subTest(path=path):
-                self.assertEqual(ci.select([path]), {"core": True, "app": True})
+                self.assertEqual(ci.select([path]), {"core": True, "app": True, "bundle": True})
 
     def test_complete_diff_includes_renamed_source_and_unusual_filenames(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -61,28 +67,52 @@ class CITests(unittest.TestCase):
             self.assertTrue(ci.select(paths)["core"])
 
     def test_non_pr_and_missing_history_run_everything(self):
-        self.assertEqual(ci.selection("workflow_dispatch", {}), {"core": True, "app": True})
+        self.assertEqual(ci.selection("workflow_dispatch", {}), {"core": True, "app": True, "bundle": True})
+        push = {"ref": "refs/heads/main", "before": "base", "after": "head"}
+        for paths, expected in [
+            (["docs/ci.md"], {"core": False, "app": False, "bundle": False}),
+            (["src/app/tabs.swift"], {"core": False, "app": True, "bundle": True}),
+            (["tests/app/tabsTests.swift"], {"core": False, "app": True, "bundle": False}),
+        ]:
+            with patch.object(ci, "changed_paths", return_value=paths):
+                self.assertEqual(ci.selection("push", push), expected)
         with patch.object(ci, "changed_paths", side_effect=subprocess.CalledProcessError(1, "git")):
             event = {"pull_request": {"base": {"sha": "base"}, "head": {"sha": "head"}}}
-            self.assertEqual(ci.selection("pull_request", event), {"core": True, "app": True})
+            self.assertEqual(ci.selection("pull_request", event), {"core": True, "app": True, "bundle": True})
+            self.assertEqual(ci.selection("push", push), {"core": True, "app": True, "bundle": True})
+        self.assertEqual(ci.selection("push", {**push, "before": "0" * 40}),
+                         {"core": True, "app": True, "bundle": True})
 
     def test_gate_rejects_failure_cancellation_and_unexpected_skip(self):
-        needs = {name: {"result": "success"} for name in ("changes", "scripts", "programs", "core", "app")}
-        needs["changes"]["outputs"] = {"core": "true", "app": "true"}
-        ci.check_results(needs)
-        for name in needs:
-            for result in ("failure", "cancelled", "skipped"):
-                bad = copy.deepcopy(needs)
-                bad[name]["result"] = result
-                with self.subTest(name=name, result=result), self.assertRaises(ValueError):
-                    ci.check_results(bad)
-        needs["changes"]["outputs"] = {"core": "false", "app": "false"}
-        needs["core"]["result"] = needs["app"]["result"] = "skipped"
-        ci.check_results(needs)
-        needs["changes"]["outputs"]["core"] = ""
-        with self.assertRaises(ValueError):
+        for selected in ((), ("app",), ("bundle",), ("core", "app", "bundle")):
+            needs = {
+                "checks": {"result": "success", "outputs": {
+                    name: str(name in selected).lower() for name in ("core", "app", "bundle")}},
+                "native": {"result": "success" if selected else "skipped", "outputs": {
+                    name: "success" if name in selected else "skipped" for name in ("core", "app", "bundle")}},
+            }
             ci.check_results(needs)
-
+            for name in needs:
+                unexpected = "skipped" if name == "checks" or selected else "success"
+                for result in ("failure", "cancelled", unexpected):
+                    bad = copy.deepcopy(needs)
+                    bad[name]["result"] = result
+                    with self.subTest(selected=selected, name=name, result=result), self.assertRaises(ValueError):
+                        ci.check_results(bad)
+            if selected:
+                for step in selected:
+                    for result in ("failure", "cancelled", "skipped", ""):
+                        bad = copy.deepcopy(needs)
+                        bad["native"]["outputs"][step] = result
+                        with self.subTest(step=step, result=result), self.assertRaises(ValueError):
+                            ci.check_results(bad)
+                bad = copy.deepcopy(needs)
+                del bad["native"]["outputs"]
+                with self.assertRaises(ValueError):
+                    ci.check_results(bad)
+            needs["checks"]["outputs"]["core"] = ""
+            with self.assertRaises(ValueError):
+                ci.check_results(needs)
 
 if __name__ == "__main__":
     unittest.main()
