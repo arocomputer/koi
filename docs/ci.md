@@ -4,7 +4,7 @@ Koi borrows the shared `./x` command interface from
 [ask](https://github.com/arocomputer/ask/blob/main/x) and
 [aft](https://github.com/arocomputer/aft/blob/main/x). Commands remain small
 wrappers around Koi's existing build and isolated test scripts. `./x check`
-runs all local checks; it requires an Apple silicon Mac with Metal. Hosted
+runs all local correctness checks; it requires an Apple silicon Mac with Metal. Hosted
 Actions uses the individual commands described below.
 
 ## Runners
@@ -24,7 +24,7 @@ profiles or a Namespace token in repository secrets:
 | Jobs | `runs-on` label |
 | --- | --- |
 | Selection, script/catalog checks, final gate and Action updates | `nscloud-ubuntu-24.04-amd64-2x4` |
-| Core tests and app/bundle checks | `nscloud-macos-tahoe-arm64-6x14` |
+| Native tests and packaging | `nscloud-macos-tahoe-arm64-6x14` |
 
 The macOS jobs explicitly select
 `/Applications/Xcode_26.3.app/Contents/Developer`. The image was inspected
@@ -49,71 +49,99 @@ weaken required checks to work around a queued or failing runner.
 
 ## Checks and selection
 
-The [workflow](../.github/workflows/ci.yml) always starts for PRs, pushes to
-`main` and manual runs. It never publishes or installs an app.
+The [workflow](../.github/workflows/ci.yml) runs on PRs, main pushes and manual
+requests. It has three jobs:
 
-| Check | Work | PR selection |
-| --- | --- | --- |
-| Select checks | Compute the complete PR diff | Always |
-| Script regressions | `./x scripts` on Linux | Always |
-| Application catalog | `./x programs` on Linux | Always |
-| Core tests (macOS) | `./x test-core`, native Zig tests | Core/build/CI or unknown inputs |
-| App tests and bundle (macOS) | `./x test-app`, `./x bundle` | App/core/build inputs or packaged resources outside the program catalog |
-| CI required | Verify all selected checks succeeded | Always, including failures |
+| Job | Work |
+| --- | --- |
+| Portable checks | Complete PR diff, script regressions and catalog validation on Linux |
+| Native checks | Selected core tests, Swift tests and/or packaging on one Mac |
+| CI required | Require the portable job and every selected native step to pass |
 
-Ordinary docs and program catalog/artwork changes skip native jobs. Catalog
-checks cover schema, executable aliases, colors, SVGs, source records and
-checksums. AppKit loading, SF Symbol availability and visual legibility still
-need a Mac; see [Contributing](../CONTRIBUTING.md#program-icons). Changes to
-packaged licenses or `THIRD_PARTY_NOTICES.md` run the app/bundle job.
+Portable checks finish before a Mac is requested. The Mac steps share one
+checkout, toolchain and dependency preparation, so a one-Mac workspace no
+longer queues a second native job behind the first.
 
-Selection uses a NUL-delimited Git diff from the PR merge base, includes
-deleted files and both sides of renames, and has no changed-file API limit.
-Unknown paths or unavailable history run all native jobs. Main and manual
-runs always run everything. Core and app jobs are independent; available
-runner capacity may serialize them. App tests and bundling share a runner
-to reuse their dependencies. Linux is
-cross-compiled for the bundle; CI does not yet execute Linux core tests.
+| Changed inputs in a PR | Core tests | Swift tests | Bundle/Linux cross-build |
+| --- | --- | --- | --- |
+| Docs, catalog, portable maintenance scripts/tests | No | No | No |
+| App Swift source or Swift tests | No | Yes | No |
+| Packaged licenses/notices | No | No | Yes |
+| Other app resources or Package.swift | No | Yes | Yes |
+| Core, build scripts, workflow or unknown inputs | Yes | Yes | Yes |
 
-The final gate requires successful selection, script and catalog checks.
-Each selected native job must succeed; an unselected job must be skipped.
-Failures, cancellations, missing outputs and unexpected skips fail the gate.
-Do not replace this with workflow-level path filters: skipped required
-workflows can remain pending. See GitHub's
+Main pushes select changed inputs too, adding packaging for app Swift edits.
+Manual runs select everything. Selection reads the complete
+NUL-delimited diff from the PR merge base, including deleted files and both
+sides of renames, without the API's changed-file limit. Missing history
+falls back to all checks. Catalog-only checks cover schema, aliases, SVGs
+and provenance; review runtime artwork on a Mac when changing it.
+The isolation regression is a portable-test exception: edits also select
+the Mac lane to verify its Darwin process-ownership path.
+
+Hosted Swift tests run in debug mode through the isolated runner. They
+include existing private-server checks for session persistence, command/watch
+round trips, the stdio relay, link authentication and link lifetime. They
+exclude benchmarks and the rest of the serialized UI/GPU fixtures; use
+focused local tests for those changes. The entire test target still compiles.
+
+Routine Swift PRs do not cross-compile a Linux server or assemble a signed
+bundle. Production packaging runs for relevant changes and on main. Tests
+use development resource lookup, which production release builds intentionally
+omit. Linux is cross-compiled for packaging, not executed as a native Linux
+test lane.
+
+The final gate checks both the Mac job result and each selected step's
+outcome. A green job with a skipped selected test/bundle step fails the gate.
+Missing outputs, cancellations and unexpected skips also fail. Keep this
+stable check instead of workflow-level path filters, which can leave required
+checks pending. See GitHub's
 [required-check guidance](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
 
-Hosted Swift checks use `scripts/koid test --headless`: the same checkout
-lock, private server snapshot, temporary roots and process-verified cleanup
-as the full suite. Its explicit allowlist is in `scripts/koid`; it is not
-all non-GPU coverage. The full Metal/AppKit suite and benchmarks remain
-required locally for code changes.
+## Development checks
+
+Use `./x test FILTER` or `./x test-core FILTER` while editing. They retain the
+checkout lock, private paths, server snapshot and process-verified cleanup;
+direct compiler/test commands do not provide the same isolation. Swift tests
+prepare only the macOS server/library. Core-only tests fetch the pinned
+engine source without building the Apple framework or release servers.
+
+`./x check` runs portable checks and the full correctness suite. `./x bench`
+is separate and opt-in; timing bounds should not interrupt ordinary UI or
+correctness work. Run `./x bundle` when changing packaging, native build inputs
+or toolchains, and for release validation. Do not repeat passing checks in an
+unchanged checkout merely because another step finished.
 
 ## Caches and performance
 
-The initial successful GitHub-hosted run took 22m05s: 16m15s for dependencies/core,
-1m37s for core tests, 1m35s for Swift checks and 1m25s for the release bundle.
-These are baseline measurements, not a promise about subsequent runs.
+The first successful Namespace run took about eight minutes. Its 105 selected
+Swift tests executed in 0.275 seconds; preparation and compilation dominated:
+64 seconds for Ghostty, 109 seconds for native outputs, 46 seconds for the
+Swift test build and 28 seconds for the production Swift build. A separate
+71-second core job and a Mac handoff added to elapsed time. These cold-run
+figures are a baseline, not a claim about the revised or warmed workflow.
 
-The workflow caches the completed Ghostty framework and core outputs
-separately, using exact keys containing input hashes and actual Zig/Xcode/SDK
-identities. The core cache contains both release server binaries and libkoi.
-Build scripts always recheck their provenance stamps and required outputs
-after restoration. A changed core source does not invalidate the separate
-framework cache. Ghostty source is fetched at its pinned commit with shallow
-history; core tests fetch source without compiling the Apple framework.
+The workflow keeps three caches: pinned Ghostty source/framework, macOS
+server/library, and Linux server. Keys use actual Zig/Xcode/SDK identities and
+relevant source/build hashes; there are no broad fallback keys. Each build
+script rechecks input stamps and required outputs after a restore. The
+Ghostty restore precedes core tests so they reuse its pinned source checkout
+instead of fetching it again on each fresh runner. Tracked source changes
+are rejected by the same build validation used locally. The
+macOS and Linux stamps are independent, so missing/stale Linux output cannot
+force a macOS rebuild or let a macOS-only preparation satisfy packaging.
 
-`setup-zig` also maintains compiler caches, with separate namespaces for the
-core-test and app/bundle jobs. No broad fallback keys are used for finished
-native outputs. Caches accelerate builds; they are not release artifacts.
-PR caches are scoped by GitHub and do not seed the base branch. The first
-successful full run on main seeds caches available to later PRs. See
-[cache access restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
+Restore and save are explicit steps. A successfully prepared artifact is
+saved immediately, before downstream Swift failures can discard that work.
+Failed preparation never publishes a cache. These are input-provenance
+checks, not content-integrity attestations or distributable release artifacts.
+The Zig compiler cache is shared by the native steps in the same job.
 
-Measure cold and warm main/PR runs before adding a Swift `.build` cache or
-splitting app tests and bundling into separate runners. Moving them without
-sharing dependencies would duplicate the expensive preparation. Native Linux
-test execution would add useful coverage; it should be introduced and tested
-as a separate lane rather than describing a cross-build as Linux testing.
+GitHub's branch cache scope still applies: a PR does not seed the main
+branch. The first successful main run seeds caches available to later PRs.
+See [cache access restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
+Measure cold and warm runs before adding persistent Swift build caches or
+more runner/caching infrastructure.
 
 ## Repository policy
 
@@ -192,7 +220,7 @@ token before it expires and retain the same account for existing update PRs.
 | Direct external product code | 1 | libghostty-vt, pinned in `build-ghostty-vt.sh` |
 | Remote Swift packages | 0 | GhosttyVt is locally built; CKoi/libkoi is Koi's own code |
 | External libraries used through the pinned VT build | 4 | uucode, Wuffs, SIMDUTF, Highway |
-| Distinct GitHub Actions | 3 | actions/checkout, mlugg/setup-zig, actions/cache |
+| GitHub Action repositories | 3 | actions/checkout, mlugg/setup-zig, actions/cache (restore/save) |
 
 These categories are not a complete runtime/build bill of materials. The
 engine also uses build helpers such as translate-c and includes Unicode/color

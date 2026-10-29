@@ -14,67 +14,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Select checks
+  checks:
+    name: Portable checks
     runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     outputs:
       core: ${{ steps.select.outputs.core }}
       app: ${{ steps.select.outputs.app }}
+      bundle: ${{ steps.select.outputs.bundle }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Select native checks from the complete PR diff
+      - name: Select checks from changed inputs
         id: select
         run: python3 scripts/ci.py select
+      - name: Script regressions
+        run: ./x scripts
+      - name: Application catalog
+        run: ./x programs
 
-  scripts:
-    name: Script regressions
-    runs-on: nscloud-ubuntu-24.04-amd64-2x4
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - run: ./x scripts
-
-  programs:
-    name: Application catalog
-    runs-on: nscloud-ubuntu-24.04-amd64-2x4
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - run: ./x programs
-
-  core:
-    name: Core tests (macOS)
-    needs: changes
-    if: needs.changes.outputs.core == 'true'
-    runs-on: nscloud-macos-tahoe-arm64-6x14
-    timeout-minutes: 20
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
-        with:
-          version: 0.17.0
-          cache-key: core-tests-xcode-26.3
-      - name: Run isolated core tests
-        run: ./x test-core
-
-  app:
-    name: App tests and bundle (macOS)
-    needs: changes
-    if: needs.changes.outputs.app == 'true'
+  native:
+    name: Native checks
+    needs: checks
+    if: needs.checks.outputs.core == 'true' || needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
     runs-on: nscloud-macos-tahoe-arm64-6x14
     timeout-minutes: 45
+    outputs:
+      core: ${{ steps.core.outcome }}
+      app: ${{ steps.app.outcome }}
+      bundle: ${{ steps.bundle.outcome }}
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
@@ -84,7 +54,7 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.17.0
-          cache-key: app-bundle-xcode-26.3
+          cache-key: native-xcode-26.3
       - name: Identify native toolchain
         id: toolchain
         run: |
@@ -95,30 +65,85 @@ jobs:
           xcodebuild -version
           swift --version
           zig version
-      - name: Restore Ghostty framework
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Restore Ghostty source and framework
+        id: ghostty
+        if: needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
+            vendor/ghostty
             vendor/GhosttyVt.xcframework
             vendor/.ghostty-commit
-          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
-      - name: Restore native core outputs
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+          key: ghostty-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
+      # Validate restored inputs before use; save completed work before later tests can fail.
+      - name: Prepare Ghostty framework
+        if: needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
+        run: scripts/build-ghostty-vt.sh
+      - name: Save Ghostty source and framework
+        if: (needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true') && steps.ghostty.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
-            build/core
+            vendor/ghostty
+            vendor/GhosttyVt.xcframework
+            vendor/.ghostty-commit
+          key: ${{ steps.ghostty.outputs.cache-primary-key }}
+      - name: Run isolated core tests
+        id: core
+        if: needs.checks.outputs.core == 'true'
+        run: ./x test-core
+      - name: Restore macOS core outputs
+        id: mac
+        if: needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            build/core/koi
+            build/core/.inputs-mac
             vendor/libkoi
-          key: core-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/core/**', 'scripts/build-core.sh', 'scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
-      # Scripts revalidate input stamps after restore; cache hits never skip validation.
-      - name: Prepare Ghostty framework
-        run: scripts/build-ghostty-vt.sh
-      - name: Build macOS core and cross-compile Linux server
+          key: mac-core-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/core/**', 'scripts/build-core.sh', 'scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
+      - name: Prepare macOS server and library
+        if: needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
+        run: scripts/build-core.sh --mac-only
+      - name: Save macOS core outputs
+        if: (needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true') && steps.mac.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            build/core/koi
+            build/core/.inputs-mac
+            vendor/libkoi
+          key: ${{ steps.mac.outputs.cache-primary-key }}
+      - name: Restore Linux server
+        id: linux
+        if: needs.checks.outputs.bundle == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            build/core/koi-linux-x86_64
+            build/core/.inputs-linux
+          key: linux-core-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/core/**', 'scripts/build-core.sh', 'scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
+      - name: Prepare Linux server for packaging
+        if: needs.checks.outputs.bundle == 'true'
         run: scripts/build-core.sh
+      - name: Save Linux server
+        if: needs.checks.outputs.bundle == 'true' && steps.linux.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            build/core/koi-linux-x86_64
+            build/core/.inputs-linux
+          key: ${{ steps.linux.outputs.cache-primary-key }}
       - name: Check test-run isolation on macOS
+        if: needs.checks.outputs.app == 'true'
         run: sh tests/scripts/koid-test-isolation.sh
       - name: Run hosted Swift tests with isolated fixtures
+        id: app
+        if: needs.checks.outputs.app == 'true'
         run: ./x test-app
       - name: Build release bundle and verify signature
+        id: bundle
+        if: needs.checks.outputs.bundle == 'true'
         env:
           KOI_BUNDLE_OUTPUT: ${{ runner.temp }}/Koi.app
         run: ./x bundle
@@ -126,7 +151,7 @@ jobs:
   required:
     name: CI required
     if: always()
-    needs: [changes, scripts, programs, core, app]
+    needs: [checks, native]
     runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     steps:
