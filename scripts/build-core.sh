@@ -31,9 +31,21 @@ core_version() {
   } | shasum -a 256 | cut -d' ' -f1)
   printf '%s+%s\n' "$package" "$digest"
 }
+# Validate restored outputs against the same inputs that identify the binaries.
+mac_version=$(core_version aarch64-macos.26.0)
+linux_version=$(core_version x86_64-linux-musl)
+key=$(printf '%s\n%s\n' "$mac_version" "$linux_version")
+stamp="$root/build/core/.inputs"
+if [ "$(cat "$stamp" 2>/dev/null)" = "$key" ] &&
+   [ -f "$root/build/core/koi" ] && [ -f "$root/build/core/koi-linux-x86_64" ] &&
+   [ -f "$root/vendor/libkoi/lib/libkoi.a" ] && [ -f "$root/vendor/libkoi/include/koi.h" ] &&
+   [ -f "$root/vendor/libkoi/module.modulemap" ]; then
+  exit 0
+fi
+rm -f "$stamp"
 # This Mac's binary and libkoi target the app's minimum macOS.
-zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos.26.0 -Dversion="$(core_version aarch64-macos.26.0)"
-zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-musl --prefix zig-out-linux-x86_64 -Dversion="$(core_version x86_64-linux-musl)"
+zig build -Doptimize=ReleaseFast -Dtarget=aarch64-macos.26.0 -Dversion="$mac_version"
+zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-musl --prefix zig-out-linux-x86_64 -Dversion="$linux_version"
 
 mkdir -p "$root/build/core" "$root/vendor/libkoi/lib" "$root/vendor/libkoi/include"
 # Replace binaries through a new inode: copying over one that is running or
@@ -44,4 +56,5 @@ cp zig-out-linux-x86_64/bin/koi "$root/build/core/koi-linux-x86_64.new" && mv -f
 cp zig-out/lib/libkoi.a "$root/vendor/libkoi/lib/"
 cp src/core/include/koi.h "$root/vendor/libkoi/include/"
 printf 'module CKoi {\n    header "include/koi.h"\n    export *\n}\n' > "$root/vendor/libkoi/module.modulemap"
+printf '%s\n' "$key" > "$stamp"
 echo "built build/core/koi, build/core/koi-linux-x86_64, vendor/libkoi"

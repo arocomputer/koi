@@ -13,7 +13,7 @@ cleanup() {
   rm -rf "$fixture"
 }
 trap cleanup EXIT
-mkdir -p "$fixture/repo/scripts" "$fixture/repo/zig-out/bin" "$fixture/bin" "$fixture/records" "$fixture/tmp"
+mkdir -p "$fixture/repo/scripts" "$fixture/repo/build/core" "$fixture/bin" "$fixture/records" "$fixture/tmp"
 cp "$repo/scripts/koid" "$fixture/repo/scripts/koid"
 cat > "$fixture/server.py" <<'PY'
 #!/usr/bin/python3
@@ -46,8 +46,8 @@ mkdir "$active" || { touch "$RECORDS/build-overlap"; exit 1; }
 trap 'rmdir "$active"' EXIT
 printf '%s core\n' "$RUN" >> "$RECORDS/build-events-${REPO##*/}"
 sleep 0.2
-cp "$SERVER" "$REPO/zig-out/bin/koi"
-printf '\n# built for %s\n' "$RUN" >> "$REPO/zig-out/bin/koi"
+cp "$SERVER" "$REPO/build/core/koi"
+printf '\n# built for %s\n' "$RUN" >> "$REPO/build/core/koi"
 MOCK
 chmod +x "$fixture/repo/scripts/build-ghostty-vt.sh" "$fixture/repo/scripts/build-core.sh"
 cat > "$fixture/bin/zig" <<'MOCK'
@@ -67,7 +67,12 @@ printf '%s\n' "$pid" > "$TMPDIR/server.pid"
 MOCK
 cat > "$fixture/bin/swift" <<'MOCK'
 #!/bin/sh
-[ "$*" = test ] || exit 1
+if [ "$RUN" = headless ]; then
+  [ "$#" = 5 ] && [ "$1 $2 $3 $4" = 'test --jobs 2 --filter' ] || exit 1
+  case "$5" in *ProgramsTests*ClipboardTests*) ;; *) exit 1 ;; esac
+else
+  [ "$*" = test ] || exit 1
+fi
 printf '%s\n%s\n' "$TMPDIR" "$KOI_DIR" > "$RECORDS/$RUN.swift"
 [ "$KOI_TEST_ROOT" = "$TMPDIR" ]
 dir="$TMPDIR/nested/custom"
@@ -124,7 +129,7 @@ mkdir "$TMPDIR/koi-tests-foreign"
 RUN=a "$fixture/repo/scripts/koid" test & a=$!
 wait_file "$RECORDS/a.ready"
 # A different checkout has its own lock and can run while A is in Swift.
-mkdir -p "$fixture/other/scripts" "$fixture/other/zig-out/bin"
+mkdir -p "$fixture/other/scripts" "$fixture/other/build/core"
 cp "$fixture/repo/scripts/koid" "$fixture/repo/scripts/build-ghostty-vt.sh" "$fixture/repo/scripts/build-core.sh" "$fixture/other/scripts/"
 RUN=c REPO="$fixture/other" "$fixture/other/scripts/koid" test & c=$!
 wait_file "$RECORDS/c.ready"
@@ -226,4 +231,11 @@ RUN=alternate KOI_SERVER_BIN="$fixture/alternate" "$fixture/repo/scripts/koid" t
 [ "$(cat "$RECORDS/alternate.version")" = '# alternative server' ]
 assert_stopped "$RECORDS/alternate.zig.pid"
 assert_stopped "$RECORDS/alternate.swift.pid"
+# Hosted Swift uses the same isolated server/cleanup without rerunning Zig tests.
+touch "$RECORDS/headless.release"
+RUN=headless "$fixture/repo/scripts/koid" test --headless
+[ ! -e "$RECORDS/headless.zig" ]
+[ "$(cat "$RECORDS/headless.version")" = '# built for headless' ]
+[ ! -e "$(cat "$RECORDS/headless.root")" ]
+assert_stopped "$RECORDS/headless.swift.pid"
 echo 'koid test isolation: passed'

@@ -23,11 +23,17 @@ the image's default Xcode selection.
 From the repository root:
 
 ```sh
+./x check                  # scripts, catalog, full isolated tests, release bundle
+./x scripts                # portable regressions, no native toolchain
+./x programs               # catalog and artwork validation
 scripts/koid build
 scripts/koid run
-scripts/koid test
-scripts/bundle.sh
 ```
+
+`./x` is the shared local/CI entry point; `./x help` lists its commands.
+`./x test` delegates to `scripts/koid test`, and `./x bundle` runs
+`scripts/bundle.sh` followed by signature verification. Neither installs or
+launches an app. Development builds and interaction remain under `scripts/koid`.
 
 `build` fetches dependencies as needed, builds the Mac and Linux server
 binaries, and installs Koid at the same path across worktrees. Its bundle ID
@@ -35,6 +41,11 @@ is `com.fschrhunt.koid`; its config, layout, server log and socket live under
 `~/.local/state/koid`. Its macOS preferences are separate from Koi's too.
 
 `test` prepares dependencies, runs `zig build test`, and runs `swift test`.
+`scripts/koid test --headless` (also `./x test-app`) prepares the same native
+dependencies and runs only the hosted Swift subset. It uses the same lock,
+server snapshot and cleanup as the full suite. `./x test-core` prepares just
+the pinned engine source and runs native Zig tests with a private `KOI_DIR`;
+it does not build the Apple framework or release server binaries.
 Each invocation owns a short temporary root and exports its own `KOI_DIR`,
 `TMPDIR` and test-only `KOI_TEST_ROOT`. Server fixtures use the latter directly
 because Foundation can resolve the system temp directory despite `TMPDIR`.
@@ -114,12 +125,21 @@ sh tests/scripts/koid-test-isolation.sh
 python3 tests/scripts/buildProvenanceTests.py
 ```
 
-The GitHub workflow runs those checks, native core tests, a non-GPU Swift
-subset, and a signed bundle build from downloaded dependencies. Hosted macOS
-runners do not reliably expose Metal, so the full AppKit/renderer suite and
-performance checks remain required on an Apple silicon Mac with Metal.
-The workflow is checked in; a hosted run can be verified only after a remote
-exists and Actions is enabled. It performs no publishing or installation.
+The [CI workflow](.github/workflows/ci.yml) runs script regressions and catalog
+checks on Linux, then selects native jobs from the complete PR diff. Ordinary
+docs and catalog-only changes skip native builds. App changes run hosted Swift
+tests and bundle verification; core, build, workflow and unknown inputs also
+run core tests in parallel. Packaged licenses and notices still require bundle
+verification. Main pushes and manual runs execute all checks. The final
+`CI required` check rejects failures, cancellations and unexpected skips.
+
+Hosted macOS runners do not reliably expose Metal. The explicit Swift subset
+in `scripts/koid` does not cover every non-GPU integration test; the full
+AppKit/renderer suite and performance checks remain required on an Apple
+silicon Mac with Metal. Catalog-only CI validates SVG/schema/provenance, not
+AppKit rendering or SF Symbol availability. It performs no publishing or
+installation. See [CI and repository maintenance](docs/ci.md) for cache
+boundaries, check names and the branch protection policy.
 
 Tab-strip integration checks use private servers and offscreen hosted views.
 To save their layout and drag previews without capturing the screen:
@@ -207,7 +227,9 @@ dedicated output directory: bundle assembly replaces its destination.
 `build.zig.zon` is the authoritative semantic version for the core and app.
 Bundle version fields derive from it. Scripted core builds include the pinned
 engine revision, Zig executable/version, Xcode/SDK selection, source/build inputs and target
-arguments in their version digest. The engine cache validates the checkout,
+arguments in their version digest. Core output reuse requires that digest and
+all packaged binaries, library and headers; test fixtures snapshot `build/core/koi`.
+The engine cache validates the checkout,
 refuses tracked local edits, and invalidates when its build inputs change.
 Direct `zig build` is explicitly `unversioned` unless supplied with a version;
 use the scripts when comparing the identity of built and running servers.
@@ -400,11 +422,13 @@ Run the catalog check on Linux or macOS with Python 3; it needs no downloads,
 Zig, Swift, Xcode or third-party Python packages:
 
 ```sh
-python3 scripts/check-programs.py
+./x programs
 ```
 
-It checks aliases, fields, colors, glyph choices, SVGs and source checksums.
-CI runs it as a separate job so catalog mistakes appear before the Mac build.
+It checks aliases, fields, colors, glyph choices, SVGs and source checksums,
+then runs the validator's regression tests. CI runs it as a separate job;
+catalog-only PRs do not require a Mac build. License or notice changes also
+run bundle verification because those files are packaged with the app.
 On a Mac, the full `scripts/koid test` suite also verifies that AppKit loads
 the logos and resolves the SF Symbols. Rebuild and relaunch Koid after
 changing the catalog; styles and images are cached for the app's lifetime.

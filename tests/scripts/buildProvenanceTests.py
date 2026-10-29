@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -118,6 +119,48 @@ esac''')
         (self.root / 'dirty').unlink()
         (self.root / 'head').write_text('different')
         self.assertNotEqual(self.run_script('build-core.sh').returncode, 0)
+
+    def test_core_cache_requires_all_outputs_and_source_only_skips_framework(self):
+        self.assertEqual(self.run_script('build-ghostty-vt.sh', '--source-only').returncode, 0)
+        self.assertFalse((self.root / 'zig-log').exists())
+        self.assertEqual(self.run_script('build-core.sh').returncode, 0)
+        log = self.root / 'zig-log'
+        first = log.read_text()
+        self.assertEqual(self.run_script('build-core.sh').returncode, 0)
+        self.assertEqual(log.read_text(), first)
+        (self.root / 'vendor/libkoi/lib/libkoi.a').unlink()
+        self.assertEqual(self.run_script('build-core.sh').returncode, 0)
+        self.assertNotEqual(log.read_text(), first)
+
+    def test_failed_initial_fetch_can_be_retried_without_manual_cleanup(self):
+        # A real local repository exercises unborn HEADs without network access.
+        upstream = self.root / 'upstream'
+        upstream.mkdir()
+        git = shutil.which('git')
+        def run_git(*args):
+            """Run real Git against the fixture upstream, never the project checkout."""
+            return subprocess.check_output([git, '-C', str(upstream), *args], text=True).strip()
+        run_git('init', '-q')
+        (upstream / 'file').write_text('engine source')
+        run_git('add', '.')
+        run_git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                'commit', '-qm', 'engine')
+        pin = run_git('rev-parse', 'HEAD')
+        shutil.rmtree(self.root / 'vendor/ghostty')
+        script = self.root / 'scripts/build-ghostty-vt.sh'
+        script.write_text(script.read_text().replace(PIN, pin).replace(
+            'https://github.com/ghostty-org/ghostty', shlex.quote(str(upstream))))
+        self.tool('git', '''if [ "${3:-}" = fetch ] && [ ! -f "$FIXTURE/fetch-failed" ]; then
+  touch "$FIXTURE/fetch-failed"
+  exit 23
+fi
+exec ''' + shlex.quote(git) + ' "$@"')
+        self.assertEqual(self.run_script('build-ghostty-vt.sh', '--source-only').returncode, 23)
+        self.assertFalse((self.root / 'vendor/ghostty').exists())
+        self.assertEqual(list((self.root / 'vendor').glob('.ghostty-source-*')), [])
+        result = self.run_script('build-ghostty-vt.sh', '--source-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'vendor/ghostty/file').read_text(), 'engine source')
 
     def test_bundle_output_and_licenses(self):
         output = self.root / 'release/Test.app'
