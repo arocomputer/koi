@@ -43,7 +43,7 @@ uses the organization's installed Namespace GitHub app. See
 To move providers again, change `runs-on` and verify the selected Xcode path
 exists on the replacement image. GitHub-hosted equivalents are `ubuntu-latest`
 and `macos-26`; select an installed Xcode explicitly on the latter. Keep job
-IDs and the `CI required` gate unchanged so branch protection continues to
+IDs and the `Required` gate unchanged so branch protection continues to
 work. Validate a PR run before merging a runner change. Do not disable or
 weaken required checks to work around a queued or failing runner.
 
@@ -56,7 +56,7 @@ requests. It has three jobs:
 | --- | --- |
 | Portable checks | Complete PR diff, script regressions and catalog validation on Linux |
 | Native checks | Selected core tests, Swift tests and/or packaging on one Mac |
-| CI required | Require the portable job and every selected native step to pass |
+| Required | Require the portable job and every selected native step to pass |
 
 Portable checks finish before a Mac is requested. The Mac steps share one
 checkout, toolchain and dependency preparation, so a one-Mac workspace no
@@ -151,7 +151,7 @@ ask/aft with one stable required gate and a narrower administrator bypass:
 
 - PRs and resolved review threads; squash merging and linear history.
 - No branch deletion or force pushes.
-- `CI required`, from GitHub Actions, with the branch up to date before merging.
+- `Required`, from GitHub Actions, with the branch up to date before merging.
 - Zero mandatory approvals while there is one maintainer. CODEOWNERS routes
   review requests without making solo work impossible.
 - Administrator bypass only through a PR, not unrestricted direct pushes.
