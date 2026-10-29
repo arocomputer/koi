@@ -8,19 +8,32 @@ import Testing
 @Suite(.serialized) struct SessionTests {
     /// The point of the server: what a pane printed is still there, with its
     /// shell running, after the client goes away and a new one attaches.
-    @Test func paneOutlivesItsClient() throws {
+    @Test(arguments: [false, true]) func paneOutlivesItsClient(remote: Bool) throws {
         let server = try TestServer()
         defer { server.stop() }
         let control = try #require(TestControl())
         let made = control.run(.init(op: .newTab))
         let paneID = try #require(made.pane)
 
-        let first = try #require(TestPane(paneID))
+        /// Use a real socket or UDP stream, retaining functional echo coverage
+        /// without the benchmark's sampling loop or machine-speed threshold.
+        func attach() throws -> TestPane {
+            var transport: Transport?
+            if remote {
+                let offer = try #require(server.offer())
+                let link = try #require(LinkClient(host: "127.0.0.1", port: offer.port, secret: Wire.secretBytes(offer.secret)))
+                transport = try #require(link.open())
+            }
+            return try #require(TestPane(paneID, transport: transport))
+        }
+
+        let first = try attach()
         first.type("echo koi-$((40+2))\r")
         #expect(first.waitForText("koi-42"))
         first.close()
 
-        let second = try #require(TestPane(paneID))
+        let second = try attach()
+        defer { second.close() }
         #expect(second.waitForText("koi-42"), "the snapshot has the earlier output")
         second.type("echo again-$((1+1))\r")
         #expect(second.waitForText("again-2"), "the shell still runs")

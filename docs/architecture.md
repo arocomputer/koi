@@ -251,10 +251,9 @@ keystroke itself, before the round trip, and reconciled with the real echo. Each
 finds nothing to draw, and wakes on output, input, a gesture or the window
 being uncovered, so idle panes cost no frames. A blank initial snapshot suppresses the
 cursor until the shell's first output or input, bounded at two seconds for a
-shell that never prints; this does not delay shell startup or terminal output. While a pane is scrolled back, its
-top padding and first row fade into the background so earlier output reads
-as continuing under the header rather than being cut off at it; at the live
-screen nothing is faded.
+shell that never prints; this does not delay shell startup or terminal output. Scrolled-back output is drawn as-is: the
+renderer paints nothing over the top of the viewport, so the first visible
+row of history is never dimmed or shadowed.
 
 ## Diagnostics
 
@@ -385,15 +384,24 @@ termination flushes the latest values after earlier writes.
 | Layout and machine metadata | `~/.local/state/koi/layout.json` |
 | Named project recipes | `~/.local/state/koi/projects.json` |
 | Server log | `~/.local/state/koi/server.log` |
-| Socket and server lock | `$TMPDIR/koi`, or `/tmp/koi` when unset |
+| Socket and server lock | `$TMPDIR/koi`, or `/tmp/koi-<uid>` when unset |
 | macOS window preferences, palette recents and manual update source | The app's UserDefaults domain |
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` override their
 respective directories. `KOI_DIR` puts configuration, state and runtime
 files together in one directory; it does not relocate UserDefaults.
-Long socket paths use `/tmp/koi-<uid>/server-<version>.sock`. State, runtime
-and SSH control directories must be private, user-owned directories; invalid
-locations are rejected without changing their permissions.
+Long socket paths move the runtime directory to `/tmp/koi-<uid>`.
+
+The socket is what authorizes a client to read and drive panes, so its
+directory is the security boundary. The app and server create the state and
+runtime directories (and the SSH control directory) private to the user, and
+refuse to use one that is not: it must be owned by this user with mode 0700,
+reached without symlinks through ancestors owned by root or this user that no
+one else can write to (a root-owned sticky directory such as `/tmp` excepted).
+Existing permissions are never repaired. The runtime directory is never `/tmp`
+itself, and the server also accepts a connection only from a peer running as
+the same user. A refusal appears as `cannot serve from …: UnsafeDirectory` in
+the server log.
 
 Project recipes whitelist names, directories, tab/group order, topology and
 relative split weights, with fresh IDs on restore. The PTY launcher uses `/` if a saved directory cannot be entered.

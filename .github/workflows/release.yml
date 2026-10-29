@@ -23,13 +23,13 @@ jobs:
   build:
     name: Build release candidate
     if: github.ref == 'refs/heads/main'
-    runs-on: macos-26
+    runs-on: nscloud-macos-tahoe-arm64-6x14
     timeout-minutes: 60
     permissions:
       contents: read
       actions: read
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     outputs:
       sha: ${{ steps.gate.outputs.sha }}
     steps:
@@ -71,14 +71,14 @@ jobs:
   sign-publish:
     name: Sign and stage release draft
     needs: build
-    runs-on: macos-26
+    runs-on: nscloud-macos-tahoe-arm64-6x14
     timeout-minutes: 45
     environment: release
     permissions:
       contents: write
       actions: read
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       # Use the dispatched main revision's release tooling, not executable artifact contents.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -119,5 +119,10 @@ jobs:
           resolved=$(scripts/release.sh resolve-tag)
           [[ "$resolved" == "$RELEASE_SHA" ]] || { echo 'Release tag moved; refusing publication.' >&2; exit 1; }
           printf 'Commit: %s\nMaintainer: %s\n%s\n' "$RELEASE_SHA" "$GITHUB_ACTOR" "$METAL_ATTESTATION" > "$RUNNER_TEMP/release-notes.md"
+          # A rerun replaces a draft an earlier attempt left; never a published release.
+          if existing=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            [[ "$existing" == true ]] || { echo 'A published release already exists for this tag.' >&2; exit 1; }
+            gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes
+          fi
           gh release create "$RELEASE_TAG" "$RUNNER_TEMP/distribution/"* --repo "$GITHUB_REPOSITORY" \
             --draft --verify-tag --title "Koi $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

@@ -27,9 +27,11 @@ with a Python-only check available before submitting a PR.
 Use an Apple silicon Mac running macOS 26 or later, a full Xcode installation
 with Swift 6.2 or later, Zig 0.17.0, and Git. The locally verified combination
 is Xcode 27.1 (Swift 6.4) and Zig 0.17.0; the declared minimum toolchains
-have not all been independently tested. Run from the repository root:
+have not all been independently tested. Clone the repository and build:
 
 ```sh
+git clone https://github.com/arocomputer/koi.git
+cd koi
 scripts/bundle.sh
 open build/Koi.app
 ```

@@ -7,13 +7,14 @@ cd "$(dirname "$0")"
 usage() {
   cat <<'EOF'
 usage: ./x [command]
-  check        Default: scripts, catalog, full isolated tests, signed bundle
+  check        Default: scripts, catalog, full isolated correctness tests
   scripts      Portable script and CI regressions (Python 3, no native builds)
   programs     Application catalog and artwork checks (Python 3)
   deps         Discover stable Ghostty updates without editing (Python 3, gh)
-  test         Full isolated core and Swift suite (Mac with Metal)
-  test-core    Core tests only; prepares engine source (Zig)
-  test-app     Hosted Swift subset through Koid's isolated runner (Mac)
+  test [FILTER] Full correctness suite or focused Swift tests (Mac)
+  test-core [FILTER] Isolated core tests; optional Zig test-name filter
+  bench        Isolated Swift benchmarks (Mac with Metal)
+  test-app     Hosted Swift subset with isolated fixtures (Mac)
   bundle       Release bundle and signature verification; never installs
   help         Show this help
 EOF
@@ -21,9 +22,20 @@ EOF
 
 task=${1:-check}
 if [ "$#" -gt 0 ]; then shift; fi
+case "$task" in
+  test|test-core)
+    [ "$#" -le 1 ] || { usage >&2; exit 2; }
+    if [ "$#" -eq 1 ]; then
+      case "$1" in ''|-*) usage >&2; exit 2 ;; esac
+      if [ "$task" = test ]; then exec scripts/koid test --filter "$1"; fi
+      exec scripts/koid test --core "$1"
+    fi
+    if [ "$task" = test ]; then exec scripts/koid test; fi
+    exec scripts/koid test --core ;;
+esac
 [ "$#" -eq 0 ] || { usage >&2; exit 2; }
 case "$task" in
-  check) ./x scripts; ./x programs; ./x test; ./x bundle ;;
+  check) ./x scripts; ./x programs; ./x test ;;
   scripts)
     sh tests/scripts/koid-test-isolation.sh
     python3 tests/scripts/buildProvenanceTests.py
@@ -37,18 +49,7 @@ case "$task" in
     python3 tests/scripts/programsTests.py
     ;;
   deps) exec python3 scripts/update-dependencies.py plan ;;
-  test) exec scripts/koid test ;;
-  test-core)
-    scripts/build-ghostty-vt.sh --source-only
-    KOI_DIR=$(mktemp -d /tmp/koi-core-tests-XXXXXXXX)
-    export KOI_DIR
-    trap 'rm -rf "$KOI_DIR"' EXIT
-    # Exercise the same libc as the shipped Linux server, on the host CPU.
-    case "$(uname -s)" in
-      Linux) zig build -j2 test -Dtarget="$(uname -m)-linux-musl" ;;
-      *) zig build -j2 test ;;
-    esac
-    ;;
+  bench) exec scripts/koid test --bench ;;
   test-app) exec scripts/koid test --headless ;;
   bundle)
     scripts/bundle.sh

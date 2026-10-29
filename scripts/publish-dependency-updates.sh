@@ -65,8 +65,14 @@ body="$RUNNER_TEMP/dependency-update-pr.md"
   echo
   echo "Validation pending for commit $sha. Full Metal/AppKit tests on this commit remain required before manual merge."
 } > "$body"
-gh pr create --repo "$GITHUB_REPOSITORY" --draft --base main --head "$branch" \
-  --title 'chore: update dependencies' --body-file "$body"
+if ! gh pr create --repo "$GITHUB_REPOSITORY" --draft --base main --head "$branch" \
+  --title 'chore: update dependencies' --body-file "$body"; then
+  # A branch without a PR would read as unowned and block every later run, so
+  # remove it again, but only while it is still this commit.
+  git push --force-with-lease="$remote_ref:$sha" origin ":$remote_ref" || true
+  echo 'Could not open the update PR; removed its branch. Check that Actions may create pull requests.' >&2
+  exit 1
+fi
 pr_number=$(gh pr view "$branch" --repo "$GITHUB_REPOSITORY" --json number --jq .number)
 
 # Dispatch resolves a branch, so recheck it and accept only a run at our commit.

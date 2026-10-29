@@ -81,7 +81,7 @@ final class Machines {
             } catch {
                 failure = "\(error)"
             }
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, self.hosts.contains(host), self.preparationGeneration[host] == generation else { return }
                 self.preparations[host] = nil
                 self.preparationGeneration[host] = nil

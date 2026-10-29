@@ -44,9 +44,12 @@ elif name == 'gh':
         if os.environ.get('TAG_MISSING'): sys.exit(1)
         print(json.dumps({'object': {'sha': sha, 'type': 'tag' if os.environ.get('ANNOTATED') else 'commit'}}))
     elif '/git/tags/' in path: print(json.dumps({'object': {'sha': sha, 'type': 'commit'}}))
-    elif '/collaborators/' in path: print(json.dumps({'permission': os.environ.get('PERMISSION', 'maintain')}))
+    elif '/collaborators/' in path:
+        # GitHub reports a maintainer's `permission` as write; `role_name` is exact.
+        role = os.environ.get('PERMISSION', 'maintain')
+        print(json.dumps({'permission': 'write' if role == 'maintain' else role, 'role_name': role}))
     elif '/compare/' in path: print(json.dumps({'status': os.environ.get('ANCESTRY', 'ahead'), 'merge_base_commit': {'sha': sha}}))
-    else: print(json.dumps({'workflow_runs': [{'head_sha': os.environ.get('CI_SHA', sha), 'status': 'completed', 'conclusion': os.environ.get('CI', 'success')}]}))
+    else: print(json.dumps({'workflow_runs': [{'head_sha': os.environ.get('CI_SHA', sha), 'event': os.environ.get('CI_EVENT', 'push'), 'status': 'completed', 'conclusion': os.environ.get('CI', 'success')}]}))
 '''
 
 
@@ -109,13 +112,18 @@ class ReleaseTests(unittest.TestCase):
     def test_gate_refuses_unverified_commit(self):
         for key, value in [('METAL_ATTESTATION', 'yes'), ('PERMISSION', 'write'),
                            ('ANCESTRY', 'diverged'), ('CI', 'failure'), ('CI_SHA', 'b' * 40),
-                           ('RELEASE_TAG', 'v9.0.0'), ('TAG_MISSING', '1')]:
+                           ('RELEASE_TAG', 'v9.0.0'), ('TAG_MISSING', '1'), ('CI_EVENT', 'pull_request')]:
             with self.subTest(key=key):
                 old = self.env.get(key)
                 self.env[key] = value
                 self.assertNotEqual(self.run_release('gate').returncode, 0)
                 if old is None: self.env.pop(key)
                 else: self.env[key] = old
+        # A manual main run stands in for a push run a later merge cancelled.
+        self.env['CI_EVENT'] = 'workflow_dispatch'
+        self.assertEqual(self.run_release('gate').returncode, 0)
+        self.env.pop('CI_EVENT')
+        (self.base / 'output').unlink()
         self.assertEqual(self.run_release('gate').returncode, 0)
         self.assertEqual((self.base / 'output').read_text(), 'sha=' + SHA + '\n')
         self.env['ANNOTATED'] = '1'

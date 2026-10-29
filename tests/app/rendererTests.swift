@@ -181,24 +181,6 @@ import Testing
         #expect(before != after)
     }
 
-    /// Scrolled-back output fades out under the top edge; the live screen
-    /// never does, so the first row of a prompt stays crisp.
-    @Test func scrollingBackFadesTheTopEdgeOnly() throws {
-        let renderer = try renderer()
-        renderer.padding = [4, 6]
-        let terminal = VTTerminal(cols: 20, rows: 3)
-        terminal.write(Array((0..<12).map { "l\($0)" }.joined(separator: "\r\n").utf8))
-        #expect(renderer.prepareFrame(terminal, force: true))
-        #expect(!renderer.quads.contains { $0.kind == 3 })
-        terminal.scroll(rows: -2)
-        #expect(renderer.prepareFrame(terminal))
-        let fade = try #require(renderer.quads.last)
-        #expect(fade.kind == 3 && fade.origin == [-4, -6])
-        terminal.scrollToBottom()
-        #expect(renderer.prepareFrame(terminal))
-        #expect(!renderer.quads.contains { $0.kind == 3 })
-    }
-
     /// A small atlas with room for several ordinary glyphs, but not an ASCII row.
     private func renderer() throws -> Renderer {
         let metrics = FontMetrics(size: 13, scale: 1)

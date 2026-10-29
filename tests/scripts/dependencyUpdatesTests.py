@@ -55,7 +55,7 @@ class DependencyUpdatesTests(unittest.TestCase):
             self.assertEqual(path.read_text(), PIN_FILE.replace(OLD, NEW))
 
     def test_publication_keeps_failed_commit_draft_and_preserves_human_branch(self):
-        for mode in ('success', 'failed-ci', 'human', 'forged', 'open', 'other-bot', 'head-race', 'orphan', 'wrong-ci-sha'):
+        for mode in ('success', 'failed-ci', 'human', 'forged', 'open', 'other-bot', 'head-race', 'orphan', 'wrong-ci-sha', 'create-fails'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / 'repo'
                 root.mkdir()
@@ -110,6 +110,8 @@ if args[:1] == ['api']:
         print(json.dumps([{'name': 'v1.4.0', 'commit': {'sha': 'b' * 40}}]))
     else:
         print(json.dumps({'status': 'ahead'}))
+elif args[:2] == ['pr', 'create'] and os.environ['MODE'] == 'create-fails':
+    sys.exit(1)
 elif args[:2] == ['pr', 'list']:
     print(json.dumps([{'number': 42, 'author': {'login': 'app/other' if os.environ['MODE'] == 'other-bot' else 'app/github-actions'},
                       'headRefOid': os.environ['REMOTE_SHA']}] if os.environ['MODE'] in ('human', 'forged', 'open', 'other-bot') else []))
@@ -144,7 +146,11 @@ elif args[:2] == ['run', 'list']:
                         self.assertTrue(any(call[:2] == ['pr', 'ready'] and '--undo' in call for call in calls))
                     else:
                         self.assertEqual(ready, [])
-                if mode in ('human', 'forged', 'open', 'other-bot', 'orphan'):
+                if mode == 'create-fails':
+                    # No PR, so the branch is gone again rather than blocking later runs.
+                    self.assertEqual(git('ls-remote', 'origin', 'refs/heads/chore/dependency-updates'), '')
+                    self.assertFalse(any(call[:2] == ['workflow', 'run'] for call in calls))
+                elif mode in ('human', 'forged', 'open', 'other-bot', 'orphan'):
                     self.assertEqual(git('ls-remote', 'origin', 'refs/heads/chore/dependency-updates').split()[0], remote_sha)
                     self.assertFalse(any(call[:2] in (['pr', 'edit'], ['pr', 'create'], ['workflow', 'run']) for call in calls))
                 else:

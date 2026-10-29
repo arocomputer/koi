@@ -1,6 +1,3 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 // Everything the core takes from the operating system and the terminal
 // engine, translated into the Zig module `c` by the build (see build.zig).
 #include <dirent.h>

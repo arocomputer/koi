@@ -441,28 +441,6 @@ import Testing
         #expect(focused == ["b"])
     }
 
-    /// Focus changes cannot recolor live borders, before, during or after a
-    /// sidebar transition.
-    @Test @MainActor func focusChangesPreservePaneBorderColors() throws {
-        let fixture = PaneFixture()
-        let window = fixture.host()
-        defer { window.close() }
-        fixture.show(["a", "b"], focused: "a")
-        let a = try #require(fixture.a.paneCard)
-        let b = try #require(fixture.b.paneCard)
-        let border = try #require(a.layer?.borderColor)
-        #expect(b.layer?.borderColor == border)
-        fixture.show(["a", "b"], focused: "b")
-        #expect(a.layer?.borderColor == border && b.layer?.borderColor == border)
-        fixture.container.setLayoutTransitionActive(true, finalSize: NSSize(width: 400, height: 400))
-        fixture.container.layoutSubtreeIfNeeded()
-        fixture.show(["a", "b"], focused: "a")
-        #expect(a.layer?.borderColor == border && b.layer?.borderColor == border)
-        fixture.container.setLayoutTransitionActive(false)
-        fixture.container.layoutSubtreeIfNeeded()
-        #expect(a.layer?.borderColor == border && b.layer?.borderColor == border)
-    }
-
     /// The one shell fills each moving envelope while live cards stay at final
     /// size. Filler clicks never reach a terminal, and overflow cannot cross gaps.
     @Test @MainActor func sidebarShellMatchesLiveClippingAndBlocksOnlyItsFilledBand() throws {

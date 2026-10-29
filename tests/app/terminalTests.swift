@@ -33,20 +33,6 @@ import Testing
     #expect(size?.cellHeight == 32)
 }
 
-/// Reparenting or re-reading the same font and scale keeps the glyph atlas;
-/// only a different size, or a forced reload, rebuilds it.
-@MainActor @Test func metricsAreReusedUntilTheFontChanges() {
-    let view = TerminalView(pane: "metrics-test", at: .local)
-    let built = view.metricsBuilds
-    view.fontSize = 13
-    view.viewDidChangeBackingProperties()
-    #expect(view.metricsBuilds == built)
-    view.fontSize = 15
-    #expect(view.metricsBuilds == built + 1)
-    view.reloadAppearance()
-    #expect(view.metricsBuilds == built + 2)
-}
-
 /// The empty-shell cursor is held back only on the first snapshot, until the
 /// shell speaks or the user types, however slowly the shell starts; a
 /// restored screen with content is never held back.

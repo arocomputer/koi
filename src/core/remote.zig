@@ -24,8 +24,9 @@ pub fn printOffer(gpa: std.mem.Allocator) noreturn {
         reader.append(buf[0..n]) catch std.process.exit(1);
         while (reader.next() catch std.process.exit(1)) |f| {
             if (f.kind == .offered) {
-                _ = c.write(1, f.payload.ptr, f.payload.len);
-                std.process.exit(0);
+                // A short write here would hand the app truncated JSON, so the
+                // exit status has to reflect whether the whole offer went out.
+                std.process.exit(if (sys.writeAll(1, f.payload)) 0 else 1);
             }
         }
     }
@@ -43,12 +44,7 @@ pub fn relay(gpa: std.mem.Allocator) noreturn {
     while (true) {
         const n = socket.read(&buf);
         if (n == 0) std.process.exit(0);
-        var off: usize = 0;
-        while (off < n) {
-            const w = c.write(1, buf[off..].ptr, n - off);
-            if (w <= 0) std.process.exit(0);
-            off += @intCast(w);
-        }
+        if (!sys.writeAll(1, buf[0..n])) std.process.exit(0);
     }
 }
 

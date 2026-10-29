@@ -15,7 +15,7 @@ jobs:
   discover:
     name: Find stable engine updates
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 10
     permissions:
       contents: read
@@ -54,7 +54,7 @@ jobs:
     name: Propose engine update and run CI
     needs: discover
     if: needs.discover.outputs.changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 60
     permissions:
       contents: write

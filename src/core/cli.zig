@@ -51,8 +51,8 @@ pub fn run(gpa: Allocator, args: []const [:0]const u8) u8 {
     if (std.mem.eql(u8, cmd, "status")) return reportStatus(gpa, rest);
     if (std.mem.eql(u8, cmd, "info")) return info(gpa, rest);
     if (std.mem.eql(u8, cmd, "version")) {
-        _ = c.write(1, binary_version.ptr, binary_version.len);
-        _ = c.write(1, "\n", 1);
+        _ = sys.writeAll(1, binary_version);
+        _ = sys.writeAll(1, "\n");
         return 0;
     }
     if (std.mem.eql(u8, cmd, "clear")) return editPane(gpa, rest, .clearPane);
@@ -189,8 +189,8 @@ fn list(gpa: Allocator, args: []const [:0]const u8) u8 {
     if (args.len > 0 and std.mem.eql(u8, args[0], "--json")) {
         // The server's tree as sent: nothing the parsed shape below leaves
         // out (tab names, future fields) is lost on the way to a script.
-        _ = c.write(1, json.ptr, json.len);
-        _ = c.write(1, "\n", 1);
+        _ = sys.writeAll(1, json);
+        _ = sys.writeAll(1, "\n");
         return 0;
     }
     const parsed = wire.parse(wire.ParsedState, gpa, json) catch |e| {
@@ -208,7 +208,7 @@ fn list(gpa: Allocator, args: []const [:0]const u8) u8 {
             for (g._0.tabs) |t| appendTab(gpa, &out, t, &position, "  ");
         }
     }
-    _ = c.write(1, out.items.ptr, out.items.len);
+    _ = sys.writeAll(1, out.items);
     return 0;
 }
 
@@ -249,8 +249,8 @@ fn newTab(gpa: Allocator, args: []const [:0]const u8) u8 {
         return 1;
     }
     const id = parsed.value.tab orelse return 1;
-    _ = c.write(1, id.ptr, id.len);
-    _ = c.write(1, "\n", 1);
+    _ = sys.writeAll(1, id);
+    _ = sys.writeAll(1, "\n");
     return 0;
 }
 
@@ -313,8 +313,8 @@ fn capture(gpa: Allocator, args: []const [:0]const u8) u8 {
             defer t.deinit();
             const text = t.text() orelse return 1;
             defer Terminal.freeSnapshot(text);
-            _ = c.write(1, text.ptr, text.len);
-            if (text.len == 0 or text[text.len - 1] != '\n') _ = c.write(1, "\n", 1);
+            _ = sys.writeAll(1, text);
+            if (text.len == 0 or text[text.len - 1] != '\n') _ = sys.writeAll(1, "\n");
             return 0;
         }
     }.f);
@@ -357,8 +357,8 @@ fn split(gpa: Allocator, args: []const [:0]const u8) u8 {
         return 1;
     }
     const id = parsed.value.pane orelse return 1;
-    _ = c.write(1, id.ptr, id.len);
-    _ = c.write(1, "\n", 1);
+    _ = sys.writeAll(1, id);
+    _ = sys.writeAll(1, "\n");
     return 0;
 }
 
@@ -417,19 +417,19 @@ fn info(gpa: Allocator, args: []const [:0]const u8) u8 {
     else
         std.fmt.allocPrint(gpa, "koi {s} pid {d} protocol {d} uptime {d}s", .{ value.serverVersion.?, value.serverPID orelse 0, value.protocolVersion orelse 0, value.uptimeSeconds orelse 0 }) catch return 1;
     defer gpa.free(out);
-    _ = c.write(1, out.ptr, out.len);
-    _ = c.write(1, "\n", 1);
+    _ = sys.writeAll(1, out);
+    _ = sys.writeAll(1, "\n");
     if (args.len == 0) {
         for ([_]struct { label: []const u8, values: []const []const u8 }{
             .{ .label = "transports", .values = value.transports orelse &.{} },
             .{ .label = "capabilities", .values = value.capabilities orelse &.{} },
         }) |entry| {
-            _ = c.write(1, entry.label.ptr, entry.label.len);
+            _ = sys.writeAll(1, entry.label);
             for (entry.values) |v| {
-                _ = c.write(1, " ", 1);
-                _ = c.write(1, v.ptr, v.len);
+                _ = sys.writeAll(1, " ");
+                _ = sys.writeAll(1, v);
             }
-            _ = c.write(1, "\n", 1);
+            _ = sys.writeAll(1, "\n");
         }
     }
     return 0;

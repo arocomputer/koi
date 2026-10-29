@@ -33,16 +33,20 @@ if os.environ['RELEASE_MODE'] == 'resolve-tag':
     raise SystemExit(0)
 if os.environ.get('METAL_ATTESTATION') != 'Full Metal suite passed at ' + sha:
     raise SystemExit('Missing exact-commit full Metal suite attestation')
-permission = api('collaborators/' + os.environ['GITHUB_ACTOR'] + '/permission')['permission']
-if permission not in ('admin', 'maintain'):
+# `permission` reports maintainers as "write"; only `role_name` names the role.
+role = api('collaborators/' + os.environ['GITHUB_ACTOR'] + '/permission').get('role_name')
+if role not in ('admin', 'maintain'):
     raise SystemExit('Release requires a maintainer')
 comparison = api('compare/' + sha + '...main')
 if comparison['status'] not in ('ahead', 'identical') or comparison['merge_base_commit']['sha'] != sha:
     raise SystemExit('Release commit must be an ancestor of main')
-# Only main push CI qualifies: PR runs can select a reduced test set.
-runs = api('actions/workflows/ci.yml/runs?head_sha=' + sha + '&branch=main&event=push&per_page=100')['workflow_runs']
-latest = next((r for r in runs if r['head_sha'] == sha), None)
-if latest is None or latest['status'] != 'completed' or latest['conclusion'] != 'success':
+# Only main CI qualifies: a push run, or a manual run when a later merge
+# cancelled it. Either may select fewer checks than a release; the build job
+# reruns all of them itself.
+runs = api('actions/workflows/ci.yml/runs?head_sha=' + sha + '&branch=main&per_page=100')['workflow_runs']
+latest = next((r for r in runs if r['head_sha'] == sha and r.get('event') in ('push', 'workflow_dispatch')
+               and r['status'] == 'completed' and r['conclusion'] == 'success'), None)
+if latest is None:
     raise SystemExit('No green main CI for this exact commit')
 content = subprocess.check_output(['gh', 'api', '-H', 'Accept: application/vnd.github.raw+json',
     'repos/' + os.environ['GITHUB_REPOSITORY'] + '/contents/build.zig.zon?ref=' + sha], text=True)
