@@ -10,6 +10,7 @@ usage: ./x [command]
   check        Default: scripts, catalog, full isolated tests, signed bundle
   scripts      Portable script and CI regressions (Python 3, no native builds)
   programs     Application catalog and artwork checks (Python 3)
+  deps         Discover same-major Action updates without editing (Python 3, gh)
   test         Full isolated core and Swift suite (Mac with Metal)
   test-core    Core tests only; prepares engine source (Zig)
   test-app     Hosted Swift subset through Koid's isolated runner (Mac)
@@ -27,11 +28,13 @@ case "$task" in
     sh tests/scripts/koid-test-isolation.sh
     python3 tests/scripts/buildProvenanceTests.py
     python3 tests/scripts/ciTests.py
+    python3 tests/scripts/actionUpdatesTests.py
     ;;
   programs)
     python3 scripts/check-programs.py
     python3 tests/scripts/programsTests.py
     ;;
+  deps) exec python3 scripts/update-actions.py plan ;;
   test) exec scripts/koid test ;;
   test-core)
     scripts/build-ghostty-vt.sh --source-only

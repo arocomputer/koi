@@ -92,10 +92,76 @@ Activate it only after the new `CI required` check has passed on GitHub.
 Check live settings for actual enforcement. A future merge queue needs a
 `merge_group` trigger and validation before it is enabled.
 
-The [Dependabot configuration](../.github/dependabot.yml) groups weekly
-GitHub Actions updates. Actions stay pinned to commits. Ghostty upgrades
-remain deliberate pin changes with compatibility and license review; an
-automatic engine updater or release publisher is not configured.
+## Dependency updates
+
+The custom [Action updates workflow](../.github/workflows/deps.yml) runs on
+Mondays at 09:00 UTC or manually on main. It replaces Dependabot and follows
+Aft's separation of discovery, validation and publication. It maintains one
+`chore/action-updates` PR and never merges it automatically.
+
+`./x deps` is a read-only discovery command requiring Python 3 and an
+authenticated GitHub CLI. Remote Actions must use a full commit SHA and a
+`# vMAJOR` comment. The updater resolves that upstream major tag, follows
+annotated tags, and rejects backward or divergent movements. Major versions,
+Ghostty's pin, Zig and Xcode remain manual upgrades.
+
+The discovery job has only repository read permission. It verifies candidate
+SHA substitutions and runs portable regressions and catalog checks. A small
+SHA map passes to the publishing job; no new artifact Actions or Python
+packages are needed. The publisher checks out the same base commit and
+revalidates the map against upstream before reconstructing just the pin edits.
+If main or an upstream tag moved in the meantime, it fails for a fresh retry.
+
+The publisher refuses branches without an owned PR, commits with non-bot
+authorship or an unexpected title, and branch diffs beyond workflow pins. Updates
+use a lease against the observed remote head. It creates a
+draft (or withdraws an existing PR's readiness before pushing), watches the
+normal PR-triggered CI run for the exact new commit, and marks it ready only
+after success, checking the head before and after marking it ready. GitHub
+does not offer an atomic readiness/head update; an observed race withdraws
+readiness, and required CI remains the merge guard for later pushes. Failed
+CI leaves a draft for the next
+run to refresh. There is no duplicate manual CI dispatch.
+
+### Publishing credential
+
+Updating `.github/workflows/` requires **Workflows write** permission, which
+the built-in `GITHUB_TOKEN` cannot request. See GitHub's
+[workflow permission list](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)
+and [additional authentication options](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token#granting-additional-permissions).
+
+Create a fine-grained personal access token restricted to this repository:
+
+- Contents: read and write.
+- Workflows: read and write.
+- Pull requests: read and write.
+- Actions: read (to watch CI).
+
+Store it as the repository Actions secret `WORKFLOW_UPDATES_TOKEN` in GitHub
+Settings → Secrets and variables → Actions. It is used only by the publisher,
+never by candidate checks or PR CI. The workflow does not provision this credential.
+With no updates, discovery succeeds without it; when updates exist but the
+secret is missing, publication fails with a setup message. The PR is opened
+as the token's user; commits use `github-actions[bot]` attribution. Renew the
+token before it expires and retain the same account for existing update PRs.
+
+### Dependency inventory
+
+| Boundary | Count | Dependencies |
+| --- | --- | --- |
+| Direct external product code | 1 | libghostty-vt, pinned in `build-ghostty-vt.sh` |
+| Remote Swift packages | 0 | GhosttyVt is locally built; CKoi/libkoi is Koi's own code |
+| External libraries used through the pinned VT build | 4 | uucode, Wuffs, SIMDUTF, Highway |
+| Distinct GitHub Actions | 3 | actions/checkout, mlugg/setup-zig, actions/cache |
+
+These categories are not a complete runtime/build bill of materials. The
+engine also uses build helpers such as translate-c and includes Unicode/color
+data. Zig supplies its standard library and compiler/runtime support; the
+Linux target uses musl and LLVM C++ runtimes. Apple SDK frameworks and the
+Swift/Xcode toolchain are platform dependencies. Bundled logo artwork has
+separate provenance. See [third-party notices](../THIRD_PARTY_NOTICES.md) for
+the shipped components and licenses. The full Ghostty application's manifest
+lists additional dependencies that Koi's VT-only build does not use.
 
 Next priorities are native Linux tests, auditing omitted hosted integration
 tests, and a release workflow with explicit signing/notarization and artifact

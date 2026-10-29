@@ -1,0 +1,67 @@
+name: Action updates
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: action-updates-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Find and check Action updates
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.plan.outputs.changed }}
+      updates: ${{ steps.plan.outputs.updates }}
+      base: ${{ steps.plan.outputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Resolve same-major Action pins
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          ./x deps >> "$GITHUB_OUTPUT"
+      - name: Check proposed substitutions
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION_UPDATES: ${{ steps.plan.outputs.updates }}
+        run: |
+          python3 scripts/update-actions.py apply >> "$GITHUB_STEP_SUMMARY"
+          ./x scripts
+          ./x programs
+          git diff --check
+
+  publish:
+    name: Publish draft and validate exact commit
+    needs: update
+    if: needs.update.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.update.outputs.base }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Publish verified pins and wait for CI
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_UPDATES_TOKEN }}
+          ACTION_UPDATES: ${{ needs.update.outputs.updates }}
+          UPDATE_BASE: ${{ needs.update.outputs.base }}
+        run: scripts/publish-action-updates.sh
