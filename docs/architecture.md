@@ -381,7 +381,7 @@ termination flushes the latest values after earlier writes.
 | Layout and machine metadata | `~/.local/state/koi/layout.json` |
 | Named project recipes | `~/.local/state/koi/projects.json` |
 | Server log | `~/.local/state/koi/server.log` |
-| Socket and server lock | `$TMPDIR/koi`, or `/tmp/koi` when unset |
+| Socket and server lock | `$TMPDIR/koi`, or `/tmp/koi-<uid>` when unset |
 | macOS window preferences, palette recents and manual update source | The app's UserDefaults domain |
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` override their

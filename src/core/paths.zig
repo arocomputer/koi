@@ -7,6 +7,7 @@
 //! `ensureDirs` refuses to serve from a directory this user does not solely
 //! control, and never places the socket in shared `/tmp`.
 const std = @import("std");
+const builtin = @import("builtin");
 const sys = @import("sys.zig");
 const c = sys.c;
 const wire = @import("wire.zig");
@@ -26,10 +27,16 @@ pub const Paths = struct {
         else
             try std.fs.path.join(gpa, &.{ home, ".local/state/koi" });
         errdefer gpa.free(state);
-        var runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (sys.getenv("XDG_RUNTIME_DIR")) |x|
+        // Without a per-user runtime or temporary directory, the fallback in
+        // shared /tmp is per user too: a single /tmp/koi would belong to
+        // whichever user started first, and `ensureDirs` refuses everyone else.
+        // An empty variable counts as unset, as in the app (paths.swift).
+        var runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (nonEmpty(sys.getenv("XDG_RUNTIME_DIR"))) |x|
             try std.fs.path.join(gpa, &.{ x, "koi" })
+        else if (nonEmpty(sys.getenv("TMPDIR"))) |t|
+            try std.fs.path.join(gpa, &.{ t, "koi" })
         else
-            try std.fs.path.join(gpa, &.{ sys.getenv("TMPDIR") orelse "/tmp", "koi" });
+            try std.fmt.allocPrint(gpa, "/tmp/koi-{d}", .{c.getuid()});
         errdefer gpa.free(runtime);
         const name = try std.fmt.allocPrint(gpa, "server-{d}.sock", .{wire.version});
         defer gpa.free(name);
@@ -79,6 +86,11 @@ test "path allocation failures release every owned string" {
     }.run, .{});
 }
 
+fn nonEmpty(value: ?[]const u8) ?[]const u8 {
+    const v = value orelse return null;
+    return if (v.len == 0) null else v;
+}
+
 /// A NUL-terminated copy of `path` in `buf`, for the libc calls that need one.
 fn cstr(buf: []u8, path: []const u8) ![:0]u8 {
     if (path.len == 0 or path.len >= buf.len) return error.NameTooLong;
@@ -99,7 +111,10 @@ fn mkdirAll(path: []const u8) !void {
         z[i] = 0;
         const rc = c.mkdir(z.ptr, 0o700);
         z[i] = saved;
-        if (rc != 0 and sys.errno() != c.EEXIST) return error.MakeDir;
+        // An existing ancestor can answer EROFS or EACCES rather than EEXIST
+        // (a sealed system volume, a parent this user cannot write), so only
+        // the directory itself decides.
+        if (rc != 0 and i == z.len and sys.errno() != c.EEXIST) return error.MakeDir;
     }
 }
 
@@ -111,11 +126,27 @@ fn mkdirAll(path: []const u8) !void {
 fn requirePrivate(dir: []const u8) !void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const z = try cstr(&buf, dir);
+    const st = try ownerAndMode(z);
+    if ((st.mode & c.S_IFMT) != c.S_IFDIR) return error.NotDirectory;
+    if (st.uid != c.getuid()) return error.NotOwned;
+    if ((st.mode & 0o022) != 0) return error.InsecureDirectory;
+}
+
+/// The owner and mode of `path`, following symlinks. musl's `struct stat`
+/// has fields translate-c turns opaque, so Linux asks the kernel through
+/// `statx` (4.11 and later) instead.
+fn ownerAndMode(path: [:0]const u8) !struct { uid: c.uid_t, mode: c.mode_t } {
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var sx: linux.Statx = undefined;
+        const rc = linux.statx(linux.AT.FDCWD, path.ptr, 0, .{ .TYPE = true, .MODE = true, .UID = true }, &sx);
+        if (linux.errno(rc) != .SUCCESS) return error.Stat;
+        if (!sx.mask.TYPE or !sx.mask.MODE or !sx.mask.UID) return error.Stat;
+        return .{ .uid = sx.uid, .mode = sx.mode };
+    }
     var st: c.struct_stat = undefined;
-    if (c.stat(z.ptr, &st) != 0) return error.Stat;
-    if ((st.st_mode & c.S_IFMT) != c.S_IFDIR) return error.NotDirectory;
-    if (st.st_uid != c.getuid()) return error.NotOwned;
-    if ((st.st_mode & 0o022) != 0) return error.InsecureDirectory;
+    if (c.stat(path.ptr, &st) != 0) return error.Stat;
+    return .{ .uid = st.st_uid, .mode = st.st_mode };
 }
 
 test "ensureDirs refuses a runtime directory other users can write to" {
