@@ -166,17 +166,18 @@ import SwiftUI
         /// Adds destinations using the group context already known by the traversal.
         @MainActor func appendWork(for tab: Wire.TabInfo, groupName: String) {
             let tabID = tab.id
-            if tab.panes.count > 1 {
-                let title = tab.name.flatMap { $0.isEmpty ? nil : $0 } ?? "Tab with \(tab.panes.count) panes"
-                items.append(.init(id: "tab:\(workspace.endpoint.key):\(tab.id)", title: title,
-                                   detail: "\(workspace.endpoint.title) · \(tab.panes.count) panes", symbol: "rectangle.stack",
+            let paneCount = tab.panes.count
+            if paneCount > 1 {
+                let title = tab.name.flatMap { $0.isEmpty ? nil : $0 } ?? "Tab with \(paneCount) panes"
+                items.append(.init(id: "tab:\(workspace.endpoint.key):\(tabID)", title: title,
+                                   detail: "\(workspace.endpoint.title) · \(paneCount) panes", symbol: "rectangle.stack",
                                    keywords: [title, groupName, workspace.endpoint.title, "tab"], kind: .tab,
                                    operation: .perform { navigate(tabID, nil) }))
             }
             for pane in tab.panes {
                 let paneID = pane.id
                 items.append(paneItem(pane, tabName: tab.name, group: groupName, endpoint: workspace.endpoint,
-                                      isSplit: tab.panes.count > 1, navigate: { navigate(tabID, paneID) }))
+                                      isSplit: paneCount > 1, navigate: { navigate(tabID, paneID) }))
             }
         }
         for item in workspace.state.items {
