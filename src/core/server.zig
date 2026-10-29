@@ -123,7 +123,7 @@ pub const Server = struct {
         _ = c.setsid();
         sys.ignoreSignal(c.SIGPIPE);
         const paths = paths_mod.Paths.init(gpa) catch fail("out of memory");
-        paths.ensureDirs();
+        paths.ensureDirs() catch |e| fail(@errorName(e));
         const lock_fd = c.open(cstr(paths.lock), c.O_CREAT | c.O_RDWR | c.O_CLOEXEC, @as(c_uint, 0o600));
         if (lock_fd < 0 or c.flock(lock_fd, c.LOCK_EX | c.LOCK_NB) != 0) {
             log("another server runs", .{});
@@ -152,6 +152,7 @@ pub const Server = struct {
     pub fn connect(gpa: Allocator) ?Socket {
         const paths = paths_mod.Paths.init(gpa) catch return null;
         defer paths.deinit(gpa);
+        paths.ensureDirs() catch return null;
         if (Socket.connect(paths.socket)) |s| return s;
         start(gpa, paths) catch return null;
         var i: usize = 0;
@@ -164,7 +165,7 @@ pub const Server = struct {
 
     /// Starts a server in the background, its output in the log file.
     fn start(gpa: Allocator, paths: paths_mod.Paths) !void {
-        paths.ensureDirs();
+        try paths.ensureDirs();
         const self_path = try sys.selfPath(gpa);
         defer gpa.free(self_path);
         const pid = c.fork();
@@ -199,6 +200,10 @@ pub const Server = struct {
                 }
                 log("accept failed, retrying: {d}", .{e});
                 sys.sleepMillis(100);
+                continue;
+            }
+            if (!sys.sameUserPeer(fd)) {
+                _ = c.close(fd);
                 continue;
             }
             _ = c.fcntl(fd, c.F_SETFD, c.FD_CLOEXEC);

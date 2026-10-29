@@ -41,20 +41,22 @@ struct Layout: Codable, Sendable {
     @MainActor private static var persistence: Task<Void, Never>?
     private static let writes = DispatchQueue(label: "koi.layout", qos: .utility)
 
-    /// Load once per state directory. Selection reads this cache, never disk;
-    /// path scoping also keeps private test servers out of the app's state.
+    /// Decode once per verified state directory; later loads use the cached value.
+    /// Path scoping keeps private test servers out of the app's state.
+    /// Failed directory verification returns an empty layout without reading disk.
     @MainActor
     static func load() -> Layout {
         let url = Paths.layout
         if let cached, cached.url == url { return cached.value }
-        try? Paths.ensureDirs()
+        do { try Paths.ensureDirs() } catch { return Layout() }
         let value = (try? JSONDecoder().decode(Layout.self, from: Data(contentsOf: url))) ?? Layout()
         cached = (url, value)
         return value
     }
 
     /// Publish immediately in memory, coalesce rapid selection changes, and
-    /// serialize disk writes away from the main actor.
+    /// serialize disk writes away from the main actor. The writer verifies the
+    /// directory before persistence, keeping disk checks off this frequent path.
     @MainActor
     func save() {
         let url = Paths.layout
@@ -71,8 +73,8 @@ struct Layout: Codable, Sendable {
         }
     }
 
-    /// App termination and isolated tests drain the newest values after any
-    /// older writes, so quitting never loses the final selected tab.
+    /// App termination and isolated tests drain the newest values after older
+    /// writes, provided their storage still exists and remains private.
     @MainActor static func flush() {
         persistence?.cancel()
         persistence = nil
@@ -81,11 +83,13 @@ struct Layout: Codable, Sendable {
         writes.sync { write(values) }
     }
 
+    /// Drop queued writes whose existing directory is missing or no longer private.
     private static func write(_ values: [URL: Data]) {
         for (url, data) in values {
             // A removed state directory (including an ended private test)
             // must not be recreated by a previously queued save.
-            guard FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path) else { continue }
+            do { try Paths.ensurePrivateDirectory(url.deletingLastPathComponent(), create: false) }
+            catch { continue }
             try? data.write(to: url, options: .atomic)
         }
     }

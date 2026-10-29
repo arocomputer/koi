@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Where Koi keeps its files, split the way Ghostty and the XDG convention
@@ -92,20 +93,55 @@ enum Paths {
 
     /// The server's socket. Its name carries the protocol version, so an app
     /// never talks to a server that speaks another one. Falls back to a
-    /// short path when the runtime directory is too long for a socket.
+    /// short path inside a verified private directory when runtime is too long.
     static var socket: String {
         let name = "server-\(Wire.version).sock"
         let p = runtime.appendingPathComponent(name).path
         if p.utf8.count < 100 { return p }
-        return "/tmp/koi-\(getuid())-\(name)"
+        return "/tmp/koi-\(getuid())/\(name)"
+    }
+
+    /// Create or verify a user-owned 0700 directory without following symlinks.
+    /// Ancestors must be root/user-owned and not writable by others, except
+    /// root-owned sticky directories. Existing permissions are never repaired.
+    /// Call before placing a socket or SSH ControlPath inside the directory.
+    /// Pass create: false for deferred writes that must not recreate removed paths.
+    static func ensurePrivateDirectory(_ directory: URL, create: Bool = true) throws {
+        let path = directory.path
+        guard path.hasPrefix("/"), !path.utf8.contains(0) else { throw CocoaError(.fileWriteNoPermission) }
+        // Only the standard root-managed Darwin aliases bypass O_NOFOLLOW.
+        let aliased = path.hasPrefix("/tmp/") || path.hasPrefix("/var/")
+        let actual = aliased ? "/private" + path : path
+        let parts = actual.split(separator: "/")
+        guard !parts.isEmpty else { throw CocoaError(.fileWriteNoPermission) }
+        var fd = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard fd >= 0 else { throw POSIXError(.EACCES) }
+        defer { Darwin.close(fd) }
+        for (index, part) in parts.enumerated() {
+            guard part != ".", part != ".." else { throw CocoaError(.fileWriteNoPermission) }
+            let name = String(part)
+            if create, mkdirat(fd, name, 0o700) != 0, errno != EEXIST { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EACCES) }
+            let next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard next >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EACCES) }
+            Darwin.close(fd)
+            fd = next
+            var info = stat()
+            guard fstat(fd, &info) == 0 else { throw POSIXError(.EACCES) }
+            if index == parts.count - 1 {
+                guard info.st_uid == getuid(), info.st_mode & 0o777 == 0o700 else { throw CocoaError(.fileWriteNoPermission) }
+            } else {
+                guard info.st_uid == 0 || info.st_uid == getuid(),
+                      info.st_mode & 0o022 == 0 || (info.st_uid == 0 && info.st_mode & 0o1000 != 0)
+                else { throw CocoaError(.fileWriteNoPermission) }
+            }
+        }
     }
 
     /// Makes the state and runtime directories, private to the user, and
     /// moves `layout.json` over from where earlier builds kept it.
     static func ensureDirs() throws {
-        for dir in [state, runtime] {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: 0o700])
+        for dir in [state, runtime, URL(fileURLWithPath: socket).deletingLastPathComponent()] {
+            try ensurePrivateDirectory(dir)
         }
         let old = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Koi/layout.json")

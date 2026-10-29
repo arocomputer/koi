@@ -121,3 +121,33 @@ pub fn selfPath(gpa: std.mem.Allocator) ![]const u8 {
     if (n <= 0) return error.NoPath;
     return gpa.dupe(u8, buf[0..@intCast(n)]);
 }
+
+/// Authenticate a connected Unix peer using kernel credentials, never socket-file metadata.
+pub fn sameUserPeer(fd: c_int) bool {
+    if (builtin.os.tag == .macos) {
+        var uid: c.uid_t = undefined;
+        var gid: c.gid_t = undefined;
+        return c.getpeereid(fd, &uid, &gid) == 0 and uid == c.getuid();
+    } else {
+        var cred: c.struct_ucred = undefined;
+        var len: c.socklen_t = @sizeOf(c.struct_ucred);
+        return c.getsockopt(fd, c.SOL_SOCKET, c.SO_PEERCRED, &cred, &len) == 0 and
+            len == @sizeOf(c.struct_ucred) and cred.uid == c.getuid();
+    }
+}
+
+/// Read ownership and mode from an opened directory. Linux statx avoids musl's
+/// opaque translated stat/timespec layout and validates the returned field mask.
+pub fn directoryInfo(fd: c_int) !struct { uid: c.uid_t, mode: u32 } {
+    if (builtin.os.tag == .macos) {
+        var st: c.struct_stat = undefined;
+        if (c.fstat(fd, &st) != 0) return error.UnsafeDirectory;
+        return .{ .uid = st.st_uid, .mode = st.st_mode };
+    } else {
+        const linux = std.os.linux;
+        var st: linux.Statx = undefined;
+        if (linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .UID = true, .MODE = true }, &st) != 0 or
+            !st.mask.UID or !st.mask.MODE) return error.UnsafeDirectory;
+        return .{ .uid = st.uid, .mode = st.mode };
+    }
+}

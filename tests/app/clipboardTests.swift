@@ -88,3 +88,40 @@ import Testing
         }
     }
 }
+
+/// Models focus transitions without activating a window on the user's desktop.
+@MainActor private final class ClipboardWindow: NSWindow {
+    var fixtureKey = false
+    override var isKeyWindow: Bool { fixtureKey }
+}
+
+@MainActor extension SessionTests {
+    @Test func applicationClipboardWritesFollowKeyboardFocus() throws {
+        _ = NSApplication.shared
+        let window = ClipboardWindow(contentRect: NSRect(x: -2000, y: -2000, width: 400, height: 200),
+                                     styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let root = NSView()
+        let view = TerminalView(pane: "clipboard-focus", at: .local)
+        let other = NSTextField()
+        root.addSubview(view)
+        root.addSubview(other)
+        window.contentView = root
+        var writes: [String] = []
+        view.clipboardWriter = { writes.append($0); return true }
+        #expect(view.restoreTerminal(from: VTTerminal(cols: 10, rows: 2).snapshot()))
+        let terminal = try #require(view.terminal)
+        let request = Array("\u{1b}]52;c;b2s=\u{7}".utf8)
+
+        #expect(window.makeFirstResponder(view))
+        terminal.write(request)
+        #expect(writes.isEmpty)
+        window.fixtureKey = true
+        terminal.write(request)
+        #expect(writes == ["ok"])
+        #expect(window.makeFirstResponder(other))
+        terminal.write(request)
+        #expect(writes == ["ok"])
+    }
+}

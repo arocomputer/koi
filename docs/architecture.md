@@ -132,7 +132,9 @@ falling back to the SSH stdio relay if UDP is unavailable. While the relay
 serves, the link is tried again every 30 seconds, except that a probe UDP
 left unanswered is not repeated for ten minutes: each costs an SSH round
 trip and a blocked port rarely opens within minutes. Bundled server
-builds support Apple silicon macOS and x86_64 Linux. See
+builds support Apple silicon macOS and x86_64 Linux. Setup commands have a
+60-second deadline and retain at most 1 MiB each of stdout and stderr;
+cancellation stops and reaps the local SSH process. See
 [`remote.swift`](../src/app/remote.swift) and
 [`link.zig`](../src/core/link.zig) for the connection implementation.
 
@@ -288,8 +290,9 @@ field, and only when it contains no configured host alias.
 ## Terminal text and activity
 
 App mirrors handle OSC 52 text clipboard writes through the engine callback,
-after snapshot restoration. A complete UTF-8 text value up to 1 MiB is copied
-to the Mac pasteboard. A clear request writes empty text; primary and
+after snapshot restoration. Only the keyboard-focused pane in the active window
+may copy a complete UTF-8 text value up to 1 MiB to the Mac pasteboard.
+A clear request writes empty text; primary and
 selection destinations are unsupported. Terminal clipboard reads are not exposed. Local
 Shift-drag selection and Cmd-C remain independent of application-owned mouse
 selections.
@@ -388,7 +391,9 @@ termination flushes the latest values after earlier writes.
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` override their
 respective directories. `KOI_DIR` puts configuration, state and runtime
 files together in one directory; it does not relocate UserDefaults.
-Long socket paths use a short fallback under `/tmp`.
+Long socket paths use `/tmp/koi-<uid>/server-<version>.sock`. State, runtime
+and SSH control directories must be private, user-owned directories; invalid
+locations are rejected without changing their permissions.
 
 Project recipes whitelist names, directories, tab/group order, topology and
 relative split weights, with fresh IDs on restore. The PTY launcher uses `/` if a saved directory cannot be entered.

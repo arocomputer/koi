@@ -135,7 +135,8 @@ enum DeviceProbe {
             case .local:
                 executable = "/usr/sbin/system_profiler"; arguments = ["-detailLevel", "mini", "SPHardwareDataType", "-json"]
             case .ssh(let host):
-                executable = "/usr/bin/ssh"; arguments = Remote.sshOptions + ["-T", host, command]
+                guard let options = try? Remote.sshOptions else { return nil }
+                executable = "/usr/bin/ssh"; arguments = options + ["-T", host, command]
             }
             guard let data = process.run(executable, arguments) else { return nil }
             if endpoint == .local { return symbol(profilerJSON: data) }
