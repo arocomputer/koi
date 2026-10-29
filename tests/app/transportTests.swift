@@ -12,7 +12,7 @@ import Testing
         #expect(!Socket.sameUserPeer(-1))
     }
 
-    /// Existing public directories and symlinks are rejected without repairing them.
+    /// Existing public directories and symlinked leaves are rejected without repairing them.
     @Test func privateDirectoriesRejectUnsafeModesAndSymlinks() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("koi-private-\(UUID().uuidString)")
         try Paths.ensurePrivateDirectory(root)
@@ -28,7 +28,12 @@ import Testing
         let link = root.appendingPathComponent("link")
         #expect(symlink(child.path, link.path) == 0)
         #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(link) }
+        // A symlinked ancestor is followed and its target checked like any other.
+        try Paths.ensurePrivateDirectory(link.appendingPathComponent("nested"))
+        #expect(rmdir(child.appendingPathComponent("nested").path) == 0)
+        #expect(chmod(child.path, 0o757) == 0)
         #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(link.appendingPathComponent("nested")) }
+        #expect(chmod(child.path, 0o755) == 0)
         let file = root.appendingPathComponent("file")
         try Data().write(to: file)
         #expect(throws: (any Error).self) { try Paths.ensurePrivateDirectory(file.appendingPathComponent("nested")) }
