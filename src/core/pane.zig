@@ -33,6 +33,9 @@ pub const Pane = struct {
     owner: ?*anyopaque = null,
     /// Creator's temporary command proof, consumed by the first actual owner.
     creationController: ?[]u8 = null,
+    /// Another client claimed the pane over its creator's reservation: from
+    /// then on, only a current owner may close or edit it.
+    reservationRevoked: bool = false,
     size: wire.GridSize,
     shell: []const u8,
     home: []const u8,
@@ -484,9 +487,14 @@ pub const Pane = struct {
     }
 
     /// Assign an interactive owner and permanently consume creation authority.
-    /// The caller holds the pane mutex.
-    fn assignOwnerLocked(self: *Pane, owner: *anyopaque) void {
-        if (self.creationController) |id| self.gpa.free(id);
+    /// `controller` is the new owner's, null for a legacy client. The caller
+    /// holds the pane mutex.
+    fn assignOwnerLocked(self: *Pane, owner: *anyopaque, controller: ?[]const u8) void {
+        if (self.creationController) |id| {
+            const creator = if (controller) |c_id| std.mem.eql(u8, c_id, id) else false;
+            if (!creator) self.reservationRevoked = true;
+            self.gpa.free(id);
+        }
         self.creationController = null;
         self.owner = owner;
     }
@@ -515,11 +523,29 @@ pub const Pane = struct {
         // A negotiated interactive view may attach before layout; claiming an
         // unowned pane does not require a placeholder resize. Legacy zero-grid
         // CLI watchers remain passive.
-        if (self.owner == null and !request.observer and (request.paneControl or (request.cols > 0 and request.rows > 0))) {
-            self.assignOwnerLocked(transport.ptr);
+        if (!request.observer and (self.owner == null or self.reconnectsOwnerLocked(controller)) and
+            (request.paneControl or (request.cols > 0 and request.rows > 0)))
+        {
+            self.assignOwnerLocked(transport.ptr, controller);
             self.resizeLocked(.{ .cols = request.cols, .rows = request.rows, .cell_width = request.cellWidth, .cell_height = request.cellHeight });
         }
         self.notifyOwnershipLocked();
+    }
+
+    /// Whether `controller` is the current owner's own, reattaching on a new
+    /// connection before the server has noticed the old one is gone (a relay
+    /// that outlives its network). It takes over rather than observing itself.
+    /// The old connection's held input stays queued in order.
+    fn reconnectsOwnerLocked(self: *Pane, controller: ?[]const u8) bool {
+        const id = controller orelse return false;
+        const owner = self.owner orelse return false;
+        for (self.clients.items) |client| {
+            if (client.transport.ptr == owner and client.negotiated) {
+                const current = client.controller orelse return false;
+                return std.mem.eql(u8, current, id);
+            }
+        }
+        return false;
     }
 
     pub fn detach(self: *Pane, transport: Transport) void {
@@ -547,7 +573,7 @@ pub const Pane = struct {
             if (client.transport.ptr == transport.ptr and client.negotiated) {
                 if (claim) {
                     if (self.owner != transport.ptr) if (self.owner) |previous| self.discardHeldLocked(previous);
-                    self.assignOwnerLocked(transport.ptr);
+                    self.assignOwnerLocked(transport.ptr, client.controller);
                 } else if (self.owner == transport.ptr) {
                     self.owner = null;
                     self.discardHeldLocked(transport.ptr);
@@ -567,12 +593,14 @@ pub const Pane = struct {
     }
 
     /// Checks the current owner or an unclaimed creation reservation. Null is
-    /// the intentional legacy command path; caller holds the pane mutex.
+    /// the intentional legacy command path; caller holds the pane mutex. A pane
+    /// nobody controls (not opened since a relaunch, or its owner left) is
+    /// anyone's to close or edit, unless its reservation was taken over.
     pub fn ownsControllerLocked(self: *Pane, controller: ?[]const u8) bool {
         const proof = controller orelse return true;
         if (!wire.validController(proof)) return false;
         const owner = self.owner orelse {
-            const creator = self.creationController orelse return false;
+            const creator = self.creationController orelse return !self.reservationRevoked;
             return std.mem.eql(u8, creator, proof);
         };
         for (self.clients.items) |client| {
@@ -621,7 +649,7 @@ pub const Pane = struct {
             // may reacquire an unowned pane, but never displace its current owner.
             for (self.clients.items) |client| {
                 if (client.transport.ptr == transport.ptr and !client.negotiated) {
-                    self.assignOwnerLocked(transport.ptr);
+                    self.assignOwnerLocked(transport.ptr, null);
                     self.notifyOwnershipLocked();
                     break;
                 }
@@ -1818,7 +1846,9 @@ test "controller identity is bounded and copied for negotiated owners" {
     try std.testing.expect(pane.ownsControllerLocked(&original));
     try std.testing.expect(!pane.ownsControllerLocked(&id));
     pane.detach(client);
-    try std.testing.expect(!pane.ownsControllerLocked(&id));
+    // Nobody controls it now and no reservation was taken over, so a pane not
+    // yet reopened after a relaunch can still be closed.
+    try std.testing.expect(pane.ownsControllerLocked(&id));
     try std.testing.expectError(error.InvalidController, pane.attach(client, arena.allocator(), .{ .pane = "metadata", .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .controller = "" }));
     var too_long: [65]u8 = undefined;
     @memset(&too_long, 'x');
@@ -1915,6 +1945,37 @@ test "pane control requires explicit transfer and never promotes detached client
     const initial = (try frames.next()).?;
     try std.testing.expectEqual(wire.Kind.ownership, initial.kind);
     try std.testing.expectEqualSlices(u8, &.{0}, initial.payload);
+}
+
+test "the owner's own controller reattaching takes over; another controller still observes" {
+    var pane = try testMetadataPane();
+    defer freeMetadataPane(&pane);
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var stale = Recorder{};
+    defer stale.sent.deinit(std.testing.allocator);
+    var fresh = Recorder{};
+    defer fresh.sent.deinit(std.testing.allocator);
+    var other = Recorder{};
+    defer other.sent.deinit(std.testing.allocator);
+    const a = Transport{ .ptr = &stale, .vtable = &Recorder.vtable };
+    const b = Transport{ .ptr = &fresh, .vtable = &Recorder.vtable };
+    const d = Transport{ .ptr = &other, .vtable = &Recorder.vtable };
+    const request = wire.OpenRequest{ .pane = "metadata", .cols = 80, .rows = 24, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .controller = "app" };
+    try pane.attach(a, arena_state.allocator(), request);
+    try std.testing.expect(pane.owner == a.ptr);
+    // The same app on a new connection while the old one lingers.
+    try pane.attach(b, arena_state.allocator(), request);
+    try std.testing.expect(pane.owner == b.ptr);
+    var foreign = request;
+    foreign.controller = "another";
+    try pane.attach(d, arena_state.allocator(), foreign);
+    try std.testing.expect(pane.owner == b.ptr);
+    // The lingering connection leaving does not disturb the new owner.
+    pane.detach(a);
+    try std.testing.expect(pane.owner == b.ptr);
+    pane.detach(b);
+    pane.detach(d);
 }
 
 /// Converts an open grid to the resize payload used in ownership tests.

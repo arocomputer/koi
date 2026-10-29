@@ -496,7 +496,9 @@ final class Workspace {
         }
         let blocked = targets.contains { id in
             if createdPanes.contains(id) { return false }
-            guard let view = views[id] else { return endpoint != .local }
+            // Without a view this client is not observing it; the server
+            // refuses if another client controls it.
+            guard let view = views[id] else { return false }
             return view.observing || (endpoint != .local && !view.canControl)
         }
         return blocked ? "Take Control of the affected panes before changing or closing them. Their processes are still running." : nil

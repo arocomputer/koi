@@ -88,7 +88,7 @@ fn normalizeSplitWeights(split: *SplitNode, weights: []const f64) !void {
 /// current owner. Legacy commands deliberately take no pane locks here.
 fn lockOwned(targets: []const *Pane, controller: ?[]const u8) bool {
     const proof = controller orelse return true;
-    if (!wire.validController(proof) or targets.len == 0) return false;
+    if (!wire.validController(proof)) return false;
     for (targets) |pane| pane.mutex.lock();
     for (targets) |pane| if (!pane.ownsControllerLocked(proof)) {
         for (targets) |locked| locked.mutex.unlock();

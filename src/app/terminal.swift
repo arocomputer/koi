@@ -280,10 +280,12 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     /// A failed attachment is a connection failure, never evidence of child exit.
     /// Preserve retry history until a complete snapshot has actually restored.
-    private func retryConnection(_ description: String) {
+    /// Only a failing transport counts against the host's link: an answer the
+    /// server sent (a failure message, a bad snapshot) arrived over a working one.
+    private func retryConnection(_ description: String, transportFailed: Bool = true) {
         handshakeTask?.cancel()
         handshakeTask = nil
-        if !restoredConnection { connection?.reportFailure(at: endpoint) }
+        if !restoredConnection, transportFailed { connection?.reportFailure(at: endpoint) }
         connection?.close()
         connection = nil
         requested = nil
@@ -373,13 +375,13 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                     if owns, !holdsResizes { requestResize() }
                 }
             case .failure(let message):
-                retryConnection("Connection error — \(message)")
+                retryConnection("Connection error — \(message)", transportFailed: false)
                 return
             case .attached:
                 break
             case .snapshot(let bytes):
                 guard restoreTerminal(from: bytes) else {
-                    retryConnection("Connection error — invalid terminal snapshot; retrying")
+                    retryConnection("Connection error — invalid terminal snapshot; retrying", transportFailed: false)
                     return
                 }
                 restoredConnection = true
