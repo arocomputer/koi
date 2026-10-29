@@ -329,10 +329,9 @@ never bypass that check. Each pane's display link pauses once a tick
 finds nothing to draw, and wakes on output, input, a gesture or the window
 being uncovered, so idle panes cost no frames. A blank initial snapshot suppresses the
 cursor until the shell's first output or input, bounded at two seconds for a
-shell that never prints; this does not delay shell startup or terminal output. While a pane is scrolled back, its
-top padding and first row fade into the background so earlier output reads
-as continuing under the header rather than being cut off at it; at the live
-screen nothing is faded.
+shell that never prints; this does not delay shell startup or terminal output. Scrolled-back output is drawn as-is: the
+renderer paints nothing over the top of the viewport, so the first visible
+row of history is never dimmed or shadowed.
 
 Ghostty's synchronous render-hold callback captures the completed image before
 mode 2026 redraw bytes mutate it. The renderer holds that state across output
@@ -472,13 +471,20 @@ termination flushes the latest values after earlier writes.
 | Layout and machine metadata | `~/.local/state/koi/layout.json` |
 | Named project recipes | `~/.local/state/koi/projects.json` |
 | Server log | `~/.local/state/koi/server.log` |
-| Socket and server lock | `$TMPDIR/koi`, or `/tmp/koi` when unset |
+| Socket and server lock | `$TMPDIR/koi`, or `/tmp/koi-<uid>` when unset |
 | macOS window preferences, palette recents and manual update source | The app's UserDefaults domain |
 
 `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` override their
 respective directories. `KOI_DIR` puts configuration, state and runtime
 files together in one directory; it does not relocate UserDefaults.
-Long socket paths use a short fallback under `/tmp`.
+Long socket paths move the runtime directory to `/tmp/koi-<uid>`.
+
+The socket is what authorizes a client to read and drive panes, so its
+directory is the security boundary. The server refuses to start unless that
+directory is one this user owns and no other user can create or replace
+entries in (group and other write bits clear), which is why it is never put
+directly in a shared `/tmp`. A refusal appears as `cannot serve from …:
+InsecureDirectory` in the server log.
 
 Project recipes whitelist names, directories, tab/group order, topology and
 relative split weights, with fresh IDs on restore. The PTY launcher uses `/` if a saved directory cannot be entered.

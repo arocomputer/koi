@@ -13,7 +13,7 @@ cleanup() {
   rm -rf "$fixture"
 }
 trap cleanup EXIT
-mkdir -p "$fixture/repo/scripts" "$fixture/repo/zig-out/bin" "$fixture/bin" "$fixture/records" "$fixture/tmp"
+mkdir -p "$fixture/repo/scripts" "$fixture/repo/build/core" "$fixture/bin" "$fixture/records" "$fixture/tmp"
 cp "$repo/scripts/koid" "$fixture/repo/scripts/koid"
 cat > "$fixture/server.py" <<'PY'
 #!/usr/bin/python3
@@ -35,6 +35,7 @@ active="$RECORDS/build-active-${REPO##*/}"
 mkdir "$active" || { touch "$RECORDS/build-overlap"; exit 1; }
 trap 'rmdir "$active"' EXIT
 printf '%s ghostty\n' "$RUN" >> "$RECORDS/build-events-${REPO##*/}"
+printf '%s\n' "$*" > "$RECORDS/$RUN.ghostty-args"
 sleep 0.2
 [ "${FAIL_PREP:-}" != ghostty ]
 MOCK
@@ -45,16 +46,22 @@ active="$RECORDS/build-active-${REPO##*/}"
 mkdir "$active" || { touch "$RECORDS/build-overlap"; exit 1; }
 trap 'rmdir "$active"' EXIT
 printf '%s core\n' "$RUN" >> "$RECORDS/build-events-${REPO##*/}"
+printf '%s\n' "$*" > "$RECORDS/$RUN.core-args"
 sleep 0.2
-cp "$SERVER" "$REPO/zig-out/bin/koi"
-printf '\n# built for %s\n' "$RUN" >> "$REPO/zig-out/bin/koi"
+cp "$SERVER" "$REPO/build/core/koi"
+printf '\n# built for %s\n' "$RUN" >> "$REPO/build/core/koi"
 MOCK
 chmod +x "$fixture/repo/scripts/build-ghostty-vt.sh" "$fixture/repo/scripts/build-core.sh"
 cat > "$fixture/bin/zig" <<'MOCK'
 #!/bin/sh
-[ "$*" = 'build test' ] || exit 1
+case "$*" in 'build -j2 test'|'build -j2 test -Dtest-filter=watcher') ;; *) exit 1 ;; esac
+printf '%s\n' "$*" > "$RECORDS/$RUN.zig-args"
 printf '%s\n%s\n' "$TMPDIR" "$KOI_DIR" > "$RECORDS/$RUN.zig"
 [ "$KOI_TEST_ROOT" = "$TMPDIR" ]
+if [ "$RUN" = core ]; then
+  [ -z "${KOI_SERVER_BIN:-}" ]
+  exit 0
+fi
 [ "${KOI_SERVER_BIN##*/}" = koi ]
 mkdir -p "$KOI_DIR"
 "$KOI_SERVER_BIN" --server &
@@ -67,7 +74,15 @@ printf '%s\n' "$pid" > "$TMPDIR/server.pid"
 MOCK
 cat > "$fixture/bin/swift" <<'MOCK'
 #!/bin/sh
-[ "$*" = test ] || exit 1
+printf '%s\n' "$*" > "$RECORDS/$RUN.swift-args"
+case "$RUN" in
+  headless)
+    [ "$#" = 5 ] && [ "$1 $2 $3 $4" = 'test --jobs 2 --filter' ] || exit 1
+    case "$5" in *ProgramsTests*ClipboardTests*paneOutlivesItsClient*treeCommandsRoundTripThroughTheRealServer*stdioRelayCarriesTheProtocol*offerFromTheServerOpensALinkForItsSecretOnly*streamKeepsItsLinkAlive*) ;; *) exit 1 ;; esac ;;
+  focused) [ "$*" = 'test --jobs 2 --filter ConfigTests|WireTests' ] || exit 1 ;;
+  bench) [ "$*" = 'test --jobs 2 --filter engineWriteAndFrameAssembly|keystrokeEchoRoundTrip' ] || exit 1 ;;
+  *) [ "$*" = 'test --jobs 2 --skip engineWriteAndFrameAssembly|keystrokeEchoRoundTrip' ] || exit 1 ;;
+esac
 printf '%s\n%s\n' "$TMPDIR" "$KOI_DIR" > "$RECORDS/$RUN.swift"
 [ "$KOI_TEST_ROOT" = "$TMPDIR" ]
 dir="$TMPDIR/nested/custom"
@@ -124,7 +139,7 @@ mkdir "$TMPDIR/koi-tests-foreign"
 RUN=a "$fixture/repo/scripts/koid" test & a=$!
 wait_file "$RECORDS/a.ready"
 # A different checkout has its own lock and can run while A is in Swift.
-mkdir -p "$fixture/other/scripts" "$fixture/other/zig-out/bin"
+mkdir -p "$fixture/other/scripts" "$fixture/other/build/core"
 cp "$fixture/repo/scripts/koid" "$fixture/repo/scripts/build-ghostty-vt.sh" "$fixture/repo/scripts/build-core.sh" "$fixture/other/scripts/"
 RUN=c REPO="$fixture/other" "$fixture/other/scripts/koid" test & c=$!
 wait_file "$RECORDS/c.ready"
@@ -226,4 +241,36 @@ RUN=alternate KOI_SERVER_BIN="$fixture/alternate" "$fixture/repo/scripts/koid" t
 [ "$(cat "$RECORDS/alternate.version")" = '# alternative server' ]
 assert_stopped "$RECORDS/alternate.zig.pid"
 assert_stopped "$RECORDS/alternate.swift.pid"
+# Hosted Swift uses the same isolated server/cleanup without rerunning Zig tests.
+touch "$RECORDS/headless.release"
+RUN=headless "$fixture/repo/scripts/koid" test --headless
+[ ! -e "$RECORDS/headless.zig" ]
+[ "$(cat "$RECORDS/headless.core-args")" = --mac-only ]
+[ "$(cat "$RECORDS/headless.version")" = '# built for headless' ]
+[ ! -e "$(cat "$RECORDS/headless.root")" ]
+assert_stopped "$RECORDS/headless.swift.pid"
+# Focused modes use the same fixture cleanup and only their required preparation.
+for mode in focused bench; do
+  touch "$RECORDS/$mode.release"
+  if [ "$mode" = focused ]; then
+    RUN=$mode "$fixture/repo/scripts/koid" test --filter 'ConfigTests|WireTests'
+  else
+    RUN=$mode "$fixture/repo/scripts/koid" test --bench
+  fi
+  [ ! -e "$RECORDS/$mode.zig" ]
+  [ "$(cat "$RECORDS/$mode.core-args")" = --mac-only ]
+  [ ! -e "$(cat "$RECORDS/$mode.root")" ]
+  assert_stopped "$RECORDS/$mode.swift.pid"
+done
+RUN=core KOI_SERVER_BIN="$fixture/alternate" "$fixture/repo/scripts/koid" test --core watcher
+[ "$(cat "$RECORDS/core.ghostty-args")" = --source-only ]
+[ ! -e "$RECORDS/core.core-args" ] && [ ! -e "$RECORDS/core.swift" ]
+[ ! -e "$(cat "$RECORDS/core.root")" ]
+for args in '--filter' '--core --release' '--bench --release' '--headless --release' '--release'; do
+  # Deliberate word splitting tests separate invalid arguments.
+  if RUN=invalid "$fixture/repo/scripts/koid" test $args >/dev/null 2>&1; then
+    echo "invalid arguments accepted: $args" >&2; exit 1
+  fi
+done
+[ ! -e "$RECORDS/invalid.root" ]
 echo 'koid test isolation: passed'

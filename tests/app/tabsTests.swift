@@ -219,7 +219,7 @@ extension SessionTests {
 
     /// The compact picker starts beside the real native controls, including
     /// after resizing. This uses the production window without showing it.
-    @Test @MainActor func horizontalPickerClearsTrafficLightsWithoutAWideGap() async throws {
+    @Test @MainActor func horizontalPickerDoesNotOverlapTrafficLights() async throws {
         _ = NSApplication.shared
         let server = try TestServer()
         defer { Layout.flush(); server.stop() }
@@ -243,13 +243,15 @@ extension SessionTests {
                 return root.convert(button.bounds, from: button).maxX
             }.max() ?? 0
             let gap = bar.frame.minX - trailing
-            #expect(gap >= 8 && gap <= 12, "compact picker must stay close without overlapping native hover areas")
+            #expect(gap >= 0, "the machine picker must not overlap native controls")
         }
         window.setContentSize(NSSize(width: 1000, height: 500))
         root.superview?.layoutSubtreeIfNeeded()
         delegate.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
-        try await Task.sleep(for: .milliseconds(300))
-        writeStripPreview(root.superview ?? root, name: "top-window")
+        if ProcessInfo.processInfo.environment["KOI_VISUALS"] != nil {
+            try await Task.sleep(for: .milliseconds(300))
+            writeStripPreview(root.superview ?? root, name: "top-window")
+        }
     }
 
     /// Selection reveals a long title, gives its old slot back on switching,

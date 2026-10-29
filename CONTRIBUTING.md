@@ -16,25 +16,43 @@ The locally verified toolchain is Xcode 27.1 (build 27A9275), Swift 6.4
 and Zig 0.17.0. These are tested versions, distinct from the declared minimums.
 Select the intended Xcode with `DEVELOPER_DIR` or `xcode-select` and check
 `xcodebuild -version`, `swift --version` and `zig version` before comparing
-builds. The hosted workflow explicitly selects Xcode 26.6 and Zig 0.17.0
-from the macOS 26 ARM runner image; it does not depend on `macos-latest` or
-the image's default Xcode selection.
+builds. The hosted workflow uses Namespace runners and explicitly selects
+Xcode 26.3 (Swift 6.2.4) and Zig 0.17.0 on macOS Tahoe ARM64. The runner
+image's default Xcode is different, so keep `DEVELOPER_DIR` explicit. See
+[CI](docs/ci.md#runners) for runner labels, migration and rollback.
 
 From the repository root:
 
 ```sh
+./x check                  # scripts, catalog and correctness tests
+./x test PaletteSearchTests # focused, isolated Swift tests
+./x test-core watcher      # focused, isolated core tests
+./x scripts                # portable regressions, no native toolchain
+./x programs               # catalog and artwork validation
 scripts/koid build
 scripts/koid run
-scripts/koid test
-scripts/bundle.sh
 ```
+
+`./x` is the shared local/CI entry point; `./x help` lists its commands.
+`./x test` delegates to `scripts/koid test`. Packaging is separate: `./x bundle` runs
+`scripts/bundle.sh` followed by signature verification. Neither installs or
+launches an app. Development builds and interaction remain under `scripts/koid`.
+`./x deps` checks for same-major GitHub Actions updates without changing files;
+it needs an authenticated `gh`. The [dependency workflow](docs/ci.md#dependency-updates)
+documents the scheduled publisher and its required credential.
 
 `build` fetches dependencies as needed, builds the Mac and Linux server
 binaries, and installs Koid at the same path across worktrees. Its bundle ID
 is `com.fschrhunt.koid`; its config, layout, server log and socket live under
 `~/.local/state/koid`. Its macOS preferences are separate from Koi's too.
 
-`test` prepares dependencies, runs `zig build test`, and runs `swift test`.
+`./x test` runs native and Swift correctness checks with macOS dependencies;
+benchmarks and Linux cross-compilation are separate. `./x test FILTER` runs
+only matching Swift tests, and `./x test-core FILTER` runs matching native
+tests after fetching the pinned engine source. `./x test-app` runs the hosted
+Swift subset in debug mode, including selected real-server/session checks.
+All use the same private roots, checkout lock and cleanup. `./x bundle`
+validates both server targets and assembles the production release app.
 Each invocation owns a short temporary root and exports its own `KOI_DIR`,
 `TMPDIR` and test-only `KOI_TEST_ROOT`. Server fixtures use the latter directly
 because Foundation can resolve the system temp directory despite `TMPDIR`.
@@ -59,15 +77,19 @@ bundle. Record commands and results when submitting; distinguish source
 review, automated checks and visual inspection. For a docs-only task that
 forbids execution, review source and links and report runtime checks as unrun.
 
-After dependencies have been built, a focused app test can run directly:
+Use focused checks while developing:
 
 ```sh
-swift test --filter PaletteSearchTests
-zig build test -Dtest-filter=watcher
+./x test PaletteSearchTests
+./x test-core watcher
 ```
 
-Before submitting a code change, run `scripts/koid test` and
-`scripts/bundle.sh`. Add focused regression tests for behavior changes.
+Match validation to the changed behavior. Script/CI changes need `./x scripts`;
+catalog edits need `./x programs`; app/core changes need the relevant isolated
+tests. Run `./x check` for cross-cutting changes and `./x bundle` for packaging,
+toolchain or release changes. Passing checks need repeating only after a new
+edit or failure. Add a regression when it protects meaningful behavior; avoid
+assertions that merely lock in styling or internal counters.
 Check visual changes in Koid rather than writing tests that assert styling
 constants. Settings checks should cover search, current values, validation,
 reset/unassignment and conflicts; category navigation remains a horizontal
@@ -81,19 +103,17 @@ pane headers, compact spacing, inactive-pane fading and focus-follows-mouse,
 including config persistence and system Reduce Motion/Transparency. Focused
 and unfocused pane outlines stay neutral; there is no active-border setting.
 
-The benchmarks in `tests/app/benchmarkTests.swift` run with every full suite.
-They print engine parse rate, full and incremental frame assembly, snapshot
-cost and a keystroke's round trip through a private server and real process,
-using both a local socket and the encrypted UDP link over loopback. Loopback
-does not measure WAN latency or typing-to-display latency.
-Parse/frame/echo measurements have regression bounds; echo polling also has
-a monotonic deadline so a missing response fails instead of hanging.
-Snapshot timings are informational, with restored screen text checked for
-integrity. Read the figures with:
+Performance checks are opt-in:
 
 ```sh
-swift test --filter "engineWriteAndFrameAssembly|keystrokeEchoRoundTrip" 2>&1 | grep -E "engine|frame|snapshot|keystroke"
+./x bench
 ```
+
+They measure engine parsing, full/incremental frame assembly, snapshots and
+keystroke round trips through private local/UDP servers. Their timing bounds
+are useful when changing rendering or transport; they are not routine
+correctness gates or measurements of WAN/display latency. Ordinary snapshot
+round-trip checks remain in the correctness suite.
 
 The app logs `first pane ready N ms after launch` once per start and shows
 it in Diagnostics; that is the startup number to watch.
@@ -114,18 +134,27 @@ sh tests/scripts/koid-test-isolation.sh
 python3 tests/scripts/buildProvenanceTests.py
 ```
 
-The GitHub workflow runs those checks, native core tests, a non-GPU Swift
-subset, and a signed bundle build from downloaded dependencies. Hosted macOS
-runners do not reliably expose Metal, so the full AppKit/renderer suite and
-performance checks remain required on an Apple silicon Mac with Metal.
-The workflow is checked in; a hosted run can be verified only after a remote
-exists and Actions is enabled. It performs no publishing or installation.
+The [CI workflow](.github/workflows/ci.yml) runs portable checks before
+starting one Mac job. PRs select core tests, Swift tests and
+packaging independently from the complete diff. Swift/test-only edits do not
+cross-compile Linux or assemble a bundle. Resource/packaging changes select
+bundling; core/build/workflow and unknown inputs select everything. Main pushes select changed inputs and package Swift source changes;
+manual runs execute all checks. `Required` rejects failed jobs and skipped
+selected steps.
+
+Hosted Macs do not reliably expose Metal. The explicit Swift subset in
+`scripts/koid` includes session persistence, relay and link ownership checks,
+but not all integration/UI coverage. Use scoped AppKit/renderer checks on a
+Mac with Metal for those changes. Catalog-only CI validates SVG/schema and
+provenance; review runtime icon loading visually when artwork changes. CI
+performs no publishing or installation. See [CI](docs/ci.md) for the runner,
+cache and branch-protection details.
 
 Tab-strip integration checks use private servers and offscreen hosted views.
 To save their layout and drag previews without capturing the screen:
 
 ```sh
-KOI_VISUALS="$PWD/build/previews" swift test --filter tabStripsCommitUsingTheirRenderedTargets
+KOI_VISUALS="$PWD/build/previews" ./x test tabStripsCommitUsingTheirRenderedTargets
 ```
 
 The images contain only the fixture's chrome. Tests do not drive the desktop
@@ -134,7 +163,7 @@ or send prompts to programs running in existing sessions.
 For grouped palette and open-work previews in that directory:
 
 ```sh
-KOI_VISUALS="$PWD/build/previews" swift test --filter groupedHomeAndWorkBrowserFitTheSmallestWindow
+KOI_VISUALS="$PWD/build/previews" ./x test groupedHomeAndWorkBrowserFitTheSmallestWindow
 ```
 
 Optional offscreen Settings view previews of the default Appearance category
@@ -143,7 +172,7 @@ in dark appearance at the normal width of 700 and a narrow fixture width of
 [`settingsTests.swift`](tests/app/settingsTests.swift). Save the two PNGs with:
 
 ```sh
-KOI_VISUALS="$PWD/build/previews" swift test --filter settingsWindowPreviews
+KOI_VISUALS="$PWD/build/previews" ./x test settingsWindowPreviews
 ```
 
 This fixture does not activate a window or read the user's configuration.
@@ -152,7 +181,7 @@ It is enabled only when `KOI_VISUALS` is set.
 For offscreen Diagnostics window previews:
 
 ```sh
-KOI_VISUALS=$PWD/build/previews swift test --filter diagnosticsWindowPreviews
+KOI_VISUALS=$PWD/build/previews ./x test diagnosticsWindowPreviews
 ```
 
 Review Overview, Connections, Rendering and Recent Issues, including their
@@ -167,24 +196,21 @@ After dependencies are available, focused checks for the newer behavior can
 be selected without running Koid's app or attaching to its sessions:
 
 ```sh
-swift test --filter 'ProjectTests|ActivityTests|UpdatesTests|IntegrationsTests|InstallationTests'
-swift test --filter closingOneWindowPreservesAnotherWindowsSelectionAndServer
-swift test --filter 'settings|accessibility'
-zig build test -Dtest-filter=serverInfo
-zig build test -Dtest-filter=reportStatus
+./x test 'ProjectTests|ActivityTests|UpdatesTests|IntegrationsTests|InstallationTests'
+./x test closingOneWindowPreservesAnotherWindowsSelectionAndServer
+./x test 'settings|accessibility'
+./x test-core serverInfo
+./x test-core reportStatus
 ```
 
 Private-server tests still launch their own test server. Offscreen checks
 verify the exercised layout/ownership contracts; they do not establish
 on-screen animation quality or GPU throughput.
 
-Address Sanitizer is recommended for input, accessibility, native-handle
-ownership and connection changes. Run relevant Swift tests, for example:
-
-```sh
-swift test --sanitize address --filter 'KeyboardTests|CompositionTests|InputModeTests|SocketTests|accessibility'
-swift test --sanitize address --filter closingOneWindowPreservesAnotherWindowsSelectionAndServer
-```
+Address Sanitizer is useful when changing native handles, input or
+accessibility. Use a dedicated sanitized build with private fixtures; do not
+point it at an installed app or an existing session. Keep fixture cleanup
+scoped to that run.
 
 Core tests use Zig's testing allocator for leak checks and allocation-failure
 tests. Exercise slow peers and concurrent close paths in private test
@@ -207,7 +233,9 @@ dedicated output directory: bundle assembly replaces its destination.
 `build.zig.zon` is the authoritative semantic version for the core and app.
 Bundle version fields derive from it. Scripted core builds include the pinned
 engine revision, Zig executable/version, Xcode/SDK selection, source/build inputs and target
-arguments in their version digest. The engine cache validates the checkout,
+arguments in their version digest. Core output reuse requires that digest and
+all packaged binaries, library and headers; test fixtures snapshot `build/core/koi`.
+The engine cache validates the checkout,
 refuses tracked local edits, and invalidates when its build inputs change.
 Direct `zig build` is explicitly `unversioned` unless supplied with a version;
 use the scripts when comparing the identity of built and running servers.
@@ -400,11 +428,13 @@ Run the catalog check on Linux or macOS with Python 3; it needs no downloads,
 Zig, Swift, Xcode or third-party Python packages:
 
 ```sh
-python3 scripts/check-programs.py
+./x programs
 ```
 
-It checks aliases, fields, colors, glyph choices, SVGs and source checksums.
-CI runs it as a separate job so catalog mistakes appear before the Mac build.
+It checks aliases, fields, colors, glyph choices, SVGs and source checksums,
+then runs the validator's regression tests. CI runs it as a separate job;
+catalog-only PRs do not require a Mac build. License or notice changes also
+run bundle verification because those files are packaged with the app.
 On a Mac, the full `scripts/koid test` suite also verifies that AppKit loads
 the logos and resolves the SF Symbols. Rebuild and relaunch Koid after
 changing the catalog; styles and images are cached for the app's lifetime.

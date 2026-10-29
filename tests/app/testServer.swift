@@ -16,7 +16,7 @@ final class TestServer {
         // The server under test: Koi's Zig core, or whatever KOI_SERVER_BIN names.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let bin = ProcessInfo.processInfo.environment["KOI_SERVER_BIN"].map { URL(fileURLWithPath: $0) }
-            ?? root.appendingPathComponent("zig-out/bin/koi")
+            ?? root.appendingPathComponent("build/core/koi")
         process.executableURL = bin
         process.arguments = ["--server"]
         process.environment = ProcessInfo.processInfo.environment.merging(extraEnvironment) { _, value in value }

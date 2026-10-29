@@ -1,0 +1,58 @@
+#!/bin/sh
+# Shared local/CI commands. Checks never install or launch Koi or Koid.
+set -eu
+cd "$(dirname "$0")"
+
+# List the deliberately small interface; development controls stay in koid.
+usage() {
+  cat <<'EOF'
+usage: ./x [command]
+  check        Default: scripts, catalog, full isolated correctness tests
+  scripts      Portable script and CI regressions (Python 3, no native builds)
+  programs     Application catalog and artwork checks (Python 3)
+  deps         Discover same-major Action updates without editing (Python 3, gh)
+  test [FILTER] Full correctness suite or focused Swift tests (Mac)
+  test-core [FILTER] Isolated core tests; optional Zig test-name filter
+  bench        Isolated Swift benchmarks (Mac with Metal)
+  test-app     Hosted Swift subset with isolated fixtures (Mac)
+  bundle       Release bundle and signature verification; never installs
+  help         Show this help
+EOF
+}
+
+task=${1:-check}
+if [ "$#" -gt 0 ]; then shift; fi
+case "$task" in
+  test|test-core)
+    [ "$#" -le 1 ] || { usage >&2; exit 2; }
+    if [ "$#" -eq 1 ]; then
+      case "$1" in ''|-*) usage >&2; exit 2 ;; esac
+      if [ "$task" = test ]; then exec scripts/koid test --filter "$1"; fi
+      exec scripts/koid test --core "$1"
+    fi
+    if [ "$task" = test ]; then exec scripts/koid test; fi
+    exec scripts/koid test --core ;;
+esac
+[ "$#" -eq 0 ] || { usage >&2; exit 2; }
+case "$task" in
+  check) ./x scripts; ./x programs; ./x test ;;
+  scripts)
+    sh tests/scripts/koid-test-isolation.sh
+    python3 tests/scripts/buildProvenanceTests.py
+    python3 tests/scripts/ciTests.py
+    python3 tests/scripts/actionUpdatesTests.py
+    ;;
+  programs)
+    python3 scripts/check-programs.py
+    python3 tests/scripts/programsTests.py
+    ;;
+  deps) exec python3 scripts/update-actions.py plan ;;
+  bench) exec scripts/koid test --bench ;;
+  test-app) exec scripts/koid test --headless ;;
+  bundle)
+    scripts/bundle.sh
+    codesign --verify --deep --strict "${KOI_BUNDLE_OUTPUT:-$PWD/build/Koi.app}"
+    ;;
+  help|--help|-h) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

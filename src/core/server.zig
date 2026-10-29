@@ -149,7 +149,12 @@ pub const Server = struct {
         _ = c.setsid();
         sys.ignoreSignal(c.SIGPIPE);
         const paths = paths_mod.Paths.init(gpa) catch fail("out of memory");
-        paths.ensureDirs();
+        paths.ensureDirs() catch |e| {
+            // A shared runtime directory is a refusal, not a fallback: the
+            // socket inside it would no longer separate users.
+            log("cannot serve from {s}: {s}", .{ paths.runtime, @errorName(e) });
+            std.process.exit(1);
+        };
         const lock_fd = c.open(cstr(paths.lock), c.O_CREAT | c.O_RDWR | c.O_CLOEXEC, @as(c_uint, 0o600));
         if (lock_fd < 0 or c.flock(lock_fd, c.LOCK_EX | c.LOCK_NB) != 0) {
             log("another server runs", .{});
@@ -190,7 +195,7 @@ pub const Server = struct {
 
     /// Starts a server in the background, its output in the log file.
     fn start(gpa: Allocator, paths: paths_mod.Paths) !void {
-        paths.ensureDirs();
+        try paths.ensureDirs();
         const self_path = try sys.selfPath(gpa);
         defer gpa.free(self_path);
         const pid = c.fork();

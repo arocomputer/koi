@@ -370,7 +370,7 @@ import Testing
         terminal.scroll(rows: -1)
         #expect(!terminal.mode(2026))
         #expect(renderer.prepareFrame(terminal))
-        #expect(renderer.quads.contains { $0.kind == 3 })
+        try expectGlyph(renderer, text: "A", x: 0, y: 0)
     }
 
     /// An erased prediction owns the cell beneath its caret; the old grid glyph cannot return.
@@ -414,24 +414,6 @@ import Testing
         #expect(renderer.prepareFrame(terminal))
         let after = try #require(renderer.quads.first { $0.kind == 0 && $0.origin == .zero }).color
         #expect(before != after)
-    }
-
-    /// Scrolled-back output fades out under the top edge; the live screen
-    /// never does, so the first row of a prompt stays crisp.
-    @Test func scrollingBackFadesTheTopEdgeOnly() throws {
-        let renderer = try renderer()
-        renderer.padding = [4, 6]
-        let terminal = VTTerminal(cols: 20, rows: 3)
-        terminal.write(Array((0..<12).map { "l\($0)" }.joined(separator: "\r\n").utf8))
-        #expect(renderer.prepareFrame(terminal, force: true))
-        #expect(!renderer.quads.contains { $0.kind == 3 })
-        terminal.scroll(rows: -2)
-        #expect(renderer.prepareFrame(terminal))
-        let fade = try #require(renderer.quads.last)
-        #expect(fade.kind == 3 && fade.origin == [-4, -6])
-        terminal.scrollToBottom()
-        #expect(renderer.prepareFrame(terminal))
-        #expect(!renderer.quads.contains { $0.kind == 3 })
     }
 
     /// A small atlas with room for several ordinary glyphs, but not an ASCII row.

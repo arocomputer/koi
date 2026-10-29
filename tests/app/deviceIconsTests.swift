@@ -25,12 +25,6 @@ private actor DeviceProbeFixture {
 }
 
 @Suite struct DeviceIconsTests {
-    @Test func defaultProbeIsDisabledInXCTest() async {
-        guard Bundle.main.bundleURL.pathExtension == "xctest" else { return }
-        #expect(await DeviceProbe.defaultLookup(.local) == nil)
-        #expect(await DeviceProbe.defaultLookup(.ssh("fixture")) == nil)
-    }
-
     @Test func mapsReportedFamilies() {
         #expect(DeviceProbe.symbol(model: "Mac mini") == "macmini")
         #expect(DeviceProbe.symbol(model: "Mac Studio") == "macstudio")

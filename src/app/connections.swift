@@ -31,13 +31,15 @@ final class PaneConnection: @unchecked Sendable {
         /// Charge owned payloads and event overhead to the pending budget.
         var byteCount: Int {
             switch self {
-            case .snapshot(let data): data.count
-            case .output(let data): data.count
+            case .snapshot(let data): return data.count
+            case .output(let data): return data.count
             case .attached(let info):
-                info.id.utf8.count + info.title.utf8.count + info.cwd.utf8.count
-                    + (info.home?.utf8.count ?? 0) + info.program.utf8.count + info.shell.utf8.count + 256
-            case .failure(let message): message.utf8.count + 256
-            default: 256
+                let identityBytes = info.id.utf8.count + info.title.utf8.count
+                let directoryBytes = info.cwd.utf8.count + (info.home?.utf8.count ?? 0)
+                let programBytes = info.program.utf8.count + info.shell.utf8.count
+                return identityBytes + directoryBytes + programBytes + 256
+            case .failure(let message): return message.utf8.count + 256
+            default: return 256
             }
         }
     }

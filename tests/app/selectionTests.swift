@@ -33,6 +33,10 @@ private func point(_ col: Int, _ row: Int, dx: CGFloat = 5) -> CGPoint {
 /// and a drag follows the pixel inside a cell rather than the cell.
 @MainActor @Test func clicksAndDragsReachTheEngineWithTheirGeometryAndTiming() {
     let s = makeSelection("hello world\r\nsecond line")
+    s.terminal.selectAll()
+    s.press(at: point(2, 0), geometry: geometry, time: 1, repeatInterval: 0.5)
+    #expect(!s.terminal.hasSelection, "a new single press clears the old selection")
+    s.release(at: point(2, 0), geometry: geometry)
     click(s, 7, 0, count: 2)
     #expect(s.terminal.selectedText() == "world")
     click(s, 7, 0, count: 3)
@@ -47,13 +51,6 @@ private func point(_ col: Int, _ row: Int, dx: CGFloat = 5) -> CGPoint {
     #expect(s.terminal.selectedText() == "hell")
     s.drag(at: point(4, 0, dx: 8), geometry: geometry)
     #expect(s.terminal.selectedText() == "hello")
-}
-
-@MainActor @Test func singlePressClearsOldSelection() {
-    let s = makeSelection("hello world")
-    s.terminal.selectAll()
-    s.press(at: point(2, 0), geometry: geometry, time: 10, repeatInterval: 0.5)
-    #expect(!s.terminal.hasSelection)
 }
 
 @MainActor @Test func autoscrollExtendsSelectionAndSurvivesOutput() {
@@ -92,15 +89,10 @@ private func point(_ col: Int, _ row: Int, dx: CGFloat = 5) -> CGPoint {
         #expect(!s.autoscrolling)
         #expect(!s.autoscroll(geometry: geometry))
         #expect(s.terminal.viewportIsActive)
+        let selected = s.terminal.selectedText()
+        s.drag(at: point(8, 0), geometry: geometry)
+        #expect(s.terminal.selectedText() == selected, "a finished gesture ignores later drags")
     }
-}
-
-@MainActor @Test func dragAfterReleaseDoesNothing() {
-    let s = makeSelection("hello world")
-    s.press(at: point(0, 0), geometry: geometry, time: 10, repeatInterval: 0.5)
-    s.release(at: point(0, 0), geometry: geometry)
-    s.drag(at: point(8, 0), geometry: geometry)
-    #expect(!s.terminal.hasSelection)
 }
 
 @MainActor @Test func adapterOwnsTerminalAndFreesGestureFirst() {
