@@ -6,6 +6,12 @@ const std = @import("std");
 const sys = @import("sys.zig");
 const wire = @import("wire.zig");
 
+/// Match Swift's treatment of unset and empty directory overrides.
+fn nonemptyEnv(name: [:0]const u8) ?[]const u8 {
+    const value = sys.getenv(name.ptr) orelse return null;
+    return if (value.len == 0) null else value;
+}
+
 pub const Paths = struct {
     state: []const u8,
     runtime: []const u8,
@@ -15,23 +21,23 @@ pub const Paths = struct {
 
     pub fn init(gpa: std.mem.Allocator) !Paths {
         const home = sys.getenv("HOME") orelse "/";
-        const override = sys.getenv("KOI_DIR");
-        const state = if (override) |dir| try gpa.dupe(u8, dir) else if (sys.getenv("XDG_STATE_HOME")) |x|
+        const override = nonemptyEnv("KOI_DIR");
+        const state = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv("XDG_STATE_HOME")) |x|
             try std.fs.path.join(gpa, &.{ x, "koi" })
         else
             try std.fs.path.join(gpa, &.{ home, ".local/state/koi" });
         errdefer gpa.free(state);
-        const runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (sys.getenv("XDG_RUNTIME_DIR")) |x|
+        const runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv("XDG_RUNTIME_DIR")) |x|
             try std.fs.path.join(gpa, &.{ x, "koi" })
         else
-            try std.fs.path.join(gpa, &.{ sys.getenv("TMPDIR") orelse "/tmp", "koi" });
+            try std.fs.path.join(gpa, &.{ nonemptyEnv("TMPDIR") orelse "/tmp", "koi" });
         errdefer gpa.free(runtime);
         const name = try std.fmt.allocPrint(gpa, "server-{d}.sock", .{wire.version});
         defer gpa.free(name);
         var socket = try std.fs.path.join(gpa, &.{ runtime, name });
         errdefer gpa.free(socket);
         if (socket.len >= 100) {
-            const short = try std.fmt.allocPrint(gpa, "/tmp/koi-{d}-{s}", .{ sys.c.getuid(), name });
+            const short = try std.fmt.allocPrint(gpa, "/tmp/koi-{d}/{s}", .{ sys.c.getuid(), name });
             gpa.free(socket);
             socket = short;
         }
@@ -51,15 +57,11 @@ pub const Paths = struct {
         inline for (.{ self.state, self.runtime, self.socket, self.lock, self.log }) |path| gpa.free(path);
     }
 
-    /// Makes the state and runtime directories, private to the user.
-    pub fn ensureDirs(self: Paths) void {
-        for ([_][]const u8{ self.state, self.runtime }) |dir| {
-            var buf: [512]u8 = undefined;
-            if (dir.len >= buf.len) continue;
-            @memcpy(buf[0..dir.len], dir);
-            buf[dir.len] = 0;
-            mkdirAll(buf[0..dir.len :0]);
-        }
+    /// Create or verify private state, runtime and fallback socket directories; fail closed.
+    pub fn ensureDirs(self: Paths) !void {
+        try ensurePrivateDir(self.state);
+        try ensurePrivateDir(self.runtime);
+        try ensurePrivateDir(std.fs.path.dirname(self.socket) orelse return error.UnsafeDirectory);
     }
 };
 
@@ -73,15 +75,66 @@ test "path allocation failures release every owned string" {
     }.run, .{});
 }
 
-/// mkdir -p, with each directory private to the user.
-fn mkdirAll(path: [:0]u8) void {
-    var i: usize = 1;
-    while (i <= path.len) : (i += 1) {
-        if (i == path.len or path[i] == '/') {
-            const saved = path[i];
-            path[i] = 0;
-            _ = sys.c.mkdir(path.ptr, 0o700);
-            path[i] = saved;
+/// Walk without following symlinks. Ancestors must be owned by root or this user
+/// and not writable by others, except root-owned sticky directories such as /tmp.
+/// Existing leaf directories must already be private; never repair permissions.
+pub fn ensurePrivateDir(path: []const u8) !void {
+    if (path.len == 0 or path[0] != '/' or std.mem.indexOfScalar(u8, path, 0) != null)
+        return error.UnsafeDirectory;
+    // Darwin's system aliases are root-managed; all subsequent components use O_NOFOLLOW.
+    const aliased = @import("builtin").os.tag == .macos and
+        (std.mem.startsWith(u8, path, "/tmp/") or std.mem.startsWith(u8, path, "/var/"));
+    const actual = if (aliased) path[1..] else path;
+    var fd = sys.c.open(if (aliased) "/private" else "/", sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_CLOEXEC);
+    if (fd < 0) return error.UnsafeDirectory;
+    defer _ = sys.c.close(fd);
+    var parts = std.mem.tokenizeScalar(u8, actual, '/');
+    var found = false;
+    while (parts.next()) |part| {
+        found = true;
+        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return error.UnsafeDirectory;
+        var buf: [256]u8 = undefined;
+        const name = std.fmt.bufPrintSentinel(&buf, "{s}", .{part}, 0) catch return error.PathTooLong;
+        if (sys.c.mkdirat(fd, name, 0o700) != 0 and sys.errno() != sys.c.EEXIST) return error.CreateDirectory;
+        const next = sys.c.openat(fd, name, sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_NOFOLLOW | sys.c.O_CLOEXEC);
+        if (next < 0) return error.UnsafeDirectory;
+        _ = sys.c.close(fd);
+        fd = next;
+        const st = try sys.directoryInfo(fd);
+        const leaf = parts.peek() == null;
+        if (leaf) {
+            if (st.uid != sys.c.getuid() or st.mode & 0o777 != 0o700) return error.UnsafeDirectory;
+        } else {
+            if (st.uid != 0 and st.uid != sys.c.getuid()) return error.UnsafeDirectory;
+            if (st.mode & 0o022 != 0 and !(st.uid == 0 and st.mode & 0o1000 != 0)) return error.UnsafeDirectory;
         }
     }
+    if (!found) return error.UnsafeDirectory;
+}
+
+test "private directories reject public modes and symlinks without changing them" {
+    var template = "/tmp/koi-private-XXXXXXXX".*;
+    const root = sys.c.mkdtemp(&template) orelse return error.CreateDirectory;
+    defer _ = sys.c.rmdir(root);
+    try ensurePrivateDir(std.mem.span(root));
+    var buf: [256]u8 = undefined;
+    const child = try std.fmt.bufPrintSentinel(&buf, "{s}/child", .{root}, 0);
+    try ensurePrivateDir(child);
+    defer _ = sys.c.rmdir(child);
+    try std.testing.expectEqual(0, sys.c.chmod(child, 0o755));
+    try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(child));
+    const child_fd = sys.c.open(child, sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_NOFOLLOW | sys.c.O_CLOEXEC);
+    try std.testing.expect(child_fd >= 0);
+    defer _ = sys.c.close(child_fd);
+    const st = try sys.directoryInfo(child_fd);
+    try std.testing.expectEqual(@as(u32, 0o755), st.mode & 0o777);
+    var link_buf: [256]u8 = undefined;
+    const link = try std.fmt.bufPrintSentinel(&link_buf, "{s}/link", .{root}, 0);
+    try std.testing.expectEqual(0, sys.c.symlink(child, link));
+    defer _ = sys.c.unlink(link);
+    try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(link));
+    var nested_buf: [256]u8 = undefined;
+    const nested = try std.fmt.bufPrintSentinel(&nested_buf, "{s}/nested", .{link}, 0);
+    try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(nested));
+    try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir("/"));
 }

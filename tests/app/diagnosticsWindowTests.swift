@@ -112,7 +112,7 @@ extension SessionTests {
 /// Isolates the layout/config lookup performed by AppDelegate construction.
 @MainActor private func withDiagnosticDirectory(_ body: () async throws -> Void) async throws {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent("koi-diagnostics-\(UUID())")
-    try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+    try Paths.ensurePrivateDirectory(path)
     let previous = ProcessInfo.processInfo.environment["KOI_DIR"]
     setenv("KOI_DIR", path.path, 1)
     defer {

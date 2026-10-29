@@ -69,15 +69,16 @@ pub const Socket = struct {
         return .{ .fd = fd, .gpa = gpa, .mutex = sys.Mutex.init(), .cond = sys.Cond.init() };
     }
 
-    /// Connects to the socket at `path`; null if nothing listens there.
+    /// Connects only to a kernel-authenticated same-user Unix peer; null on failure.
     pub fn connect(path: []const u8) ?Socket {
+        @import("paths.zig").ensurePrivateDir(std.fs.path.dirname(path) orelse return null) catch return null;
         const fd = c.socket(c.AF_UNIX, c.SOCK_STREAM, 0);
         if (fd < 0) return null;
         var addr = unixAddress(path) orelse {
             _ = c.close(fd);
             return null;
         };
-        if (c.connect(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) {
+        if (c.connect(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0 or !sys.sameUserPeer(fd)) {
             _ = c.close(fd);
             return null;
         }
@@ -264,7 +265,7 @@ pub fn quietSigpipe(fd: c_int) void {
 pub fn unixAddress(path: []const u8) ?c.struct_sockaddr_un {
     var addr: c.struct_sockaddr_un = std.mem.zeroes(c.struct_sockaddr_un);
     addr.sun_family = c.AF_UNIX;
-    if (path.len >= addr.sun_path.len) return null;
+    if (path.len >= addr.sun_path.len or std.mem.indexOfScalar(u8, path, 0) != null) return null;
     @memcpy(addr.sun_path[0..path.len], path);
     addr.sun_path[path.len] = 0;
     return addr;
@@ -272,6 +273,7 @@ pub fn unixAddress(path: []const u8) ?c.struct_sockaddr_un {
 
 /// Binds and listens on a Unix socket at `path`, private to the user.
 pub fn listenUnix(path: []const u8) !c_int {
+    try @import("paths.zig").ensurePrivateDir(std.fs.path.dirname(path) orelse return error.UnsafeDirectory);
     var pathz: [256]u8 = undefined;
     if (path.len >= pathz.len) return error.PathTooLong;
     @memcpy(pathz[0..path.len], path);
@@ -283,7 +285,7 @@ pub fn listenUnix(path: []const u8) !c_int {
     _ = c.fcntl(fd, c.F_SETFD, c.FD_CLOEXEC);
     var addr = unixAddress(path) orelse return error.PathTooLong;
     if (c.bind(fd, @ptrCast(&addr), @sizeOf(c.struct_sockaddr_un)) != 0) return error.Bind;
-    _ = c.chmod(&pathz, 0o600);
+    if (c.chmod(&pathz, 0o600) != 0) return error.SocketPermissions;
     if (c.listen(fd, 64) != 0) return error.Listen;
     return fd;
 }
@@ -355,4 +357,33 @@ test "hanging up a server socket keeps its descriptor until release" {
     try std.testing.expect(c.fcntl(fds[0], c.F_GETFD) >= 0);
     socket.release();
     try std.testing.expect(c.fcntl(fds[0], c.F_GETFD) < 0);
+}
+
+test "Unix peer credentials accept this user and reject invalid descriptors" {
+    var fds: [2]c_int = undefined;
+    try std.testing.expectEqual(0, c.socketpair(c.AF_UNIX, c.SOCK_STREAM, 0, &fds));
+    defer _ = c.close(fds[0]);
+    defer _ = c.close(fds[1]);
+    try std.testing.expect(sys.sameUserPeer(fds[0]));
+    try std.testing.expect(sys.sameUserPeer(fds[1]));
+    try std.testing.expect(!sys.sameUserPeer(-1));
+}
+
+test "local sockets connect only through a private fixture directory" {
+    var template = "/tmp/koi-socket-XXXXXXXX".*;
+    const root = c.mkdtemp(&template) orelse return error.CreateDirectory;
+    defer _ = c.rmdir(root);
+    var buf: [256]u8 = undefined;
+    const path = try std.fmt.bufPrintSentinel(&buf, "{s}/server.sock", .{root}, 0);
+    const listener = try listenUnix(path);
+    defer _ = c.close(listener);
+    defer _ = c.unlink(path);
+    var client = Socket.connect(path) orelse return error.Connect;
+    defer client.close();
+    const accepted = c.accept(listener, null, null);
+    try std.testing.expect(accepted >= 0);
+    defer _ = c.close(accepted);
+    try std.testing.expect(sys.sameUserPeer(accepted));
+    try std.testing.expectEqual(0, c.chmod(root, 0o755));
+    try std.testing.expect(Socket.connect(path) == null);
 }

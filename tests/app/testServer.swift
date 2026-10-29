@@ -11,7 +11,7 @@ final class TestServer {
         // The runner's explicit root keeps crash cleanup scoped to this run.
         let temporaryRoot = ProcessInfo.processInfo.environment["KOI_TEST_ROOT"] ?? NSTemporaryDirectory()
         dir = URL(fileURLWithPath: temporaryRoot).appendingPathComponent("koi-test-\(UUID().uuidString.prefix(8))")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Paths.ensurePrivateDirectory(dir)
         setenv("KOI_DIR", dir.path, 1)
         // The server under test: Koi's Zig core, or whatever KOI_SERVER_BIN names.
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

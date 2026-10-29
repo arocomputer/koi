@@ -23,24 +23,29 @@ import Network
     static func stopObserving(_ token: UUID) { handlers[token] = nil }
 
     /// Watch the socket directory as it is now; it moves only when `KOI_DIR`
-    /// changes, which test fixtures do.
+    /// changes, which test fixtures do. Unsafe directories are never watched.
     static func rewatch() {
         directoryWatch?.cancel()
         directoryWatch = nil
         if !handlers.isEmpty { start() }
     }
 
+    /// Watch only a verified private socket directory; network wakeups remain independent.
     private static func start() {
         if directoryWatch == nil {
             let directory = (Paths.socket as NSString).deletingLastPathComponent
-            try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-            let fd = open(directory, O_EVTONLY)
-            if fd >= 0 {
+            let verified = (try? Paths.ensurePrivateDirectory(URL(fileURLWithPath: directory))) != nil
+            let fd = verified ? open(directory, O_EVTONLY | O_NOFOLLOW | O_CLOEXEC) : -1
+            var info = stat()
+            if fd >= 0, fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+               info.st_uid == getuid(), info.st_mode & 0o777 == 0o700 {
                 let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
                 source.setEventHandler { MainActor.assumeIsolated { fire() } }
                 source.setCancelHandler { close(fd) }
                 source.resume()
                 directoryWatch = source
+            } else if fd >= 0 {
+                close(fd)
             }
         }
         if pathMonitor == nil {
@@ -141,9 +146,10 @@ enum LocalServer {
         return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
+    /// Start only after private state/runtime verification, before opening the log.
     private static func start() {
         guard let exe = binary else { return }
-        try? Paths.ensureDirs()
+        do { try Paths.ensureDirs() } catch { return }
         let p = Process()
         p.executableURL = exe
         p.arguments = ["--server"]
