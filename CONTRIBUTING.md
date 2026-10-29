@@ -185,7 +185,7 @@ KOI_VISUALS=$PWD/build/previews ./x test diagnosticsWindowPreviews
 ```
 
 Review Overview, Connections, Rendering and Recent Issues, including their
-shared rounded rectangle Capsule selection. Diagnostics inspection must preserve session
+shared capsule selection. Diagnostics inspection must preserve session
 selection; Refresh must use existing controls without connecting or starting
 processes. Check that copy/export follows the inspected endpoint, Pause stops
 automatic snapshot updates, close/minimize stops the timer, and Clear History

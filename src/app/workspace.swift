@@ -18,6 +18,10 @@ struct WorkspaceCommandError: LocalizedError {
 final class Workspace {
     /// The machine whose server this mirrors.
     let endpoint: Endpoint
+    private let controller = UUID().uuidString
+    /// Creation recipes can build their own new panes before a view attaches.
+    /// The server still checks the creation reservation or current owner.
+    @ObservationIgnored private var createdPanes: Set<String> = []
     private(set) var state = Wire.State()
     private(set) var transport: DiagnosticServer.Transport = .disconnected
     private(set) var selectedTab: String?
@@ -27,6 +31,13 @@ final class Workspace {
     /// The group whose name field is open.
     var renamingGroup: String?
     var renamingTab: String?
+    /// Submitted names remain visible until the server publishes them or rejects the command.
+    private(set) var pendingTabNames: [String: String] = [:]
+    @ObservationIgnored private var tabRenameIDs: [String: UUID] = [:]
+    @ObservationIgnored private var confirmedTabRenames: [String: UUID] = [:]
+    private(set) var pendingGroupNames: [String: String] = [:]
+    @ObservationIgnored private var groupRenameIDs: [String: UUID] = [:]
+    @ObservationIgnored private var confirmedGroupRenames: [String: UUID] = [:]
 
     /// Called when the selected tab, its layout or its focused pane
     /// changes, to show it.
@@ -46,11 +57,13 @@ final class Workspace {
     @ObservationIgnored var onEmpty: (() -> Void)?
 
     @ObservationIgnored private var control: Control?
+    @ObservationIgnored private var controlTransport: Transport?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var reconnectSignal: UUID?
     @ObservationIgnored private var connecting: Task<Void, Never>?
     @ObservationIgnored private var connectionGeneration = UUID()
     @ObservationIgnored private var reconnectDelay: UInt64 = 300_000_000
+    @ObservationIgnored private var connectionDeadline: Task<Void, Never>?
     @ObservationIgnored private var running = false
     @ObservationIgnored private var views: [String: TerminalView] = [:]
     @ObservationIgnored private var fontSize = Config.current.fontSize
@@ -59,12 +72,15 @@ final class Workspace {
     /// When each working tab started working.
     @ObservationIgnored private var workingSince: [String: Date] = [:]
 
-    init(_ endpoint: Endpoint) {
+    init(_ endpoint: Endpoint, control: Control? = nil, controlTransport: Transport? = nil) {
         self.endpoint = endpoint
+        self.control = control
+        self.controlTransport = controlTransport
     }
 
     isolated deinit {
         reconnectTask?.cancel()
+        connectionDeadline?.cancel()
         connecting?.cancel()
         control?.close()
         views.values.forEach { $0.detach() }
@@ -95,19 +111,54 @@ final class Workspace {
                 return
             }
             let c = Control(socket: socket)
-            self.reconnectDelay = 300_000_000
+            var initialized = false
+            let tabsAwaitingReconnect = self.confirmedTabRenames
+            let groupsAwaitingReconnect = self.confirmedGroupRenames
             self.stopAwaitingServer()
             self.control = c
+            self.controlTransport = socket
             self.transport = endpoint == .local ? .localSocket : (c.usesEncryptedLink ? .encryptedUDP : .sshRelay)
             self.serverCapabilities = nil
             self.onConnected?()
             c.onState = { [weak self, weak c] state in
                 guard let self, let c, self.control === c else { return }
+                let firstState = !initialized
+                initialized = true
+                self.connectionDeadline?.cancel()
+                self.connectionDeadline = nil
+                self.reconnectDelay = 300_000_000
                 self.apply(state)
+                if firstState {
+                    for (id, request) in tabsAwaitingReconnect { self.retireTabRename(id, request: request) }
+                    for (id, request) in groupsAwaitingReconnect { self.retireGroupRename(id, request: request) }
+                }
+            }
+            c.onError = { [weak self, weak c] message in
+                guard let self, let c, self.control === c else { return }
+                self.onError?("Cannot read this machine’s state: \(message)")
+                if !initialized { Remote.connectionFailed(endpoint, transport: socket) }
+                c.close()
+                self.reconnectControl()
             }
             c.onDisconnect = { [weak self, weak c] in
                 guard let self, let c, self.control === c else { return }
+                if !initialized { Remote.connectionFailed(endpoint, transport: socket) }
                 self.reconnectControl()
+            }
+            self.connectionDeadline?.cancel()
+            self.connectionDeadline = Task { [weak self, weak c] in
+                var deadline = ConnectionDeadline(now: ProcessInfo.processInfo.systemUptime)
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                    guard let self, let c, self.control === c, !initialized else { return }
+                    if deadline.stalled(receivedBytes: c.receivedBytes, now: ProcessInfo.processInfo.systemUptime) {
+                        Remote.connectionFailed(endpoint, transport: socket)
+                        self.onError?("This machine stopped sending its state. Reconnecting…")
+                        c.close()
+                        self.reconnectControl()
+                        return
+                    }
+                }
             }
         }
     }
@@ -115,7 +166,10 @@ final class Workspace {
     /// A temporary transport loss must not leave the sidebar frozen. Keep
     /// the current tree while reconnecting, then replace it with fresh state.
     private func reconnectControl() {
+        connectionDeadline?.cancel()
+        connectionDeadline = nil
         control = nil
+        controlTransport = nil
         transport = .disconnected
         onViewsChanged?()
         reconnectTask?.cancel()
@@ -148,6 +202,8 @@ final class Workspace {
         running = false
         stopAwaitingServer()
         reconnectTask?.cancel()
+        connectionDeadline?.cancel()
+        connectionDeadline = nil
         reconnectTask = nil
         connecting?.cancel()
         connecting = nil
@@ -157,6 +213,7 @@ final class Workspace {
         onViewsChanged?()
         control?.close()
         control = nil
+        controlTransport = nil
         transport = .disconnected
     }
 
@@ -188,6 +245,8 @@ final class Workspace {
 
     /// Accept an authoritative tree, resolving removal and selection together.
     func apply(_ new: Wire.State) {
+        let previousLive = Set(state.tabs.flatMap { $0.layout.panes })
+        createdPanes.subtract(previousLive.subtracting(new.tabs.flatMap { $0.layout.panes }))
         let previousTabs = state.tabs.map(\.id)
         let previousPanes = tab(selectedTab)?.tab.layout.panes ?? []
         let first = !received
@@ -204,6 +263,21 @@ final class Workspace {
             }
         }
         state = new
+        let names = Dictionary(uniqueKeysWithValues: new.tabs.map { ($0.id, $0.name ?? "") })
+        for (id, name) in pendingTabNames where names[id] == nil || names[id] == name {
+            pendingTabNames[id] = nil
+            tabRenameIDs[id] = nil
+            confirmedTabRenames[id] = nil
+        }
+        let groupNames = Dictionary(uniqueKeysWithValues: new.items.compactMap { item -> (String, String)? in
+            if case .group(let group) = item { return (group.id, group.name) }
+            return nil
+        })
+        for (id, name) in pendingGroupNames where groupNames[id] == nil || groupNames[id] == name {
+            pendingGroupNames[id] = nil
+            groupRenameIDs[id] = nil
+            confirmedGroupRenames[id] = nil
+        }
 
         let live = Set(new.tabs.flatMap(\.panes).map(\.id))
         for (id, view) in views where !live.contains(id) {
@@ -336,6 +410,10 @@ final class Workspace {
     /// Reply ownership is single-use so disconnect and timeout cannot resume twice.
     func perform(_ command: Wire.Command, reportingErrors: Bool = true) async throws -> Wire.Result {
         guard let control else { throw WorkspaceCommandError("Machine is offline") }
+        if let error = observationError(for: command) {
+            if reportingErrors { onError?(error) }
+            throw WorkspaceCommandError(error)
+        }
         return try await withCheckedThrowingContinuation { continuation in
             let reply = CommandReply(continuation)
             let timeout = Task { [weak self] in
@@ -343,12 +421,17 @@ final class Workspace {
                 if reportingErrors { self?.onError?("The server did not answer this command.") }
                 reply.finish(.failure(WorkspaceCommandError("The server did not answer this command.")))
             }
-            control.send(command) { [weak self] result in
+            var ownedCommand = command
+            ownedCommand.controller = controller
+            control.send(ownedCommand) { [weak self] result in
                 timeout.cancel()
                 if let error = result.error {
                     if reportingErrors { self?.onError?(error) }
                     reply.finish(.failure(WorkspaceCommandError(error)))
-                } else { reply.finish(.success(result)) }
+                } else {
+                    self?.recordCreation(command, result: result)
+                    reply.finish(.success(result))
+                }
             }
         }
     }
@@ -368,10 +451,57 @@ final class Workspace {
     private func send(_ command: Wire.Command, done: @escaping @MainActor (Wire.Result) -> Void = { _ in }) {
         let completion: @MainActor (Wire.Result) -> Void = { [weak self] result in
             if let error = result.error { self?.onError?(error) }
+            self?.recordCreation(command, result: result)
             done(result)
         }
         guard let control else { completion(.init(error: "Machine is offline")); return }
-        control.send(command, done: completion)
+        if let error = observationError(for: command) { completion(.init(error: error)); return }
+        var ownedCommand = command
+        ownedCommand.controller = controller
+        control.send(ownedCommand, done: completion)
+    }
+
+    /// Retain only panes returned by this client's successful creation requests.
+    private func recordCreation(_ command: Wire.Command, result: Wire.Result) {
+        guard result.error == nil, command.op == .newTab || command.op == .splitPane,
+              let pane = result.pane else { return }
+        createdPanes.insert(pane)
+    }
+
+    /// Observation protects existing work from destructive and terminal-edit
+    /// actions as well as PTY input. Inspect cached views only; never attach to
+    /// decide whether a command is allowed.
+    private func observationError(for command: Wire.Command) -> String? {
+        func splitPanes(_ node: Wire.LayoutNode, id: String?) -> [String] {
+            guard case .split(let split) = node else { return [] }
+            if split.id == id { return node.panes }
+            return split.children.flatMap { splitPanes($0.layout, id: id) }
+        }
+        let targets: [String]
+        switch command.op {
+        case .closePane, .clearPane, .resetPane, .configurePane, .splitPane:
+            targets = command.pane.map { [$0] } ?? []
+        case .closeTab:
+            targets = tab(command.tab)?.tab.layout.panes ?? []
+        case .closeGroup:
+            targets = state.items.flatMap { item -> [String] in
+                if case .group(let group) = item, group.id == command.group { return group.tabs.flatMap { $0.layout.panes } }
+                return []
+            }
+        case .swapPanes:
+            targets = [command.pane, command.target].compactMap { $0 }
+        case .resizeSplit:
+            targets = state.tabs.flatMap { splitPanes($0.layout, id: command.split) }
+        default: return nil
+        }
+        let blocked = targets.contains { id in
+            if createdPanes.contains(id) { return false }
+            // Without a view this client is not observing it; the server
+            // refuses if another client controls it.
+            guard let view = views[id] else { return false }
+            return view.observing || (endpoint != .local && !view.canControl)
+        }
+        return blocked ? "Take Control of the affected panes before changing or closing them. Their processes are still running." : nil
     }
 
     /// A new tab after the selected one, in its group if it has one,
@@ -447,7 +577,9 @@ final class Workspace {
     }
 
     func resizeSplit(_ id: String, index: Int, ratio: Double) {
-        send(.init(op: .resizeSplit, split: id, ratio: ratio, index: index))
+        // Binary v6 splits only have the default divider; keep their original
+        // command shape while addressing later dividers on weighted servers.
+        send(.init(op: .resizeSplit, split: id, ratio: ratio, index: index == 0 ? nil : index))
     }
 
     func closeTab(_ id: String? = nil) {
@@ -465,12 +597,59 @@ final class Workspace {
         send(.init(op: .ungroup, group: id))
     }
 
+    /// Keep a submitted name visible while the authoritative group update is in flight.
     func renameGroup(_ id: String, to name: String) {
-        send(.init(op: .renameGroup, group: id, name: name))
+        let request = UUID()
+        pendingGroupNames[id] = name
+        groupRenameIDs[id] = request
+        confirmedGroupRenames[id] = nil
+        send(.init(op: .renameGroup, group: id, name: name)) { [weak self] result in
+            guard let self, self.groupRenameIDs[id] == request else { return }
+            if result.error != nil { self.retireGroupRename(id, request: request); return }
+            self.confirmedGroupRenames[id] = request
+            self.refreshNames { [weak self] in self?.retireGroupRename(id, request: request) }
+        }
     }
 
+    /// Keep a submitted name visible until watcher confirmation or command rejection.
     func renameTab(_ id: String, to name: String) {
-        send(.init(op: .renameTab, tab: id, name: name))
+        let request = UUID()
+        pendingTabNames[id] = name
+        tabRenameIDs[id] = request
+        confirmedTabRenames[id] = nil
+        send(.init(op: .renameTab, tab: id, name: name)) { [weak self] result in
+            guard let self, self.tabRenameIDs[id] == request else { return }
+            if result.error != nil { self.retireTabRename(id, request: request); return }
+            self.confirmedTabRenames[id] = request
+            self.refreshNames { [weak self] in self?.retireTabRename(id, request: request) }
+        }
+    }
+
+    /// A watch followed by a command reply fences coalesced state callbacks.
+    /// The serverInfo error on older servers is still a valid ordered reply.
+    private func refreshNames(_ complete: @escaping @MainActor () -> Void) {
+        guard let control, let controlTransport else { return }
+        controlTransport.send(.watch)
+        control.send(.init(op: .serverInfo)) { [weak self, weak control] result in
+            guard let self, let control, self.control === control,
+                  result.error != "connection closed", result.error != "connection unavailable" else { return }
+            complete()
+        }
+    }
+
+    /// Retire only the request whose reply or reconnect snapshot is being reconciled.
+    private func retireTabRename(_ id: String, request: UUID) {
+        guard tabRenameIDs[id] == request else { return }
+        pendingTabNames[id] = nil
+        tabRenameIDs[id] = nil
+        confirmedTabRenames[id] = nil
+    }
+
+    private func retireGroupRename(_ id: String, request: UUID) {
+        guard groupRenameIDs[id] == request else { return }
+        pendingGroupNames[id] = nil
+        groupRenameIDs[id] = nil
+        confirmedGroupRenames[id] = nil
     }
 
     /// Closes every tab but this one; a target that has closed does nothing.
@@ -552,13 +731,17 @@ final class Workspace {
     /// The attached view for a pane, made on first use.
     func view(for pane: String) -> TerminalView {
         if let v = views[pane] { return v }
-        let v = TerminalView(pane: pane, at: endpoint, fontSize: fontSize)
+        let v = TerminalView(pane: pane, at: endpoint, fontSize: fontSize, controller: controller)
         views[pane] = v
         v.onFocus = { [weak self, weak v] in
             guard let self, let v else { return }
             self.focus(v.paneID)
         }
-        v.onConnectionChange = { [weak self] in self?.onViewsChanged?() }
+        v.onConnectionChange = { [weak self, weak v] in
+            guard let self else { return }
+            if v?.canControl == true { self.createdPanes.remove(pane) }
+            self.onViewsChanged?()
+        }
         v.attach()
         return v
     }

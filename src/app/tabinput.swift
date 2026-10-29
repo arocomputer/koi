@@ -18,6 +18,8 @@ import SwiftUI
     private(set) var placement: Placement?
     @ObservationIgnored private var point = CGPoint.zero
     @ObservationIgnored private var frames: [Target: (frame: CGRect, owner: UUID?)] = [:]
+    @ObservationIgnored private(set) var revealTarget: Target?
+    private(set) var revealFrame: CGRect?
     @ObservationIgnored private var tree = Wire.State()
     @ObservationIgnored private var scroll = CGPoint.zero
     @ObservationIgnored private var escapeMonitor: Any?
@@ -37,7 +39,9 @@ import SwiftUI
             if frames[target]?.owner == owner { removeFrame(target) }
             return
         }
-        frames[target] = (frame.offsetBy(dx: scroll.x, dy: scroll.y), owner)
+        let contentFrame = frame.offsetBy(dx: scroll.x, dy: scroll.y)
+        frames[target] = (contentFrame, owner)
+        if target == revealTarget { revealFrame = contentFrame }
         if active { update(to: point) }
     }
 
@@ -54,13 +58,20 @@ import SwiftUI
         frames[target]?.frame.offsetBy(dx: -scroll.x, dy: -scroll.y)
     }
 
-    /// Start only on a live tab's body. Headless callers install no keyboard
-    /// monitor; a hosted gesture owns Escape only in its actual source window.
-    func begin(at point: CGPoint, state: Wire.State, renaming: String?, window: NSWindow? = nil) {
+    /// Observe only the selected row's geometry, after its expanded layout has resolved.
+    func trackRevealTarget(_ target: Target?) {
+        revealTarget = target
+        revealFrame = target.flatMap { frames[$0]?.frame }
+    }
+
+    /// Start on a live tab's body, preserving the pressed tab across selection reflow.
+    /// Headless callers install no monitor; hosted gestures own Escape in their window.
+    func begin(at point: CGPoint, state: Wire.State, renaming: String?, pressedTab: String? = nil, window: NSWindow? = nil) {
         guard !active else { return }
         cancel()
         guard let tab = state.tabs.first(where: { tab in
             guard tab.id != renaming, let frame = frame(for: .tab(tab.id)) else { return false }
+            if let pressedTab { return tab.id == pressedTab }
             return frame.contains(point) && point.x < frame.maxX - 28
         }) else { return }
         source = tab
@@ -162,6 +173,7 @@ import SwiftUI
     /// recomputes the cue so vanished rows cannot remain drop targets.
     private func removeFrame(_ target: Target) {
         frames[target] = nil
+        if revealTarget == target { revealFrame = nil }
         if let source, target == .tab(source.id) { cancel() }
         else if active { update(to: point) }
     }
@@ -232,10 +244,11 @@ struct TabDragTarget: ViewModifier {
 }
 
 /// Own one same-window gesture, cancellation and bounded edge scrolling.
-/// The content always renders the workspace's real server state.
+/// Row order and membership always follow the authoritative workspace tree.
 struct TabStrip<Content: View>: View {
     let workspace: Workspace
     let drag: TabDrag
+    var revealTarget: String? = nil
     @ViewBuilder let content: () -> Content
     @State private var position = ScrollPosition()
     @State private var size = CGSize.zero
@@ -245,24 +258,65 @@ struct TabStrip<Content: View>: View {
     @GestureState private var tracking = false
     @State private var started = false
     @State private var clickedTab: String?
+    @State private var revealAfterDrag = false
+    @State private var userScrolled = false
 
     var body: some View {
         ScrollView(drag.horizontal ? .horizontal : .vertical) { content() }
             .scrollPosition($position)
             .scrollIndicators(.never)
+            .onScrollPhaseChange { _, phase in
+                if phase == .interacting || phase == .decelerating { userScrolled = true }
+            }
             .onScrollGeometryChange(for: ScrollGeometry.self, of: { $0 }) { _, geometry in
                 offset = geometry.contentOffset
                 extent = geometry.contentSize
                 drag.scrolled(to: offset)
             }
-            .onGeometryChange(for: CGSize.self, of: { $0.size }) { size = $0 }
+            .task(id: drag.horizontal ? extent.width : extent.height) {
+                // Wait for the new target graph as well as its scrollable extent.
+                await Task.yield()
+                guard !Task.isCancelled, !userScrolled else { return }
+                revealSelection()
+            }
+            .onGeometryChange(for: CGSize.self, of: { $0.size }) {
+                size = $0
+                userScrolled = false
+                revealSelection()
+            }
+            .onChange(of: revealTarget, initial: true) {
+                drag.trackRevealTarget(revealTarget.map { target in
+                    target.hasPrefix("group:") ? .group(String(target.dropFirst(6))) : .tab(target)
+                })
+                userScrolled = false
+                revealSelection()
+            }
+            .onChange(of: drag.revealFrame) {
+                if !userScrolled { revealSelection() }
+            }
+            .transaction { transaction in
+                if revealTarget != nil, transaction.animation != nil, !transaction.disablesAnimations {
+                    transaction.addAnimationCompletion { revealSelection() }
+                }
+            }
+            .onChange(of: drag.active) { _, active in
+                if !active && revealAfterDrag { revealSelection() }
+            }
             .background(TabStripWindow(anchor: windowAnchor) { point, clicks in
-                guard !drag.active, let tab = workspace.state.tabs.first(where: {
+                guard !drag.active else { return }
+                // The first press may have moved rows under the pointer: selecting
+                // resizes horizontal tabs and seats the selection in the viewport.
+                // The second press therefore renames the row that took the first.
+                if clicks == 2, let first = clickedTab {
+                    clickedTab = nil
+                    if workspace.tab(first) != nil { workspace.renamingTab = first }
+                    return
+                }
+                guard let tab = workspace.state.tabs.first(where: {
                     guard $0.id != workspace.renamingTab, let frame = drag.frame(for: .tab($0.id)) else { return false }
                     return frame.contains(point) && point.x < frame.maxX - 28
                 }) else { clickedTab = nil; return }
-                if clicks == 2, clickedTab == tab.id { workspace.renamingTab = tab.id }
-                else { workspace.select(tab.id) }
+                workspace.select(tab.id)
                 clickedTab = clicks == 1 ? tab.id : nil
             })
             .coordinateSpace(name: "tabstrip")
@@ -271,7 +325,9 @@ struct TabStrip<Content: View>: View {
                 .onChanged { value in
                     if !started {
                         started = true
-                        drag.begin(at: value.startLocation, state: workspace.state, renaming: workspace.renamingTab,
+                        guard let pressedTab = clickedTab else { return }
+                        clickedTab = nil
+                        drag.begin(at: value.startLocation, state: workspace.state, renaming: workspace.renamingTab, pressedTab: pressedTab,
                                    window: windowAnchor.window)
                     }
                     drag.update(to: value.location)
@@ -307,12 +363,36 @@ struct TabStrip<Content: View>: View {
                 }
             }
     }
+
+    /// Reveal the selected row using the same measured geometry as drag input.
+    private func revealSelection() {
+        guard let revealTarget, !userScrolled else { return }
+        if drag.active { revealAfterDrag = true; return }
+        revealAfterDrag = false
+        let target: TabDrag.Target = revealTarget.hasPrefix("group:")
+            ? .group(String(revealTarget.dropFirst(6))) : .tab(revealTarget)
+        guard drag.revealTarget == target else { return }
+        guard let frame = drag.frame(for: target) else { return }
+        let lower = drag.horizontal ? frame.minX : frame.minY
+        let upper = drag.horizontal ? frame.maxX : frame.maxY
+        let viewport = drag.horizontal ? size.width : size.height
+        guard lower < -0.5 || upper > viewport + 0.5 else { return }
+        let current = drag.horizontal ? offset.x : offset.y
+        let content = drag.horizontal ? extent.width : extent.height
+        let destination = min(max(0, current + lower), max(0, content - viewport))
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            if drag.horizontal { position.scrollTo(x: destination) }
+            else { position.scrollTo(y: destination) }
+        }
+    }
 }
 
 /// One native click observer per strip selects on mouse-down, as native tab
 /// bars do, so switching is as immediate as a shortcut rather than waiting for
 /// the release. AppKit's click count on the second press recognizes a rename,
-/// without delaying embedded close buttons.
+/// without delaying embedded close buttons. Control-clicks belong to the menu.
 struct TabStripWindow: NSViewRepresentable {
     let anchor: Anchor
     let clicked: (CGPoint, Int) -> Void
@@ -341,7 +421,7 @@ struct TabStripWindow: NSViewRepresentable {
             stop()
             guard window != nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-                guard let self, let window = self.window, event.window === window,
+                guard let self, let window = self.window, event.window === window, !event.isKoiSecondaryClick,
                       !window.hasKoiPopup, self.koiExposes(event.locationInWindow) else { return event }
                 self.clicked?(self.convert(event.locationInWindow, from: nil), event.clickCount)
                 return event

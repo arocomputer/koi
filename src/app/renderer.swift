@@ -211,7 +211,8 @@ final class RenderDiagnosticsStats: @unchecked Sendable {
 @MainActor
 final class Renderer {
     /// One quad. `kind` 0 fills with `color`; 1 tints the atlas mask with
-    /// `color`; 2 draws the atlas texel as is (color emoji).
+    /// `color`; 2 draws the atlas texel as is (color emoji); 4 blends cursor
+    /// fill and inverse glyph coverage as one opacity-controlled layer.
     struct Quad {
         var origin: SIMD2<Float>
         var size: SIMD2<Float>
@@ -269,6 +270,14 @@ final class Renderer {
     private let inflight = DispatchSemaphore(value: 3)
     private let diagnosticStats = RenderDiagnosticsStats()
     private weak var diagnosticLayer: CAMetalLayer?
+    private weak var terminal: VTTerminal?
+    private var holdStarted: TimeInterval?
+    private var holdTimeout: Task<Void, Never>?
+    private var capturedScroll = GhosttyTerminalScrollbar()
+    private var hasCapturedFrame = false
+    private var latestSubmission: UInt64?
+    /// Wakes the owning view when a held redraw times out without further output.
+    var onFrameNeeded: (() -> Void)?
 
     /// Read on demand; no frame-driven observable updates or polling timers.
     var diagnostics: RenderDiagnosticsSnapshot {
@@ -337,6 +346,7 @@ final class Renderer {
     }
 
     isolated deinit {
+        holdTimeout?.cancel()
         if let rowCells { ghostty_render_state_row_cells_free(rowCells) }
         if let rowIterator { ghostty_render_state_row_iterator_free(rowIterator) }
         ghostty_render_state_free(renderState)
@@ -347,6 +357,70 @@ final class Renderer {
     func setMetrics(_ metrics: FontMetrics) {
         atlas = GlyphAtlas(device: device, metrics: metrics)
         atlasGeneration = -1
+    }
+
+    /// Bind before the first VT write so even holds contained in one write are captured.
+    /// App mirrors and their renderers share the main actor; callbacks never hop queues.
+    func bind(to terminal: VTTerminal) {
+        guard self.terminal !== terminal else { return }
+        self.terminal?.onRenderHold = nil
+        self.terminal?.onViewportInteraction = nil
+        holdTimeout?.cancel()
+        holdTimeout = nil
+        holdStarted = nil
+        self.terminal = terminal
+        terminal.onRenderHold = { [weak self, weak terminal] held in
+            MainActor.assumeIsolated {
+                guard let self, let terminal else { return }
+                self.renderHoldChanged(held, terminal: terminal)
+            }
+        }
+        terminal.onViewportInteraction = { [weak self] in
+            MainActor.assumeIsolated { self?.releaseRenderHold() }
+        }
+        // A snapshot taken inside a hold has no completed image to capture.
+        // Keep the old frame (or blank backing on first attach) until release.
+        if terminal.mode(2026) { renderHoldChanged(true, terminal: terminal, capture: false) }
+    }
+
+    /// Capture before later bytes in the same write can mutate the intended frozen frame.
+    private func renderHoldChanged(_ held: Bool, terminal: VTTerminal, capture: Bool = true) {
+        holdTimeout?.cancel()
+        holdTimeout = nil
+        if held {
+            if capture { _ = captureState(terminal) }
+            holdStarted = ProcessInfo.processInfo.systemUptime
+            holdTimeout = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                self?.expireRenderHold()
+            }
+        } else {
+            holdStarted = nil
+        }
+    }
+
+    /// A missing end sequence cannot freeze a pane indefinitely, even when otherwise idle.
+    func expireRenderHold(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard let started = holdStarted, now - started >= 1 else { return }
+        releaseRenderHold()
+        onFrameNeeded?()
+    }
+
+    /// Ghostty permits explicit scrolling/selection to interrupt a hold; no grid clone is needed.
+    private func releaseRenderHold() {
+        guard holdStarted != nil else { return }
+        terminal?.endRenderHold()
+        holdStarted = nil
+        holdTimeout?.cancel()
+        holdTimeout = nil
+    }
+
+    /// Save viewport metadata alongside the render snapshot, never from a partial held frame.
+    private func captureState(_ terminal: VTTerminal) -> Bool {
+        guard ghostty_render_state_update(renderState, terminal.raw) == GHOSTTY_SUCCESS else { return false }
+        ghostty_terminal_get(terminal.raw, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &capturedScroll)
+        hasCapturedFrame = true
+        return true
     }
 
     /// Draws just the background, for a pane that has no terminal yet, so
@@ -379,10 +453,13 @@ final class Renderer {
     /// Updates cached rows and assembles one coherent atlas generation, without
     /// requiring a drawable. Returns false when there is nothing new to draw.
     func prepareFrame(_ terminal: VTTerminal, force: Bool = false) -> Bool {
-        guard ghostty_render_state_update(renderState, terminal.raw) == GHOSTTY_SUCCESS else { return false }
+        bind(to: terminal)
+        expireRenderHold()
+        if holdStarted == nil, !captureState(terminal) { return false }
+        guard hasCapturedFrame else { return false }
         var dirty = GHOSTTY_RENDER_STATE_DIRTY_FALSE
         ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty)
-        let moved = cursorOrScrollMoved(terminal)
+        let moved = cursorOrScrollMoved()
         let invalidAtlas = atlasGeneration != atlas.generation
         if !force, dirty == GHOSTTY_RENDER_STATE_DIRTY_FALSE, !invalidAtlas {
             guard overlayChanged || moved else { return false }
@@ -448,12 +525,11 @@ final class Renderer {
 
     /// Whether the cursor or the viewport is elsewhere than when last
     /// drawn, remembering where they are now.
-    private func cursorOrScrollMoved(_ terminal: VTTerminal) -> Bool {
+    private func cursorOrScrollMoved() -> Bool {
         var c = GhosttyRenderStateCursor()
         c.size = MemoryLayout<GhosttyRenderStateCursor>.size
         ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR, &c)
-        var scroll = GhosttyTerminalScrollbar()
-        ghostty_terminal_get(terminal.raw, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scroll)
+        let scroll = capturedScroll
         let moved = withUnsafeBytes(of: c) { a in withUnsafeBytes(of: drawnCursor) { b in a.elementsEqual(b) } } == false
             || scroll.offset != drawnScroll.offset || scroll.total != drawnScroll.total
         drawnCursor = c
@@ -467,16 +543,23 @@ final class Renderer {
         var out: [Quad] = []
         let m = atlas.metrics
         let cw = Float(m.cellWidth), ch = Float(m.cellHeight)
-        let bg = premultiplied(colors.background), fg = premultiplied(colors.foreground)
+        let bg = premultiplied(colors.background)
         for cell in overlay.cells where Int(cell.y) < rows.count {
             let origin = SIMD2<Float>(Float(cell.x) * cw, Float(cell.y) * ch)
             out.append(Quad(origin: origin, size: [cw, ch], uvOrigin: .zero, color: bg, kind: 0))
-            guard cell.text != " ", let e = atlas.entry(.init(text: cell.text, bold: false, italic: false, wide: false)) else { continue }
-            let pad = Float(atlas.pad)
-            out.append(Quad(origin: [origin.x - pad, origin.y - pad], size: [Float(e.width), Float(e.height)],
-                            uvOrigin: [Float(e.x), Float(e.y)], color: e.colored ? [1, 1, 1, 1] : fg, kind: e.colored ? 2 : 1))
+            if let glyph = overlayGlyph(cell) { out.append(glyph) }
         }
         return out
+    }
+
+    /// Resolve the same glyph for predicted text and its cursor, including predicted erases.
+    private func overlayGlyph(_ cell: Prediction.Cell) -> Quad? {
+        guard cell.text != " ", let entry = atlas.entry(.init(text: cell.text, bold: false, italic: false, wide: false)) else { return nil }
+        let metrics = atlas.metrics
+        let pad = Float(atlas.pad)
+        return Quad(origin: [Float(Int(cell.x) * metrics.cellWidth) - pad, Float(Int(cell.y) * metrics.cellHeight) - pad],
+                    size: [Float(entry.width), Float(entry.height)], uvOrigin: [Float(entry.x), Float(entry.y)],
+                    color: entry.colored ? [1, 1, 1, 1] : premultiplied(colors.foreground), kind: entry.colored ? 2 : 1)
     }
 
     private func buildRow(_ y: Int) -> Row {
@@ -613,6 +696,8 @@ final class Renderer {
             enc.setVertexBuffer(buffer, offset: 0, index: 0)
             enc.setVertexBytes(&view, length: MemoryLayout<SIMD4<Float>>.size, index: 1)
             enc.setFragmentTexture(atlas.texture, index: 0)
+            var inverseCursor = premultiplied(colors.background)
+            enc.setFragmentBytes(&inverseCursor, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
             enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: quads.count)
         }
         enc.endEncoding()
@@ -623,11 +708,18 @@ final class Renderer {
         let submission = stats.submitted(
             atlas: quads.isEmpty ? nil : .init(id: ObjectIdentifier(atlas.texture), bytes: atlas.texture.allocatedSize),
             buffer: quads.isEmpty ? nil : .init(id: ObjectIdentifier(buffer), bytes: buffer.allocatedSize))
-        cmd.addCompletedHandler { [sem, stats, submission] completed in
+        latestSubmission = submission.id
+        cmd.addCompletedHandler { [weak self, sem, stats, submission] completed in
             defer { sem.signal() }
             stats.completed(submission, succeeded: completed.status == .completed,
                             error: completed.error as NSError?,
                             gpuStartTime: completed.gpuStartTime, gpuEndTime: completed.gpuEndTime)
+            if completed.status != .completed {
+                Task { @MainActor [weak self] in
+                    guard let self, self.latestSubmission == submission.id else { return }
+                    self.retryFailedPresentation()
+                }
+            }
         }
         let presentsWithTransaction = layer.presentsWithTransaction
         if !presentsWithTransaction { cmd.present(drawable) }
@@ -647,13 +739,20 @@ final class Renderer {
         return true
     }
 
-    /// The cursor's quads: a block goes under the text with the glyph
-    /// redrawn in the background color; other shapes go over it.
+    /// Retry the latest assembled frame after a failed GPU completion, even without more output.
+    func retryFailedPresentation() {
+        framePending = true
+        onFrameNeeded?()
+    }
+
+    /// Full blocks blend background and glyph coverage in one layer, so cursor
+    /// opacity interpolates the complete cursor without attenuating text twice.
     private func cursor() -> (under: [Quad], over: [Quad]) {
         var c = GhosttyRenderStateCursor()
         c.size = MemoryLayout<GhosttyRenderStateCursor>.size
         ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR, &c)
-        guard !hidesCursor, c.visible, c.viewport_has_value, Int(c.viewport_y) < rows.count else { return ([], []) }
+        guard !hidesCursor, c.visible, c.viewport_has_value, Int(c.viewport_y) < rows.count,
+              Config.current.cursorOpacity > 0 else { return ([], []) }
         // While typing is predicted, the cursor shows where the typing has
         // reached, past the predicted cells.
         if let caret = overlay.caret {
@@ -689,15 +788,24 @@ final class Renderer {
         case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW:
             return ([], outline())
         default:
-            var under = [Quad(origin: [origin.x, boxTop], size: [cw, boxH], uvOrigin: .zero, color: color, kind: 0)]
+            let block = Quad(origin: [origin.x, boxTop], size: [cw, boxH], uvOrigin: .zero, color: color, kind: 0)
             // Repaint the covered glyph in the background color so it reads
             // against the block — only when the block spans the whole glyph,
             // or a shrunk cursor would tint the parts it doesn't cover.
-            if fullHeight, var g = rows[Int(c.viewport_y)].glyphAt[c.viewport_x], g.kind == 1 {
-                g.color = premultiplied(colors.background)
-                under.append(g)
+            let predicted = overlay.cells.last { $0.x == c.viewport_x && $0.y == c.viewport_y }
+            let glyph: Quad?
+            if let predicted { glyph = overlayGlyph(predicted) }
+            else { glyph = rows[Int(c.viewport_y)].glyphAt[c.viewport_x] }
+            if fullHeight, let g = glyph, g.kind == 1 {
+                // The glyph bitmap includes atlas padding. Offset its UVs to
+                // the cursor's own rectangle and clip inversion to that cell.
+                var composed = block
+                composed.kind = 4
+                composed.uvOrigin = g.uvOrigin + block.origin - g.origin
+                return ([], [composed])
             }
-            return (under, [])
+            if predicted != nil { return ([], [block]) }
+            return ([block], [])
         }
     }
 
@@ -705,7 +813,7 @@ final class Renderer {
         SIMD4(Float(c.r) / 255 * alpha, Float(c.g) / 255 * alpha, Float(c.b) / 255 * alpha, alpha)
     }
 
-    private static let shaders = """
+    static let shaders = """
     #include <metal_stdlib>
     using namespace metal;
 
@@ -741,11 +849,13 @@ final class Renderer {
         return o;
     }
 
-    fragment float4 quad_fragment(Out in [[stage_in]], texture2d<float> atlas [[texture(0)]]) {
+    fragment float4 quad_fragment(Out in [[stage_in]], texture2d<float> atlas [[texture(0)]],
+                                  constant float4 &inverseCursor [[buffer(0)]]) {
         if (in.kind == 0) return in.color;
         constexpr sampler s(coord::pixel, filter::nearest);
         float4 t = atlas.sample(s, in.uv);
         if (in.kind == 2) return t;
+        if (in.kind == 4) return mix(in.color, inverseCursor * in.color.a, t.a);
         return in.color * t.a;
     }
     """

@@ -21,7 +21,7 @@ const Allocator = std.mem.Allocator;
 /// Release plus source/build hash embedded at compilation. Never consults
 /// Git, a bundle, or the executable that may have replaced this process on disk.
 pub const binary_version = @import("build_options").version;
-const capabilities = [_][]const u8{ "serverInfo", "clearPane", "resetPane", "configurePane", "startup", "resizeSplitWeights", "reportStatus", "splitCwd" };
+const capabilities = [_][]const u8{ "serverInfo", "clearPane", "resetPane", "configurePane", "startup", "resizeSplitWeights", "reportStatus", "splitCwd", "paneControl", "ownedCommands" };
 const transports = [_][]const u8{ "unix", "encryptedUDP", "sshStdio" };
 
 const Tab = struct {
@@ -82,6 +82,32 @@ fn normalizeSplitWeights(split: *SplitNode, weights: []const f64) !void {
         if (!std.math.isFinite(normalized) or normalized <= 0) return error.UnrepresentableWeight;
     }
     for (split.children.items, weights) |*child, weight| child.weight = (weight / largest) / sum;
+}
+
+/// With the server mutex held, lock all targets in tree order and check the
+/// current owner. Legacy commands deliberately take no pane locks here.
+fn lockOwned(targets: []const *Pane, controller: ?[]const u8) bool {
+    const proof = controller orelse return true;
+    if (!wire.validController(proof)) return false;
+    for (targets) |pane| pane.mutex.lock();
+    for (targets) |pane| if (!pane.ownsControllerLocked(proof)) {
+        for (targets) |locked| locked.mutex.unlock();
+        return false;
+    };
+    return true;
+}
+
+/// Releases the locks acquired for a controller-bearing mutation.
+fn unlockOwned(targets: []const *Pane, controller: ?[]const u8) void {
+    if (controller != null) for (targets) |pane| pane.mutex.unlock();
+}
+
+/// Collects each pane affected by a split mutation while the tree is locked.
+fn collectLayoutPanes(arena: Allocator, node: LayoutNode, targets: *std.ArrayList(*Pane)) Allocator.Error!void {
+    switch (node) {
+        .pane => |pane| try targets.append(arena, pane),
+        .split => |split| for (split.children.items) |child| try collectLayoutPanes(arena, child.node, targets),
+    }
 }
 
 /// A UDP link and what the server must know to reclaim it: `readers` counts
@@ -264,6 +290,7 @@ pub const Server = struct {
         var buf: [256 * 1024]u8 = undefined;
         var pane: ?*Pane = null;
         var attached = false;
+        var negotiated = false;
         var watching = false;
         var arena_state = std.heap.ArenaAllocator.init(self.gpa);
         defer arena_state.deinit();
@@ -272,47 +299,69 @@ pub const Server = struct {
         outer: while (true) {
             const n = t.read(&buf);
             if (n == 0) break;
-            reader.append(buf[0..n]) catch break;
-            while (reader.next() catch break :outer) |f| {
+            reader.append(buf[0..n]) catch {
+                if (negotiated) self.sendFailure(t, arena, "invalid frame");
+                break;
+            };
+            while (reader.next() catch {
+                if (negotiated) self.sendFailure(t, arena, "invalid frame");
+                break :outer;
+            }) |f| {
                 switch (f.kind) {
                     .open => {
-                        if (pane != null) break :outer;
+                        if (pane != null) {
+                            if (negotiated) self.sendFailure(t, arena, "already attached");
+                            break :outer;
+                        }
                         const parsed = wire.parse(wire.OpenRequest, self.gpa, f.payload) catch {
-                            self.sendExited(t, -1);
+                            // A valid JSON object can negotiate even when other
+                            // required open fields are malformed or missing.
+                            const probe = wire.parse(struct { paneControl: bool = false }, self.gpa, f.payload) catch null;
+                            if (probe) |value| {
+                                defer value.deinit();
+                                if (value.value.paneControl) self.sendFailure(t, arena, "invalid open request") else self.sendExited(t, -1);
+                            } else self.sendExited(t, -1);
                             break :outer;
                         };
                         defer parsed.deinit();
+                        negotiated = parsed.value.paneControl;
                         const p = self.findPane(parsed.value.pane) orelse {
-                            self.sendExited(t, -1);
+                            if (negotiated) self.sendFailure(t, arena, "no such pane") else self.sendExited(t, -1);
                             break :outer;
                         };
                         pane = p; // pinned by findPane until the connection ends
                         _ = arena_state.reset(.retain_capacity);
-                        p.attach(t, arena) catch |e| {
+                        p.attach(t, arena, parsed.value) catch |e| {
                             log("attach failed: {s}", .{@errorName(e)});
+                            if (negotiated) self.sendFailure(t, arena, "attach failed");
                             break :outer;
                         };
                         attached = true;
-                        // A zero size means "attach without resizing": a
-                        // watcher like `koi capture` must not reshape the
-                        // pane the interactive client sized.
-                        if (parsed.value.cols > 0 and parsed.value.rows > 0) {
-                            p.resize(.{
-                                .cols = parsed.value.cols,
-                                .rows = parsed.value.rows,
-                                .cell_width = parsed.value.cellWidth,
-                                .cell_height = parsed.value.cellHeight,
-                            });
-                        }
-                        // The pane now has the size its first client wants;
-                        // a shell still waiting on that (see startShell) runs.
+                        // A shell waiting for an attachment can now start.
                         p.releaseExecution() catch {};
                     },
-                    .input => if (pane) |p| p.input(f.payload),
-                    .resize => if (pane) |p| {
-                        if (wire.GridSize.decode(f.payload)) |size| p.resize(size);
+                    .input => if (pane) |p| {
+                        p.inputFrom(t, f.payload);
                     },
-                    .kill => if (pane) |p| p.kill(),
+                    .resize => if (pane) |p| {
+                        if (wire.GridSize.decode(f.payload)) |size| {
+                            p.resizeFrom(t, size);
+                        } else if (negotiated) {
+                            self.sendFailure(t, arena, "invalid resize");
+                            break :outer;
+                        }
+                    },
+                    .kill => if (pane) |p| {
+                        p.killFrom(t);
+                    },
+                    .paneControl => {
+                        if (!negotiated or pane == null) break :outer;
+                        if (f.payload.len != 1 or f.payload[0] > 1) {
+                            self.sendFailure(t, arena, "invalid pane control");
+                            break :outer;
+                        }
+                        pane.?.control(t, f.payload[0] == 1);
+                    },
                     .watch => {
                         if (!self.addWatcher(t)) break :outer;
                         watching = true;
@@ -329,7 +378,10 @@ pub const Server = struct {
                             t.send(frame);
                         } else |_| break :outer;
                     },
-                    else => break :outer,
+                    else => {
+                        if (negotiated) self.sendFailure(t, arena, "unexpected frame");
+                        break :outer;
+                    },
                 }
             }
         }
@@ -341,6 +393,12 @@ pub const Server = struct {
         }
         self.removeWatcher(t);
         t.close();
+    }
+
+    /// Sends a negotiated protocol failure without using an exit status.
+    fn sendFailure(_: *Server, t: Transport, arena: Allocator, message: []const u8) void {
+        const frame = wire.frameJson(arena, .failure, .{ .@"error" = message }) catch return;
+        t.send(frame);
     }
 
     /// Registers a watcher once, however often it asks; false if out of memory.
@@ -458,6 +516,8 @@ pub const Server = struct {
                 .uptimeSeconds = (sys.monotonicMillis() -| self.started_at) / 1000,
                 .transports = &transports,
                 .capabilities = &capabilities,
+                .layoutFormat = "weighted-v1",
+                .snapshotFormat = "ghostty-vt-v1",
             },
             .reportStatus => {
                 const status = cmd.status orelse return .{ .@"error" = "missing status" };
@@ -469,7 +529,7 @@ pub const Server = struct {
             .clearPane, .resetPane, .configurePane => {
                 const pane = self.findPane(cmd.pane orelse "") orelse return .{ .@"error" = "no such pane" };
                 defer pane.unpin();
-                pane.edit(cmd.op, cmd.appearance, arena) catch |err| return .{ .@"error" = @errorName(err) };
+                pane.editOwned(cmd.op, cmd.appearance, arena, cmd.controller) catch |err| return .{ .@"error" = @errorName(err) };
                 return .{ .pane = cmd.pane };
             },
             .newTab => return self.newTab(arena, cmd, size),
@@ -498,6 +558,9 @@ pub const Server = struct {
                 if (self.tabOf(b) != ta) return .{ .@"error" = "panes are in different tabs" };
                 const la = findLeaf(&ta.layout, a) orelse return .{ .@"error" = "pane not laid out" };
                 const lb = findLeaf(&ta.layout, b) orelse return .{ .@"error" = "pane not laid out" };
+                const targets: []const *Pane = if (a == b) &[_]*Pane{a} else &[_]*Pane{ a, b };
+                if (!lockOwned(targets, cmd.controller)) return .{ .@"error" = "NOTOWNER" };
+                defer unlockOwned(targets, cmd.controller);
                 std.mem.swap(LayoutNode, la, lb);
                 self.scheduleNotify();
                 return .{ .pane = cmd.pane };
@@ -506,6 +569,13 @@ pub const Server = struct {
                 self.mutex.lock();
                 defer self.mutex.unlock();
                 const split = self.findSplit(cmd.split orelse "") orelse return .{ .@"error" = "no such split" };
+                var targets: std.ArrayList(*Pane) = .empty;
+                defer targets.deinit(arena);
+                if (cmd.controller != null) {
+                    collectLayoutPanes(arena, .{ .split = split }, &targets) catch return .{ .@"error" = "out of memory" };
+                }
+                if (!lockOwned(targets.items, cmd.controller)) return .{ .@"error" = "NOTOWNER" };
+                defer unlockOwned(targets.items, cmd.controller);
                 if (cmd.weights) |weights| {
                     if (cmd.ratio != null or cmd.index != null) return .{ .@"error" = "weights cannot be combined with ratio or index" };
                     normalizeSplitWeights(split, weights) catch |err| return .{ .@"error" = @errorName(err) };
@@ -571,8 +641,8 @@ pub const Server = struct {
         }
     }
 
-    /// Pins every close target before changing the tree. Allocation failure
-    /// leaves all targets visible; signalling never holds the tree mutex.
+    /// Pins and validates all close targets before changing the tree. For a
+    /// proved close, the nonblocking kill request is committed under the locks.
     fn closeTargets(self: *Server, arena: Allocator, cmd: wire.Command) wire.Result {
         self.mutex.lock();
         const targets = collect: {
@@ -591,7 +661,7 @@ pub const Server = struct {
                         break;
                     }
                 }
-                if (one == null) return .{ .@"error" = "no such pane" };
+                if (one == null) return .{ .@"error" = if (cmd.controller != null) "NOTOWNER" else "no such pane" };
             }
             var count: usize = if (one != null) 1 else 0;
             for (tabs) |t| count += t.panes.items.len;
@@ -602,15 +672,22 @@ pub const Server = struct {
                 at += 1;
             };
             if (one) |p| selected[0] = p;
+            if (!lockOwned(selected, cmd.controller)) {
+                arena.free(selected);
+                return .{ .@"error" = "NOTOWNER" };
+            }
+            defer unlockOwned(selected, cmd.controller);
             // Unlinking may free the tab/group slices above: finish collecting
             // first. Pins also cover readers that finish before kill runs.
             for (selected) |p| p.pin();
             for (selected) |p| self.unlinkPane(p);
+            // The ownership proof must remain valid through the close commit.
+            if (cmd.controller != null) for (selected) |p| p.kill();
             break :collect selected;
         };
         defer arena.free(targets);
         defer for (targets) |p| p.unpin();
-        for (targets) |p| p.kill();
+        if (cmd.controller == null) for (targets) |p| p.kill();
         self.scheduleNotify();
         return switch (cmd.op) {
             .closeTab => .{ .tab = cmd.tab },
@@ -772,6 +849,7 @@ pub const Server = struct {
     /// The child stays gated through allocation, reader prep and publication.
     /// Rejection never executes startup; no server lock spans fork or join.
     fn newTab(self: *Server, arena: Allocator, cmd: wire.Command, size: wire.GridSize) wire.Result {
+        if (cmd.controller) |id| if (!wire.validController(id)) return .{ .@"error" = "InvalidController" };
         const after = cmd.tab;
         const oom: wire.Result = .{ .@"error" = "out of memory" };
         const tab = self.gpa.create(Tab) catch return oom;
@@ -801,6 +879,12 @@ pub const Server = struct {
             self.gpa.destroy(tab);
             log("pane failed to start: {s}", .{@errorName(e)});
             return .{ .@"error" = @errorName(e) };
+        };
+        pane.reserveCreation(cmd.controller) catch |err| {
+            pane.abort();
+            pane.destroy();
+            self.gpa.destroy(tab);
+            return .{ .@"error" = @errorName(err) };
         };
         pane.ctx = self;
         pane.on_change = &onPaneChange;
@@ -1016,8 +1100,14 @@ pub const Server = struct {
         const pane_id = cmd.pane orelse "";
         const direction = cmd.direction orelse .right;
         const oom: wire.Result = .{ .@"error" = "out of memory" };
-        const old = self.findPane(pane_id) orelse return .{ .@"error" = "no such pane" };
+        const old = self.findPane(pane_id) orelse return .{ .@"error" = if (cmd.controller != null) "NOTOWNER" else "no such pane" };
         defer old.unpin();
+        if (cmd.controller != null) {
+            old.mutex.lock();
+            const allowed = old.ownsControllerLocked(cmd.controller);
+            old.mutex.unlock();
+            if (!allowed) return .{ .@"error" = "NOTOWNER" };
+        }
         self.mutex.lock();
         const tab_id = (self.tabOf(old) orelse {
             self.mutex.unlock();
@@ -1042,6 +1132,11 @@ pub const Server = struct {
             log("pane failed to start: {s}", .{@errorName(e)});
             return .{ .@"error" = @errorName(e) };
         };
+        pane.reserveCreation(cmd.controller) catch |err| {
+            pane.abort();
+            pane.destroy();
+            return .{ .@"error" = @errorName(err) };
+        };
         pane.ctx = self;
         pane.on_change = &onPaneChange;
         pane.on_close = &onPaneClose;
@@ -1051,7 +1146,7 @@ pub const Server = struct {
             pane.destroy();
             return .{ .@"error" = @errorName(err) };
         };
-        self.registerSplit(old, pane, direction) catch |err| {
+        self.registerSplit(old, pane, direction, cmd.controller) catch |err| {
             pane.abort();
             pane.destroy();
             return .{ .@"error" = if (err == error.OutOfMemory) "out of memory" else @errorName(err) };
@@ -1068,9 +1163,12 @@ pub const Server = struct {
 
     /// Revalidates a source after fork/reader preparation, then publishes its
     /// gated sibling without further fallible work. Success returns one pin.
-    fn registerSplit(self: *Server, old: *Pane, pane: *Pane, direction: wire.Direction) !void {
+    fn registerSplit(self: *Server, old: *Pane, pane: *Pane, direction: wire.Direction, controller: ?[]const u8) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
+        if (controller != null) old.mutex.lock();
+        defer if (controller != null) old.mutex.unlock();
+        if (!old.ownsControllerLocked(controller)) return error.NOTOWNER;
         if (old.closing.load(.acquire) or old.ended.load(.acquire)) return error.PaneClosed;
         const tab = self.tabOf(old) orelse return error.PaneClosed;
         if (findLeaf(&tab.layout, old) == null) return error.PaneNotLaidOut;
@@ -1403,6 +1501,193 @@ fn testPane(server: *Server, tab: *Tab, id: [8]u8) !*Pane {
 /// Frees shell-less panes still retained by the test server.
 fn freeTestPanes(server: *Server) void {
     for (server.panes.items) |p| p.destroy();
+}
+
+/// Attaches a test controller without starting a shell or an external server.
+fn attachTestController(pane: *Pane, peer: *CommandTransport, arena: Allocator, id: ?[]const u8, observer: bool) !void {
+    try pane.attach(peer.transport(), arena, .{ .pane = &pane.id, .cols = 0, .rows = 0, .cellWidth = 8, .cellHeight = 16, .paneControl = true, .observer = observer, .controller = id });
+}
+
+test "controller close validates every target before changing the tree" {
+    for ([_]wire.Op{ .closePane, .closeTab, .closeGroup }) |op| {
+        var server = testServer(testing.allocator);
+        defer freeTree(&server);
+        defer freeTestPanes(&server);
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var a_peer = CommandTransport{};
+        defer a_peer.deinit();
+        var b_peer = CommandTransport{};
+        defer b_peer.deinit();
+        var other = CommandTransport{};
+        defer other.deinit();
+        const tab = try testTab(&server, "aaaaaaaa");
+        const a = try testPane(&server, tab, "11111111".*);
+        const b = try testPane(&server, tab, "22222222".*);
+        const split = try server.gpa.create(SplitNode);
+        split.* = .{ .id = "split123".*, .direction = .right };
+        try split.children.appendSlice(server.gpa, &.{ .{ .node = .{ .pane = a } }, .{ .node = .{ .pane = b } } });
+        tab.layout = .{ .split = split };
+        const second = try testTab(&server, "bbbbbbbb");
+        const c_pane = try testPane(&server, second, "33333333".*);
+        const group = server.groupTabs(arena.allocator(), .{ .op = .group, .tab = "bbbbbbbb", .target = "aaaaaaaa" });
+        try testing.expect(group.@"error" == null);
+        try attachTestController(a, &a_peer, arena.allocator(), "workspace", false);
+        try attachTestController(b, &b_peer, arena.allocator(), "workspace", false);
+        try attachTestController(c_pane, &other, arena.allocator(), "different", false);
+        // A controller with no attachment cannot close even an unvisited pane.
+        const unvisited = server.command(arena.allocator(), .{ .op = .closePane, .pane = &a.id, .controller = "unvisited" });
+        try testing.expectEqualStrings("NOTOWNER", unvisited.@"error".?);
+        const cmd = wire.Command{ .op = op, .pane = &a.id, .tab = &tab.id, .group = group.group, .controller = "workspace" };
+        if (op == .closePane) {
+            a.control(other.transport(), true); // not attached: no transfer
+            try attachTestController(a, &other, arena.allocator(), "different", true);
+            a.control(other.transport(), true);
+        } else if (op == .closeTab) {
+            try attachTestController(b, &other, arena.allocator(), "different", true);
+            b.control(other.transport(), true);
+        }
+        const denied = server.command(arena.allocator(), cmd);
+        try testing.expectEqualStrings("NOTOWNER", denied.@"error".?);
+        try testing.expect(server.tabOf(a) != null and server.tabOf(b) != null and server.tabOf(c_pane) != null);
+        try testing.expect(!a.closing.load(.acquire) and !b.closing.load(.acquire) and !c_pane.closing.load(.acquire));
+        // Omitted proof remains the explicit legacy close path.
+        var legacy = cmd;
+        legacy.controller = null;
+        try testing.expect(server.command(arena.allocator(), legacy).@"error" == null);
+    }
+}
+
+test "split registration and edits recheck ownership after transfer" {
+    var server = testServer(testing.allocator);
+    defer freeTree(&server);
+    defer freeTestPanes(&server);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var first = CommandTransport{};
+    defer first.deinit();
+    var second = CommandTransport{};
+    defer second.deinit();
+    const tab = try testTab(&server, "aaaaaaaa");
+    const old = try testPane(&server, tab, "11111111".*);
+    const prepared = try testPane(&server, tab, "22222222".*);
+    tab.layout = .{ .pane = old };
+    try attachTestController(old, &first, arena.allocator(), "first", false);
+    try attachTestController(old, &second, arena.allocator(), "second", true);
+    old.mutex.lock();
+    try testing.expect(old.ownsControllerLocked("first"));
+    old.mutex.unlock();
+    old.control(second.transport(), true);
+    try testing.expectError(error.NOTOWNER, server.registerSplit(old, prepared, .right, "first"));
+    try testing.expect(tab.layout == .pane and tab.layout.pane == old);
+    const edit = server.command(arena.allocator(), .{ .op = .resetPane, .pane = &old.id, .controller = "first" });
+    try testing.expectEqualStrings("NOTOWNER", edit.@"error".?);
+}
+
+test "controller proof authorizes current owner and rejects legacy owners" {
+    var server = testServer(testing.allocator);
+    defer freeTree(&server);
+    defer freeTestPanes(&server);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var peer = CommandTransport{};
+    defer peer.deinit();
+    const tab = try testTab(&server, "aaaaaaaa");
+    const pane = try testPane(&server, tab, "11111111".*);
+    try attachTestController(pane, &peer, arena.allocator(), null, false);
+    const cmd = wire.Command{ .op = .closePane, .pane = &pane.id, .controller = "workspace" };
+    try testing.expectEqualStrings("NOTOWNER", server.command(arena.allocator(), cmd).@"error".?);
+    pane.detach(peer.transport());
+    try attachTestController(pane, &peer, arena.allocator(), "workspace", false);
+    try testing.expect(server.command(arena.allocator(), cmd).@"error" == null);
+    try testing.expect(pane.closing.load(.acquire));
+    try testing.expect(server.tabOf(pane) == null);
+}
+
+test "creation reservation permits recipe edits splits resize and close before attachment" {
+    var server = testServer(testing.allocator);
+    defer freeTree(&server);
+    defer {
+        for (server.panes.items) |pane| pane.kill();
+        freeTestPanes(&server);
+    }
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const made = server.command(arena.allocator(), .{ .op = .newTab, .cwd = "/", .startup = "exec /bin/cat", .controller = "creator" });
+    try testing.expect(made.@"error" == null);
+    const pane_id = made.pane orelse return error.MissingPane;
+    const tab_id = made.tab orelse return error.MissingTab;
+    const foreign = server.command(arena.allocator(), .{ .op = .clearPane, .pane = pane_id, .controller = "foreign" });
+    try testing.expectEqualStrings("NOTOWNER", foreign.@"error".?);
+    const edit = server.command(arena.allocator(), .{ .op = .clearPane, .pane = pane_id, .controller = "creator" });
+    try testing.expect(edit.@"error" == null);
+    const denied_split = server.command(arena.allocator(), .{ .op = .splitPane, .pane = pane_id, .controller = "foreign" });
+    try testing.expectEqualStrings("NOTOWNER", denied_split.@"error".?);
+    const made_split = server.command(arena.allocator(), .{ .op = .splitPane, .pane = pane_id, .cwd = "/", .startup = "exec /bin/cat", .controller = "creator" });
+    try testing.expect(made_split.@"error" == null);
+    const split_pane = made_split.pane orelse return error.MissingPane;
+    const child_edit = server.command(arena.allocator(), .{ .op = .clearPane, .pane = split_pane, .controller = "creator" });
+    try testing.expect(child_edit.@"error" == null);
+    const tab = server.findTab(tab_id) orelse return error.MissingTab;
+    const split_id = tab.layout.split.id;
+    const resize = server.command(arena.allocator(), .{ .op = .resizeSplit, .split = &split_id, .ratio = 0.25, .controller = "creator" });
+    try testing.expect(resize.@"error" == null);
+    const denied_close = server.command(arena.allocator(), .{ .op = .closeTab, .tab = tab_id, .controller = "foreign" });
+    try testing.expectEqualStrings("NOTOWNER", denied_close.@"error".?);
+    const closed = server.command(arena.allocator(), .{ .op = .closeTab, .tab = tab_id, .controller = "creator" });
+    try testing.expect(closed.@"error" == null);
+    try testing.expect(server.findTab(tab_id) == null);
+}
+
+test "foreign ownership permanently revokes a creation close proof" {
+    var server = testServer(testing.allocator);
+    defer freeTree(&server);
+    defer freeTestPanes(&server);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var peer = CommandTransport{};
+    defer peer.deinit();
+    const tab = try testTab(&server, "aaaaaaaa");
+    const pane = try testPane(&server, tab, "11111111".*);
+    try pane.reserveCreation("creator");
+    try attachTestController(pane, &peer, arena.allocator(), "foreign", true);
+    pane.control(peer.transport(), true);
+    pane.detach(peer.transport());
+    const closed = server.command(arena.allocator(), .{ .op = .closePane, .pane = &pane.id, .controller = "creator" });
+    try testing.expectEqualStrings("NOTOWNER", closed.@"error".?);
+    try testing.expect(server.tabOf(pane) != null and !pane.closing.load(.acquire));
+}
+
+test "swap and split resize require ownership of all affected panes" {
+    var server = testServer(testing.allocator);
+    defer freeTree(&server);
+    defer freeTestPanes(&server);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var first = CommandTransport{};
+    defer first.deinit();
+    var second = CommandTransport{};
+    defer second.deinit();
+    const tab = try testTab(&server, "aaaaaaaa");
+    const a = try testPane(&server, tab, "11111111".*);
+    const b = try testPane(&server, tab, "22222222".*);
+    const split = try server.gpa.create(SplitNode);
+    split.* = .{ .id = "split123".*, .direction = .right };
+    try split.children.appendSlice(server.gpa, &.{ .{ .node = .{ .pane = a } }, .{ .node = .{ .pane = b } } });
+    defer {
+        split.children.deinit(server.gpa);
+        server.gpa.destroy(split);
+    }
+    tab.layout = .{ .split = split };
+    try attachTestController(a, &first, arena.allocator(), "first", false);
+    try attachTestController(b, &second, arena.allocator(), "second", false);
+    const swap = server.command(arena.allocator(), .{ .op = .swapPanes, .pane = &a.id, .target = &b.id, .controller = "first" });
+    try testing.expectEqualStrings("NOTOWNER", swap.@"error".?);
+    const resize = server.command(arena.allocator(), .{ .op = .resizeSplit, .split = &split.id, .ratio = 0.25, .controller = "first" });
+    try testing.expectEqualStrings("NOTOWNER", resize.@"error".?);
+    try testing.expect(split.children.items[0].node.pane == a and split.children.items[1].node.pane == b);
+    try testing.expectEqual(@as(f64, 1), split.children.items[0].weight);
+    try testing.expectEqual(@as(f64, 1), split.children.items[1].weight);
 }
 
 test "explicit close sends an eager empty tree while its child is still alive" {
@@ -1778,8 +2063,37 @@ test "serverInfo reports the answering process without changing the tree" {
     try testing.expect(result.value.uptimeSeconds.? >= 2);
     try testing.expectEqual(capabilities.len, result.value.capabilities.?.len);
     try testing.expectEqual(transports.len, result.value.transports.?.len);
+    try testing.expectEqualStrings("weighted-v1", result.value.layoutFormat.?);
+    try testing.expectEqualStrings("ghostty-vt-v1", result.value.snapshotFormat.?);
     try testing.expect((try frames.next()) == null);
     try testing.expectEqual(@as(usize, 0), server.items.items.len);
+}
+
+test "negotiated invalid and missing opens report failures while legacy opens exit" {
+    var server = testServer(testing.allocator);
+    defer freeTree(&server);
+    const cases = [_]struct { payload: []const u8, kind: wire.Kind }{
+        .{ .payload = "{\"paneControl\":true}", .kind = .failure },
+        .{ .payload = "{\"pane\":\"missing\",\"cols\":0,\"rows\":0,\"cellWidth\":0,\"cellHeight\":0,\"paneControl\":true}", .kind = .failure },
+        .{ .payload = "{\"pane\":\"missing\",\"cols\":0,\"rows\":0,\"cellWidth\":0,\"cellHeight\":0}", .kind = .exited },
+    };
+    for (cases) |case| {
+        var peer = CommandTransport{};
+        defer peer.deinit();
+        try peer.queue(.open, case.payload);
+        server.serve(peer.transport());
+        var frames = wire.FrameReader.init(testing.allocator);
+        defer frames.deinit();
+        try frames.append(peer.sent.items);
+        const frame = (try frames.next()).?;
+        try testing.expectEqual(case.kind, frame.kind);
+        if (case.kind == .failure) {
+            const result = try wire.parse(struct { @"error": []const u8 }, testing.allocator, frame.payload);
+            defer result.deinit();
+            try testing.expect(result.value.@"error".len > 0);
+        }
+        try testing.expect((try frames.next()) == null);
+    }
 }
 
 test "split weights normalize large values and reject invalid or ambiguous edits atomically" {
@@ -1926,7 +2240,7 @@ test "postspawn new tab OOM and closed split target never execute startup" {
             // before the same revalidation used by splitPane.
             const closed = server.closeTargets(testing.allocator, .{ .op = .closePane, .pane = &old.id });
             try testing.expect(closed.@"error" == null);
-            try testing.expectError(error.PaneClosed, server.registerSplit(old, child, .right));
+            try testing.expectError(error.PaneClosed, server.registerSplit(old, child, .right, null));
         } else {
             var tab = Tab{ .id = "newtab01".*, .layout = .{ .pane = child } };
             defer tab.panes.deinit(server.gpa);

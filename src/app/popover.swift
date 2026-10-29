@@ -105,6 +105,7 @@ struct PopupAnchor: NSViewRepresentable {
         private var monitors: [Any] = []
         private var observers: [NSObjectProtocol] = []
         private var point: NSPoint?
+        private var scrollTravel: CGFloat = 0
 
         #if KOID
         /// Koid's CLI opens the real control without screen input or focus.
@@ -126,17 +127,34 @@ struct PopupAnchor: NSViewRepresentable {
 
         #endif
 
+        /// Secondary and Control clicks open the menu at the pointer. While an
+        /// unrelated card is open, that card's monitor dismisses it and opens
+        /// this menu on the same press, whichever monitor AppKit runs first.
         func watchSecondaryClicks() {
-            secondaryClick = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
-                guard let self, let anchor = self.anchor, event.window === anchor.window,
-                      anchor.window != nil, !anchor.isHiddenOrHasHiddenAncestor, self.overlay == nil,
-                      Self.current?.overlay.map({ anchor.isDescendant(of: $0) }) ?? true,
-                      anchor.koiExposes(event.locationInWindow) else { return event }
-                self.point = event.locationInWindow
-                self.requested?()
-                self.show()
+            Self.contextual.add(self)
+            secondaryClick = NSEvent.addLocalMonitorForEvents(matching: [.rightMouseDown, .leftMouseDown]) { [weak self] event in
+                guard let self, let anchor = self.anchor, self.answers(event),
+                      Self.current?.overlay.map({ anchor.isDescendant(of: $0) }) ?? true else { return event }
+                self.open(at: event)
                 return nil
             }
+        }
+
+        /// Every control with a context menu, so a dismissing press can find
+        /// the menu it lands on without depending on monitor order.
+        private static let contextual = NSHashTable<Coordinator>.weakObjects()
+
+        /// Whether this control's menu answers a secondary click at the pointer.
+        private func answers(_ event: NSEvent) -> Bool {
+            guard let anchor, event.window === anchor.window, anchor.window != nil,
+                  !anchor.isHiddenOrHasHiddenAncestor, overlay == nil, event.isKoiSecondaryClick else { return false }
+            return anchor.koiExposes(event.locationInWindow)
+        }
+
+        private func open(at event: NSEvent) {
+            point = event.locationInWindow
+            requested?()
+            show()
         }
 
         func show() {
@@ -168,9 +186,17 @@ struct PopupAnchor: NSViewRepresentable {
                             self.dismiss()
                             return nil
                         }
+                    } else if event.type == .scrollWheel {
+                        // Fingers settling for a physical two-finger press start a
+                        // scroll gesture that never moves. Only travel dismisses.
+                        guard self.scrollTravels(event), event.window !== overlay.window
+                            || !overlay.cardContains(event.locationInWindow) else { return event }
+                        self.dismiss()
+                        return event
                     } else if event.window !== overlay.window || !overlay.cardContains(event.locationInWindow) {
                         self.dismiss()
-                        return event.type == .scrollWheel ? event : nil
+                        if let next = Self.contextual.allObjects.first(where: { $0.answers(event) }) { next.open(at: event) }
+                        return nil
                     }
                     return event
                 })
@@ -199,6 +225,14 @@ struct PopupAnchor: NSViewRepresentable {
                 })
             position(host.fittingSize)
             overlay.card = host
+        }
+
+        /// A wheel notch or a few points of trackpad travel within one gesture
+        /// count as scrolling; a gesture that only begins and ends does not.
+        private func scrollTravels(_ event: NSEvent) -> Bool {
+            if event.phase.contains(.mayBegin) || event.phase.contains(.began) { scrollTravel = 0 }
+            scrollTravel += abs(event.scrollingDeltaX) + abs(event.scrollingDeltaY)
+            return event.hasPreciseScrollingDeltas ? scrollTravel >= 4 : scrollTravel > 0
         }
 
         private func position(_ size: CGSize) {
@@ -264,6 +298,13 @@ private final class PopupOverlay: NSView {
 extension NSWindow {
     /// Floating controls keep keyboard focus while terminal state refreshes.
     var hasKoiPopup: Bool { contentView?.subviews.contains { $0 is PopupOverlay } ?? false }
+}
+
+extension NSEvent {
+    /// A right button, a two-finger trackpad press, or a Control-click.
+    var isKoiSecondaryClick: Bool {
+        type == .rightMouseDown || (type == .leftMouseDown && modifierFlags.contains(.control))
+    }
 }
 
 extension View {

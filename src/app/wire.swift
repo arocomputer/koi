@@ -28,6 +28,7 @@ enum Wire {
         case watch = 6     // empty; answered by .state, now and on changes
         case command = 7   // JSON Command; answered by .result
         case offer = 8     // empty, over the local socket; answered by .offered
+        case paneControl = 9 // one byte: 1 claims, 0 releases
 
         // Server to client.
         case attached = 64 // JSON PaneInfo
@@ -38,6 +39,8 @@ enum Wire {
         case state = 69    // JSON State
         case result = 70   // JSON Result
         case offered = 71  // JSON Offer: a UDP port and secret for one client
+        case ownership = 72 // one-byte boolean
+        case failure = 73  // JSON error
     }
 
     struct OpenRequest: Codable {
@@ -46,6 +49,10 @@ enum Wire {
         var rows: UInt16
         var cellWidth: UInt32
         var cellHeight: UInt32
+        var paneControl: Bool? = nil
+        var observer: Bool? = nil
+        /// Logical client identity shared with ownership-checked control commands.
+        var controller: String? = nil
     }
 
     /// The whole tree, as every watcher sees it: tabs and groups, in order.
@@ -110,6 +117,42 @@ enum Wire {
             var id: String
             var direction: Direction
             var children: [Child]
+
+            init(id: String, direction: Direction, children: [Child]) {
+                self.id = id
+                self.direction = direction
+                self.children = children
+            }
+
+            private enum CodingKeys: String, CodingKey { case id, direction, children, ratio, first, second }
+
+            /// Running v6 servers may still send binary splits. Preserve their
+            /// IDs and nesting so divider commands continue to address that tree.
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                id = try c.decode(String.self, forKey: .id)
+                direction = try c.decode(Direction.self, forKey: .direction)
+                if c.contains(.children) {
+                    children = try c.decode([Child].self, forKey: .children)
+                } else {
+                    let ratio = try c.decode(Double.self, forKey: .ratio)
+                    guard ratio.isFinite, ratio > 0, ratio < 1 else {
+                        throw DecodingError.dataCorruptedError(forKey: .ratio, in: c, debugDescription: "Split ratio must be between zero and one")
+                    }
+                    children = [
+                        Child(layout: try c.decode(LayoutNode.self, forKey: .first), weight: ratio),
+                        Child(layout: try c.decode(LayoutNode.self, forKey: .second), weight: 1 - ratio),
+                    ]
+                }
+            }
+
+            /// New snapshots use the weighted format; legacy fields are read-only.
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                try c.encode(id, forKey: .id)
+                try c.encode(direction, forKey: .direction)
+                try c.encode(children, forKey: .children)
+            }
         }
 
         /// A child of a split and its share of the split's length, relative to
@@ -239,6 +282,8 @@ enum Wire {
             case reportStatus
         }
         var op: Op
+        /// Requires ownedCommands. Omitted by legacy CLI requests.
+        var controller: String?
         var tab: String?
         var pane: String?
         var direction: Direction?
@@ -287,6 +332,8 @@ enum Wire {
         var uptimeSeconds: UInt64?
         var transports: [String]?
         var capabilities: [String]?
+        var layoutFormat: String?
+        var snapshotFormat: String?
 
         /// A successful serverInfo response must explicitly advertise a feature.
         func supports(_ capability: String) -> Bool {

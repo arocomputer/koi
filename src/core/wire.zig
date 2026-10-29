@@ -17,6 +17,7 @@ pub const Kind = enum(u8) {
     watch = 6, // answered by .state, now and on changes
     command = 7, // JSON Command; answered by .result
     offer = 8, // over the local socket; answered by .offered
+    paneControl = 9, // one byte: 1 claims, 0 releases
 
     // Server to client.
     attached = 64, // JSON PaneInfo
@@ -27,6 +28,8 @@ pub const Kind = enum(u8) {
     state = 69, // JSON State
     result = 70, // JSON Result
     offered = 71, // JSON Offer
+    ownership = 72, // one byte: whether this client owns the pane
+    failure = 73, // JSON {error: string}
 };
 
 pub const header_size = 5;
@@ -150,7 +153,20 @@ pub const OpenRequest = struct {
     rows: u16,
     cellWidth: u32,
     cellHeight: u32,
+    paneControl: bool = false,
+    observer: bool = false,
+    controller: ?[]const u8 = null,
 };
+
+/// Controller identifiers contain 1...64 UTF-8 code points (at most 256 bytes).
+pub fn validController(value: []const u8) bool {
+    if (value.len == 0 or value.len > 256 or !std.unicode.utf8ValidateSlice(value)) return false;
+    var count: usize = 0;
+    for (value) |byte| if (byte & 0xc0 != 0x80) {
+        count += 1;
+    };
+    return count <= 64;
+}
 
 pub const Status = enum { idle, working, blocked, done, @"error" };
 
@@ -228,23 +244,6 @@ pub const Layout = union(enum) {
     }
 };
 
-/// A layout as read back.
-pub const ParsedLayout = struct {
-    pane: ?[]const u8 = null,
-    split: ?ParsedSplit = null,
-};
-
-pub const ParsedSplit = struct {
-    id: []const u8,
-    direction: Direction,
-    children: []ParsedChild,
-};
-
-pub const ParsedChild = struct {
-    layout: *ParsedLayout,
-    weight: f64,
-};
-
 pub const GroupInfo = struct {
     id: []const u8,
     name: []const u8,
@@ -294,10 +293,11 @@ pub const ParsedItem = struct {
     group: ?struct { _0: ParsedGroup } = null,
 };
 
+/// CLI target lookup needs IDs and panes, not the server's layout schema.
+/// Skipping layout accepts both binary and weighted protocol-v6 splits.
 pub const ParsedTab = struct {
     id: []const u8,
     panes: []const PaneInfo,
-    layout: ParsedLayout,
 };
 
 pub const ParsedGroup = struct {
@@ -333,6 +333,7 @@ pub const Appearance = struct {
 
 pub const Command = struct {
     op: Op,
+    controller: ?[]const u8 = null,
     tab: ?[]const u8 = null,
     pane: ?[]const u8 = null,
     direction: ?Direction = null,
@@ -372,6 +373,8 @@ pub const Result = struct {
     uptimeSeconds: ?u64 = null,
     transports: ?[]const []const u8 = null,
     capabilities: ?[]const []const u8 = null,
+    layoutFormat: ?[]const u8 = null,
+    snapshotFormat: ?[]const u8 = null,
 };
 
 pub const Offer = struct {
@@ -449,7 +452,18 @@ test "items encode as the app expects" {
     , json);
     const back = try parse(ParsedState, gpa, json);
     defer back.deinit();
-    try std.testing.expectEqualStrings("p1", back.value.items[0].tab.?._0.layout.pane.?);
+    try std.testing.expectEqualStrings("t1", back.value.items[0].tab.?._0.id);
+}
+
+test "CLI target trees accept legacy v6 split layouts" {
+    const json =
+        \\{"items":[{"tab":{"_0":{"id":"remote-tab","panes":[{"id":"pane-a","pid":42,"title":"","cwd":"/","program":"","shell":"zsh","fullscreen":false,"status":"idle"}],"layout":{"split":{"id":"legacy","direction":"right","ratio":0.4,"first":{"pane":"pane-a"},"second":{"pane":"pane-b"}}}}}}]}
+    ;
+    const state = try parse(ParsedState, std.testing.allocator, json);
+    defer state.deinit();
+    const tab = state.value.items[0].tab.?._0;
+    try std.testing.expectEqualStrings("remote-tab", tab.id);
+    try std.testing.expectEqualStrings("pane-a", tab.panes[0].id);
 }
 
 test "additive v6 commands retain startup source and default appearance limits" {

@@ -68,6 +68,12 @@ or a directory name. Choosing work on another connected machine switches to
 it. Use ↑/↓ and Return to select,
 Back to return to the previous list, and Escape to close.
 
+Koid observes remote work without typing into or resizing it. Older remote
+servers also require **Take Control of Pane** in the palette before interaction.
+Choose **Observe Pane** to watch passively, or **Reconnect Pane** to refresh a
+stalled display while keeping its process running. New servers prevent a second
+client from taking a terminal's size merely by viewing it.
+
 Hover over a toolbar or pane control to see its configured shortcut. These
 hints do not take keyboard focus. Machine pickers and action menus use the
 same glass styling.
@@ -90,8 +96,8 @@ values, per-setting resets and shortcut conflict feedback are described in
 Drag a divider to resize panes; double-click it to reset the split. Drag a
 pane header to swap panes. Drag a tab to show an insertion cue, then release
 to reorder it. Tabs stay in their real positions throughout the gesture.
-Choose **Move or Group…** in a tab's context menu to create a group or move
-to an existing one. Dropping on a named group header also moves into it.
+Right-click or Control-click a tab for its menu. Choose **Move or Group…**
+there to create a group or move to an existing one. Dropping on a named group header also moves into it.
 Drop at a group's outer edge, at the end of the strip, or choose
 **Move Out of Group** to leave it.
 Escape cancels a tab or pane drag. Tab strips scroll near their edges during
@@ -153,7 +159,7 @@ include fonts, line height, cursor style, height and opacity, and optional
 focus-follows-mouse. macOS Reduce Motion and Reduce Transparency are respected.
 Selected tabs in every placement and collapsed groups containing the selection
 use a glass fill and faint rim. Settings and Diagnostics categories use a softer
-selection fill; all share Koi's rounded rectangle Capsule shape. See
+selection fill; all use SwiftUI's capsule shape. See
 [Configuration](docs/configuration.md) for Option-key policies, scrollback
 limits and integration details.
 

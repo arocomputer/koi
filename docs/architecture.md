@@ -66,12 +66,19 @@ names include that version so incompatible clients use separate sockets.
 
 The current protocol remains **v6**. New control operations and fields are
 additive JSON; they do not extend the `libkoi` C ABI. `serverInfo` returns
-`serverVersion`, `serverPID`, `protocolVersion`, `uptimeSeconds`, `transports`
-and `capabilities` from the answering process. The version is the package
+`serverVersion`, `serverPID`, `protocolVersion`, `uptimeSeconds`, `transports`,
+`capabilities`, `layoutFormat` and `snapshotFormat` from the answering process. The version is the package
 version plus a digest of the core sources, computed by `scripts/build-core.sh`
 and stamped into the binary (`koi version` prints it), so replacing a binary
 on disk does not change the identity of a server already running, and the
 app can tell when the local server predates the build it carries.
+
+The app also reads the earlier v6 binary split layout (`first`, `second`,
+`ratio`) as two weighted children. It preserves split IDs and nesting so
+existing remote panes and divider resizing work without a server restart.
+Current servers and newly encoded layouts use `children` with relative weights.
+CLI target lookup reads only tab IDs and pane metadata, skipping layouts so
+commands can still resolve existing panes on either generation of v6 server.
 
 Clients must require an explicit capability before using an additive option:
 older v6 servers can ignore unknown JSON fields. Unsupported features are
@@ -88,6 +95,48 @@ Existing commands continue to work without the new options.
 | `reportStatus` | Set an exact pane's foreground-program status without terminal output |
 | `splitCwd` | `splitPane` honors explicit `cwd` rather than silently inheriting |
 | `resizeSplitWeights` | `resizeSplit` accepts a full positive finite `weights` array, normalized per child, mutually exclusive with `ratio`/`index` |
+| `paneControl` | Open may negotiate explicit resize/input ownership and attachment errors; legacy clients receive no new frame kinds |
+| `ownedCommands` | A logical `controller` ID binds pane attachments to ownership-checked control commands |
+
+Pane connections ask for server information on their own stream before opening.
+Explicitly unsupported wire, layout or snapshot formats fail before attachment;
+older v6 servers without these fields remain readable. Layout formats are
+`weighted-v1` and `binary-v1`; the current snapshot format is `ghostty-vt-v1`.
+Unknown or malformed control state is reported rather than silently discarded.
+
+An open with `paneControl: true` opts into `ownership` (72, one-byte Boolean)
+and `failure` (73, JSON error) responses. `paneControl` (9, one-byte claim/release)
+transfers ownership explicitly. The first non-observing, sized client may own
+an unclaimed pane; a second attachment cannot steal its PTY size. Disconnecting
+an owner never promotes observers. A legacy interactive client may reacquire an
+unowned pane by resizing, but cannot replace a current owner. Zero-grid CLI
+watchers do not claim ownership merely by attaching; legacy CLI input/close
+remain explicit operations. Ownership changes discard held startup input from
+the former owner. Ordinary detach never ends a shell.
+
+Each workspace shares a random controller ID between its pane attachments and
+control commands. Commands carrying that ID check current ownership at commit:
+close checks every target before unlinking or signaling any process, and
+terminal edits check under the pane mutex. Newly created panes reserve control
+for their creator until an interactive client first takes ownership, so project
+recipes can finish before views attach. Legacy CLI commands omit this proof
+and retain their explicit behavior; it coordinates clients of the same user
+and is not an authentication boundary.
+
+Koid observes remote panes by default. Older remote servers also open passively
+because they cannot enforce ownership. Observers send no terminal input, focus
+reports, resizes or automatic engine configuration. Workspace close, split,
+resize and terminal-edit commands also reject affected observing panes.
+**Take Control of Pane** in
+the command palette enables interaction; **Observe Pane** relinquishes it.
+Legacy control is enforced only by this client. **Reconnect Pane** obtains a
+fresh snapshot without sending shell input or restarting the process.
+
+Only an actual child-exit event reports `Ended`. Attachment, compatibility and
+snapshot errors preserve the last valid screen and use bounded reconnects.
+Initialization expires after eight seconds without received bytes; partial
+snapshots extend that deadline. Backoff resets only after a valid snapshot or
+control state, never merely after opening a transport.
 
 Clear, reset and configure prepare a replacement engine and bounded snapshot
 before committing, then broadcast that snapshot to attached mirrors. Failure
@@ -128,7 +177,10 @@ their own 32 MiB default, and all snapshots still obey the 64 MiB frame cap.
 
 For a remote machine, SSH installs the server under `~/.local/share/koi/koi`
 and obtains connection details. The app then uses the encrypted UDP link,
-falling back to the SSH stdio relay if UDP is unavailable. While the relay
+falling back to the SSH stdio relay if UDP is unavailable. Silent UDP peers
+expire after ten seconds, with three-second keepalives. Failed initialization
+quarantines the matching cached link for thirty seconds without closing other
+streams, allowing the failed connection to retry over SSH. While the relay
 serves, the link is tried again every 30 seconds, except that a probe UDP
 left unanswered is not repeated for ten minutes: each costs an SSH round
 trip and a blocked port rarely opens within minutes. Bundled server
@@ -212,8 +264,11 @@ categories; committed values reload through the app coordinator, while
 unsaved drafts remain local to the Settings view. See
 [Configuration](configuration.md) for the user-facing controls.
 
-[`buttons.swift`](../src/app/buttons.swift) defines `Capsule`, Koi's continuous
-9-point rounded rectangle for compact controls, and `SelectionSurface`, its
+Compact labeled controls use SwiftUI's native `Capsule` shape. Standalone
+glyph buttons in the title bar, tabs and pane headers use circular hover
+highlights, with square click areas retained for comfortable targeting.
+Their hover fades honor motion off and system Reduce Motion.
+[`buttons.swift`](../src/app/buttons.swift) defines `SelectionSurface`, the
 shared backing for Settings and Diagnostics categories. Tabs and collapsed groups
 containing the selected tab use `GlassTabSurface` in `tabs.swift`: horizontal
 selection keeps a translucent fill and faint rim; vertical selection adds a
@@ -229,7 +284,27 @@ Left, top and right tab strips share [`tabinput.swift`](../src/app/tabinput.swif
 A tab is selected on mouse-down, as native tab bars do, so a click switches
 as immediately as a shortcut; the native click count on the second press
 recognizes a double-click rename without putting a multi-click recognizer
-around the close button.
+around the close button. The second press renames the tab that took the
+first, since selecting may have resized or scrolled the rows under the
+pointer. While a name field is open the terminal stops reclaiming the
+keyboard on pane updates; closing the field hands it back.
+Context menus open on a right or Control click through one window-local
+monitor per control ([`popover.swift`](../src/app/popover.swift)). Hit checks
+use each anchor's bounds as well as its visible area, since unclipped native
+anchors can report visibility across neighboring tabs. A press over another
+control replaces the open menu. Scroll gestures that only
+begin and end, as fingers settling for a physical trackpad press produce,
+leave a menu open; actual travel dismisses it and scrolls what is beneath.
+The selected horizontal tab grows to its natural title width, capped by the
+viewport; inactive tabs keep their compact width. Rows and the glass indicator
+share SwiftUI matched geometry and a selection spring. The indicator paints
+outside the scroller so its bounce is not clipped at the first tab. Machine
+changes reset that shared presentation. Structural changes and group collapse
+use a short ease without overshoot. Vertical rows keep their own static
+selection. Hover surfaces and close controls fade, with a reserved close slot
+crossfading against vertical activity indicators. Rename fields crossfade over
+captions that preserve layout; submitted names remain visible until matching
+server state or rejection. Motion off and system Reduce Motion disable motion.
 Rows stay in place during a drag; live target geometry provides an insertion
 cue or highlights an existing group header. Release commits one move and
 clears the gesture immediately. Escape cancels it. New groups are created
@@ -241,19 +316,34 @@ repeatedly resize the shell.
 Renderers share the immutable Metal device and pipeline. Per-pane engine
 state and glyph atlases stay independent; unchanged font metrics survive
 view reparenting. A failed drawable/presentation attempt retains its pending
-frame for the next display tick. Main-thread output deliveries are bounded to
+frame for the next display tick; a failed GPU completion wakes the view to retry
+the latest frame. Main-thread output deliveries are bounded to
 256 KiB or 64 events, with indivisible snapshots allowed alone, so streaming
-output yields between deliveries. The focused pane draws output the moment it
+output yields between deliveries. The focused pane draws completed output the moment it
 arrives instead of waiting for that tick, which is up to one frame less
 between a keystroke and its echo; other panes draw on the tick. Remote panes
 predict typing locally (see `echo.swift`): the predicted cell is drawn on the
-keystroke itself, before the round trip, and reconciled with the real echo. Each pane's display link pauses once a tick
+keystroke itself, before the round trip, and reconciled with the real echo.
+Unchanged blanks require cursor evidence; pending erases cover split echoes,
+and unpredictable input or expiry clears the whole overlay and echo confidence.
+Guesses stay hidden until a completed redraw demonstrates echo; program names
+never bypass that check. Each pane's display link pauses once a tick
 finds nothing to draw, and wakes on output, input, a gesture or the window
 being uncovered, so idle panes cost no frames. A blank initial snapshot suppresses the
 cursor until the shell's first output or input, bounded at two seconds for a
 shell that never prints; this does not delay shell startup or terminal output. Scrolled-back output is drawn as-is: the
 renderer paints nothing over the top of the viewport, so the first visible
 row of history is never dimmed or shadowed.
+
+Ghostty's synchronous render-hold callback captures the completed image before
+mode 2026 redraw bytes mutate it. The renderer holds that state across output
+batches and consecutive redraws, releasing it on the end sequence or after one
+second even without more output. A snapshot restored inside a hold keeps the
+previous image, or blank backing on first attach, until release. Explicit local
+scrolling/selection may interrupt a hold, following Ghostty's documented policy;
+this avoids copying the terminal's history for each redraw. Cursor inversion
+composites after ordinary text and predictions, uses the composed cell beneath
+the caret, and follows cursor opacity.
 
 ## Diagnostics
 

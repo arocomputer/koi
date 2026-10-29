@@ -209,8 +209,8 @@ import Testing
         let fixture = PaletteFixture(size: NSSize(width: 480, height: 300))
         defer { fixture.close() }
         let items = [Action.newTab, .newSplit, .newSplitDown, .openConfig, .increaseFontSize, .closeTab].map {
-            PaletteItem(id: $0.rawValue, title: $0.title, detail: $0.paletteCategory, symbol: $0.paletteSymbol,
-                        shortcut: $0.defaultBind.symbols, category: PaletteItem.Category(rawValue: $0.paletteCategory) ?? .settings,
+            PaletteItem(id: $0.rawValue, title: $0.title, detail: $0.paletteCategory.rawValue, symbol: $0.paletteSymbol,
+                        shortcut: $0.defaultBind.symbols, category: $0.paletteCategory,
                         destructive: $0 == .closeTab, operation: .perform {})
         } + [PaletteItem(id: "rename_tab", title: "Rename Tab…", detail: "Tabs", symbol: "pencil", operation: .perform {}),
              PaletteItem(id: "work", title: "Koi", detail: "~/koi", symbol: "terminal", kind: .tab, operation: .perform {})]

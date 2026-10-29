@@ -52,6 +52,52 @@ import Testing
         }
     }
 
+    /// A physical two-finger press starts a scroll gesture with no travel;
+    /// the menu it just opened must stay. Turning a wheel still scrolls away.
+    @Test func settlingFingersKeepTheMenuWhileRealScrollingDismisses() throws {
+        let fixture = Fixture()
+        defer { fixture.close() }
+        fixture.presenter.show()
+        for (lines, expected) in [(0, true), (0, true), (1, false)] {
+            let scroll = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                                              wheel1: Int32(lines), wheel2: 0, wheel3: 0))
+            NSApp.sendEvent(try #require(NSEvent(cgEvent: scroll)))
+            #expect(fixture.window.hasKoiPopup == expected)
+        }
+        #expect(fixture.dismissals == 1)
+    }
+
+    /// Opening a menu over another control closes the open one on that same
+    /// press, even when the open card's monitor was installed first, and
+    /// Control-click is a secondary click too.
+    @Test func secondaryClickOnAnotherControlReplacesTheOpenMenu() throws {
+        let fixture = Fixture(anchor: NSRect(x: 20, y: 240, width: 100, height: 30))
+        let other = PopupAnchor.AnchorView(frame: NSRect(x: 300, y: 240, width: 100, height: 30))
+        let presenter = PopupAnchor.Coordinator()
+        fixture.root.addSubview(other)
+        presenter.anchor = other
+        presenter.content = AnyView(Text("Other").frame(width: 120, height: 60))
+        fixture.presenter.show()
+        presenter.watchSecondaryClicks()
+        defer {
+            if let monitor = presenter.secondaryClick { NSEvent.removeMonitor(monitor) }
+            presenter.dismiss()
+            fixture.close()
+        }
+        let press = try #require(NSEvent.mouseEvent(with: .rightMouseDown, location: NSPoint(x: 330, y: 255),
+            modifierFlags: [], timestamp: 0, windowNumber: fixture.window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        NSApp.sendEvent(press)
+        #expect(presenter.isPresented && !fixture.presenter.isPresented)
+        presenter.dismiss()
+        let controlClick = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 330, y: 255),
+            modifierFlags: [.control], timestamp: 0, windowNumber: fixture.window.windowNumber,
+            context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        NSApp.sendEvent(controlClick)
+        #expect(presenter.isPresented)
+        #expect(fixture.root.clicks == 0, "a Control-click that opened a menu does not reach the view beneath")
+    }
+
     @Test func escapeClosesAndRestoresKeyboardFocus() throws {
         let fixture = Fixture()
         defer { fixture.close() }
