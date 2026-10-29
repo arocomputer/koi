@@ -11,9 +11,8 @@ import UniformTypeIdentifiers
 /// and resizes when the session says it has (`.resized`), so its terminal
 /// sees resizes at the same point in the output as the server's.
 ///
-/// It attaches at once, even hidden or before layout: with no real grid yet,
-/// or during a resize hold, it opens with a zero size (attach without
-/// resizing) and sends the settled size once there is one.
+/// Attachment negotiates compatibility first. Observers never send terminal
+/// input or resize the shared PTY until the user explicitly takes control.
 @MainActor
 final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private let metalLayer = CAMetalLayer()
@@ -41,9 +40,18 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var connectingTask: Task<Void, Never>?
     private var connectionGeneration = UUID()
     private var reconnectDelay: UInt64 = 300_000_000
+    private var handshakeTask: Task<Void, Never>?
+    private var restoredConnection = false
+    /// Koid observes remote work by default; old remote servers also require
+    /// an explicit claim because they cannot arbitrate between clients.
+    private(set) var observing = false
+    private var wantsObservation = false
+    private(set) var supportsOwnership = false
+    var canControl: Bool { !observing && restoredConnection && connection?.allowsInput == true }
     /// The pane on the server this view shows, and where that server is.
     let paneID: String
     let endpoint: Endpoint
+    private let controller: String
     private var requested: GridSize?
     /// Each animation owns a hold; the session resizes only after all owners
     /// finish, even if a terminal moves between tabs during an animation.
@@ -77,8 +85,6 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     /// before a coordinator installs its callback.
     private(set) var connectionDescription = "Offline"
     var onConnectionChange: (() -> Void)?
-    /// Allows a coordinator to forward terminal defaults over its control connection.
-    var onConfigurationChange: ((Config) -> Void)?
 
     /// Publish transitions once; coordinators read the current description.
     private func describeConnection(_ description: String) {
@@ -124,7 +130,6 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         updateMetrics(force: true)
         terminal?.applyTheme()
         applyTerminalConfiguration()
-        onConfigurationChange?(Config.current)
         redraw()
     }
     /// Apply the mirror's engine budget. The server side of the same setting
@@ -139,16 +144,19 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     /// Inset of the grid from the pane's edges, in points.
     let padding: CGFloat = 12
 
-    /// The shell ended or a snapshot could not be restored; outages retry.
+    /// A confirmed child exit only; transport and snapshot failures never end a process.
     var onEnd: (() -> Void)?
     /// The view took the keyboard (a click, or Tab focus).
     var onFocus: (() -> Void)?
 
     /// Build the initial atlas at the intended font size, before attachment,
     /// instead of allocating a default atlas only to discard it on first show.
-    init(pane: String, at endpoint: Endpoint, fontSize: CGFloat = 13) {
+    init(pane: String, at endpoint: Endpoint, fontSize: CGFloat = 13, controller: String = UUID().uuidString) {
         paneID = pane
         self.endpoint = endpoint
+        self.controller = controller
+        observing = endpoint != .local
+        wantsObservation = Paths.isDev && endpoint != .local
         self.fontSize = fontSize
         if endpoint != .local { predictor = Prediction() }
         metrics = FontMetrics(size: fontSize, scale: 2)
@@ -160,6 +168,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         metalLayer.framebufferOnly = true
         metalLayer.presentsWithTransaction = false
         renderer = Renderer(metrics: metrics)
+        renderer?.onFrameNeeded = { [weak self] in self?.redraw() }
         metalLayer.device = renderer?.device
         ghostty_mouse_encoder_new(nil, &mouseEncoder)
         ghostty_mouse_event_new(nil, &mouseEvent)
@@ -169,6 +178,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     isolated deinit {
         reconnectTask?.cancel()
+        handshakeTask?.cancel()
         connectingTask?.cancel()
         suppression?.cancel()
         accessibilityNotificationTask?.cancel()
@@ -213,21 +223,74 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             }
             self.connectingTask = nil
             guard let socket else { self.scheduleReconnect(); return }
-            self.reconnectDelay = 300_000_000
             self.stopAwaitingServer()
-            // Zero preserves the server's creation size during a split or
-            // before layout; output is attached immediately in either case.
+            // Negotiation zeros this grid for observers. Only the acknowledged
+            // owner may send the settled size after restoring the snapshot.
             let fitted = self.holdsResizes ? nil : self.fittedGrid()
-            self.requested = fitted
-            let req = Self.openRequest(pane: self.paneID, grid: fitted,
+            self.requested = nil
+            var req = Self.openRequest(pane: self.paneID, grid: fitted,
                                        cellWidth: self.metrics.cellWidth, cellHeight: self.metrics.cellHeight)
-            let c = PaneConnection(req, socket: socket)
+            req.controller = self.controller
+            let c = PaneConnection(req, socket: socket, observer: self.wantsObservation,
+                                   legacyObserver: endpoint != .local, negotiate: true)
             self.connection = c
+            self.restoredConnection = false
             c.onEvents = { [weak self, weak c] events in
                 guard let self, let c, self.connection === c else { return }
                 self.handle(events)
             }
+            self.handshakeTask?.cancel()
+            self.handshakeTask = Task { [weak self, weak c] in
+                var deadline = ConnectionDeadline(now: ProcessInfo.processInfo.systemUptime)
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
+                    guard let self, let c, self.connection === c, !self.restoredConnection else { return }
+                    if deadline.stalled(receivedBytes: c.receivedBytes, now: ProcessInfo.processInfo.systemUptime) {
+                        self.retryConnection("Connection lost — initialization stalled")
+                        return
+                    }
+                }
+            }
         }
+    }
+
+    /// Explicitly transfers control. Legacy servers can only enforce this in
+    /// this client; modern servers acknowledge the transfer before any writes.
+    func takeControl() { wantsObservation = false; connection?.takeControl() }
+
+    /// Keep receiving output while giving up all input and resize privileges.
+    func observe() { wantsObservation = true; connection?.releaseControl() }
+
+    /// Rebuild the mirror without ending or sending input to the remote process.
+    func reconnect() {
+        wantsConnection = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        connectingTask?.cancel()
+        connectingTask = nil
+        connectionGeneration = UUID()
+        handshakeTask?.cancel()
+        connection?.close()
+        connection = nil
+        requested = nil
+        connectPane()
+    }
+
+    /// A failed attachment is a connection failure, never evidence of child exit.
+    /// Preserve retry history until a complete snapshot has actually restored.
+    /// Only a failing transport counts against the host's link: an answer the
+    /// server sent (a failure message, a bad snapshot) arrived over a working one.
+    private func retryConnection(_ description: String, transportFailed: Bool = true) {
+        handshakeTask?.cancel()
+        handshakeTask = nil
+        if !restoredConnection, transportFailed { connection?.reportFailure(at: endpoint) }
+        connection?.close()
+        connection = nil
+        requested = nil
+        restoredConnection = false
+        setFocused(false)
+        if wantsConnection { scheduleReconnect(description) }
+        else { describeConnection(description) }
     }
 
     /// The open request for a grid, or for no grid yet: zero columns and rows
@@ -237,10 +300,10 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                          cellWidth: UInt32(cellWidth), cellHeight: UInt32(cellHeight))
     }
 
-    private func scheduleReconnect() {
+    private func scheduleReconnect(_ description: String = "Connection lost — retrying") {
         reconnectTask?.cancel()
         let delay = reconnectDelay
-        describeConnection("Connection lost — retrying")
+        describeConnection(description)
         reconnectDelay = min(reconnectDelay * 2, 5_000_000_000)
         reconnectTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: delay) } catch { return }
@@ -270,18 +333,21 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         stopAwaitingServer()
         reconnectTask?.cancel()
         reconnectTask = nil
+        handshakeTask?.cancel()
+        handshakeTask = nil
         connectingTask?.cancel()
         connectingTask = nil
         connectionGeneration = UUID()
+        connection?.close()
+        connection = nil
         showCursor()
         setFocused(false)
         selection?.cancel()
-        connection?.close()
-        connection = nil
         describeConnection("Offline")
     }
 
-    private func handle(_ events: [PaneConnection.Event]) {
+    /// Apply one ordered stream batch; only a confirmed exit invokes `onEnd`.
+    func handle(_ events: [PaneConnection.Event]) {
         // A batch can end in disconnect/exit after output; invalidate before
         // those early returns so AX and the last frame retain that output.
         accessibilityChanged()
@@ -292,20 +358,37 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         defer { if focused, connection != nil, window?.occlusionState.contains(.visible) == true { renderNow(inTransaction: false) } }
         for e in events {
             switch e {
+            case .negotiated(let ownership, let observing):
+                supportsOwnership = ownership
+                self.observing = observing
+                wantsObservation = observing
+            case .ownership(let owns):
+                observing = !owns
+                wantsObservation = !owns
+                requested = nil
+                predictor?.reset()
+                pushOverlay()
+                if restoredConnection {
+                    describeConnection(owns ? "Connected" : "Observing — Take Control to type")
+                    if owns, !holdsResizes { requestResize() }
+                }
+            case .failure(let message):
+                retryConnection("Connection error — \(message)", transportFailed: false)
+                return
             case .attached:
                 break
             case .snapshot(let bytes):
                 guard restoreTerminal(from: bytes) else {
-                    connection?.close()
-                    connection = nil
-                    wantsConnection = false
-                    setFocused(false)
-                    describeConnection("Ended — invalid terminal snapshot")
-                    onEnd?()
+                    retryConnection("Connection error — invalid terminal snapshot; retrying", transportFailed: false)
                     return
                 }
-                describeConnection("Connected")
+                restoredConnection = true
+                reconnectDelay = 300_000_000
+                handshakeTask?.cancel()
+                handshakeTask = nil
+                describeConnection(observing ? "Observing — Take Control to type" : "Connected")
                 setFocused(window?.isKeyWindow == true && window?.firstResponder === self)
+                if !observing, !holdsResizes { requestResize() }
             case .output(let bytes):
                 showCursor()
                 if Self.perf, let sent = inputSentAt {
@@ -319,6 +402,12 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                 predictor?.reset()
                 forceRender = true
             case .exited(let code):
+                guard code >= 0 else {
+                    retryConnection("Connection error — pane is unavailable; retrying")
+                    return
+                }
+                handshakeTask?.cancel()
+                handshakeTask = nil
                 describeConnection(code == 0 ? "Ended" : "Ended — exit status \(code)")
                 wantsConnection = false
                 reconnectTask?.cancel()
@@ -327,9 +416,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                 onEnd?()
                 return
             case .disconnected:
-                setFocused(false)
-                connection = nil
-                if wantsConnection { scheduleReconnect() }
+                retryConnection("Connection lost — retrying")
                 return
             }
         }
@@ -346,6 +433,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         if let terminal { _ = keyboard.releaseAll(terminal: terminal) }
         selection = nil
         terminal = restored
+        renderer?.bind(to: restored)
         restored.onClipboardWrite = { text in
             MainActor.assumeIsolated {
                 NSPasteboard.general.clearContents()
@@ -402,8 +490,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         needsRender = true
     }
 
-    /// The program in front of the pane, as the server reports it, which
-    /// decides how freely typing is predicted.
+    /// A foreground-program change invalidates the predictor's learned echo.
     func setProgram(_ program: String) {
         guard predictor?.program != program else { return }
         predictor?.setProgram(program)
@@ -515,7 +602,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     /// Sends the settled grid if it differs from what the session was last
     /// asked for. An unfittable view sends nothing rather than a 2x1 placeholder.
     private func requestResize() {
-        guard let size = fittedGrid() else { return }
+        guard !observing, connection?.allowsInput == true, restoredConnection, let size = fittedGrid() else { return }
         if Self.perf { perfLog("grid \(size.cols)x\(size.rows) bounds \(bounds.size) requested \(String(describing: requested)) connected \(connection != nil)") }
         if connection != nil, size != requested {
             requested = size
@@ -638,7 +725,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     // MARK: Keyboard
 
     override func keyDown(with event: NSEvent) {
-        guard terminal != nil else { return }
+        guard terminal != nil, !observing else { return }
         showCursor()
         let wasComposing = hasMarkedText()
         if !wasComposing, TerminalKeyboard.usesOptionAsAlt(event) {
@@ -725,8 +812,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     /// Tells the predictor what was just sent.
     private func predict(_ event: NSEvent, text: String?) {
-        guard predictor != nil, let terminal else { return }
-        let mods = event.modifierFlags.intersection([.control, .command])
+        guard canControl, predictor != nil, let terminal else { return }
+        let mods = event.modifierFlags.intersection([.control, .command, .option])
         switch event.keyCode {
         case 0x33 where mods.isEmpty: predictor?.backspace(in: terminal)
         case 0x24, 0x4C: predictor?.entered()

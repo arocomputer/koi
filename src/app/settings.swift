@@ -412,12 +412,6 @@ struct SettingsView: View {
         catch { self.error = error.localizedDescription }
     }
 
-    /// Fixed terminal colors keep the preview consistent with actual rendering.
-    private func color(_ key: String) -> Color {
-        let rgb = key == "background" ? Theme.current.background : key == "cursor" ? Theme.current.cursor : Theme.current.foreground
-        return Color(.sRGB, red: Double(rgb.r) / 255, green: Double(rgb.g) / 255, blue: Double(rgb.b) / 255)
-    }
-
     /// Uses the selected installed font and draft metrics before they are saved.
     private var terminalPreview: some View {
         let size = min(max(Double(value("font-size")) ?? 13, 6), 72)
@@ -435,9 +429,9 @@ struct SettingsView: View {
                     .frame(height: (font.ascender - font.descender) * height)
                     Text("Hello, world!  0123456789").frame(height: (font.ascender - font.descender) * height)
                 }
-                .font(Font(font)).foregroundStyle(color("foreground")).padding(16)
+                .font(Font(font)).foregroundStyle(Theme.current.foregroundColor).padding(16)
             }
-            .background(color("background").opacity(min(max(Double(value("background-opacity")) ?? config.backgroundOpacity, 0), 1)), in: .rect(cornerRadius: 10))
+            .background(Theme.current.backgroundColor.opacity(min(max(Double(value("background-opacity")) ?? config.backgroundOpacity, 0), 1)), in: .rect(cornerRadius: 10))
         }
     }
 
@@ -445,8 +439,8 @@ struct SettingsView: View {
         let style = value("cursor-style")
         let fraction = min(max(Double(value("cursor-height")) ?? 1, 0.2), 1)
         return ZStack(alignment: .bottomLeading) {
-            if style == "hollow" { Rectangle().strokeBorder(color("cursor"), lineWidth: 1) }
-            else { Rectangle().fill(color("cursor")) }
+            if style == "hollow" { Rectangle().strokeBorder(Theme.current.cursorColor, lineWidth: 1) }
+            else { Rectangle().fill(Theme.current.cursorColor) }
         }
         .frame(width: style == "bar" ? 2 : width, height: style == "underline" ? 2 : height * fraction)
         .opacity(min(max(Double(value("cursor-opacity")) ?? 1, 0), 1))
