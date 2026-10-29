@@ -109,13 +109,13 @@ final class TestControl: @unchecked Sendable {
 /// A headless pane: attaches like the app and mirrors the pane in a
 /// terminal of its own.
 final class TestPane: @unchecked Sendable {
-    private let socket: Socket
+    private let socket: Transport
     private let lock = NSLock()
     private var terminal: VTTerminal?
     private var resized: GridSize?
 
-    init?(_ pane: String, cols: UInt16 = 80, rows: UInt16 = 24) {
-        guard let s = Socket.connect(path: Paths.socket) else { return nil }
+    init?(_ pane: String, cols: UInt16 = 80, rows: UInt16 = 24, transport: Transport? = nil) {
+        guard let s = transport ?? Socket.connect(path: Paths.socket) else { return nil }
         socket = s
         s.send(Wire.frame(.open, json: Wire.OpenRequest(pane: pane, cols: cols, rows: rows, cellWidth: 8, cellHeight: 16)))
         Thread.detachNewThread { [self] in

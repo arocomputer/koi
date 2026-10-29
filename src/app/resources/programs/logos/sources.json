@@ -22,6 +22,11 @@
       "sha256": "2d6fda79eb18ddccca35b799eeb3cece0dfabc22520ce3b10abd25668df9fa93"
     },
     {
+      "file": "cline.svg",
+      "sha256": "af83bfdd6ca92ff6ff473b06233f0d7f5c375771f539c3b401fdf992960e6b05",
+      "revision": "3237c86aca8e54fdf55b6a33de8b64014b1ff47a"
+    },
+    {
       "file": "clojure.svg",
       "sha256": "6c0e42141a87642b3915f1367d0ab63ec603ba5435a1a615132e8d7dd525c2b2"
     },
@@ -32,6 +37,11 @@
     {
       "file": "crystal.svg",
       "sha256": "bc5ad657fa0e47e5940722b43a4cbf77a19560155feb6c1823d900e24ec0f8f7"
+    },
+    {
+      "file": "cursor.svg",
+      "sha256": "71572a9be192cc069ec22b48d785e61d754eeed7edb7d082d615f6d5620f70ec",
+      "revision": "3237c86aca8e54fdf55b6a33de8b64014b1ff47a"
     },
     {
       "file": "dart.svg",
@@ -176,6 +186,11 @@
       "geometryChange": "one coordinate rounded from 1.1685 to 1.1686"
     },
     {
+      "file": "opencode.svg",
+      "revision": "3237c86aca8e54fdf55b6a33de8b64014b1ff47a",
+      "sha256": "6f7d203200ba051cdbaa726c4de0a729cee3f1cec47953f189399d951af58c4c"
+    },
+    {
       "file": "openjdk.svg",
       "sha256": "4c4618e49d30e7d026dfda95688ae1746c68a70e4f570c7b2f796715930c1951"
     },
@@ -202,6 +217,11 @@
     {
       "file": "python.svg",
       "sha256": "ad9468e1c4903f73ae7eebfbe980f0f727a10db695be3d914e7d8bd25356a862"
+    },
+    {
+      "file": "qwen.svg",
+      "sha256": "36854c60b26bfa5a0cc0d4123727c0ef559efba6f129c0dfa623f3c443fe3e5b",
+      "revision": "3237c86aca8e54fdf55b6a33de8b64014b1ff47a"
     },
     {
       "file": "redis.svg",

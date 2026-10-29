@@ -166,6 +166,21 @@ import Testing
 /// Exercises real atlas exhaustion through the same assembly path used by draw,
 /// with small textures so eviction needs neither a window nor thousands of glyphs.
 @Suite @MainActor struct RendererTests {
+    /// TUI-selected and inverse-video text must still visibly respond to a
+    /// local selection; SGR inverse and selection are separate color swaps.
+    @Test func selectionChangesInverseVideoCells() throws {
+        let renderer = try renderer()
+        renderer.hidesCursor = true
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array("\u{1b}[7mX".utf8))
+        #expect(renderer.prepareFrame(terminal))
+        let before = try #require(renderer.quads.first { $0.kind == 0 && $0.origin == .zero }).color
+        terminal.select(from: (0, 0), to: (0, 0))
+        #expect(renderer.prepareFrame(terminal))
+        let after = try #require(renderer.quads.first { $0.kind == 0 && $0.origin == .zero }).color
+        #expect(before != after)
+    }
+
     /// Scrolled-back output fades out under the top edge; the live screen
     /// never does, so the first row of a prompt stays crisp.
     @Test func scrollingBackFadesTheTopEdgeOnly() throws {

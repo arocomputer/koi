@@ -142,6 +142,9 @@ extension sockaddr_un {
 /// carrying a stream per connection to that machine's server.
 final class LinkClient: @unchecked Sendable {
     private let raw: OpaquePointer
+    /// Native sends acquire the link mutex and may encrypt other streams'
+    /// queued output. Keep that work off the AppKit input thread.
+    fileprivate let writes = DispatchQueue(label: "koi.link.write", qos: .userInitiated)
 
     init?(host: String, port: UInt16, secret: [UInt8]) {
         guard secret.count == 32, let p = secret.withUnsafeBufferPointer({ koi_link_connect(host, port, $0.baseAddress) }) else { return nil }
@@ -169,6 +172,10 @@ final class LinkClient: @unchecked Sendable {
 final class LinkStream: Transport, @unchecked Sendable {
     private let raw: OpaquePointer
     private let owner: LinkClient
+    private let lock = NSLock()
+    private var closed = false
+    private var queued = 0
+    private var queuedWrites = 0
 
     fileprivate init(_ raw: OpaquePointer, owner: LinkClient) {
         self.raw = raw
@@ -181,7 +188,19 @@ final class LinkStream: Transport, @unchecked Sendable {
     deinit { koi_stream_release(raw) }
 
     func send(_ bytes: [UInt8]) {
-        bytes.withUnsafeBufferPointer { koi_stream_send(raw, $0.baseAddress, $0.count) }
+        guard !bytes.isEmpty else { return }
+        let accepted = lock.withLock {
+            guard !closed, queuedWrites < 4096, bytes.count <= 64 * 1024 * 1024 - queued else { return false }
+            queued += bytes.count
+            queuedWrites += 1
+            owner.writes.async { [self] in
+                defer { lock.withLock { queued -= bytes.count; queuedWrites -= 1 } }
+                guard !lock.withLock({ closed }) else { return }
+                bytes.withUnsafeBufferPointer { koi_stream_send(raw, $0.baseAddress, $0.count) }
+            }
+            return true
+        }
+        if !accepted { close() }
     }
 
     func readFrames(_ handle: (Wire.Kind, ArraySlice<UInt8>) -> Void) {
@@ -199,6 +218,12 @@ final class LinkStream: Transport, @unchecked Sendable {
     }
 
     func close() {
-        koi_stream_close(raw)
+        lock.withLock {
+            guard !closed else { return }
+            closed = true
+            // Queued sends observe closed and discard their bytes; this owner
+            // remains alive until the worker has woken its native reader.
+            owner.writes.async { [self] in koi_stream_close(raw) }
+        }
     }
 }

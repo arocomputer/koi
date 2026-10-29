@@ -86,3 +86,7 @@ Program logos from Simple Icons are provided under
 with the program-logo assets (`src/app/resources/programs/logos/LICENSE.md`
 in the source tree). Brand names and logos identify the programs running in a
 pane.
+
+The OpenCode, Cursor, Qwen and Cline logos are copied without modification from Simple Icons revision
+`3237c86aca8e54fdf55b6a33de8b64014b1ff47a`, under the same CC0 license. Its
+source revisions and checksums are recorded in the program-logo manifest.

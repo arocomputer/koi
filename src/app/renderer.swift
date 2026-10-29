@@ -519,7 +519,13 @@ final class Renderer {
             var selected = false
             ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected)
             var fillBg = hasBg
-            if style.inverse || selected {
+            if style.inverse {
+                swap(&fg, &bg)
+                fillBg = true
+            }
+            // Selection is independent of SGR inverse: combining them with
+            // OR leaves selected inverse cells visually unchanged.
+            if selected {
                 swap(&fg, &bg)
                 fillBg = true
             }

@@ -14,6 +14,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  programs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Application catalog
+        run: |
+          python3 scripts/check-programs.py
+          python3 tests/scripts/programsTests.py
+
   macos:
     runs-on: macos-26
     timeout-minutes: 45
@@ -45,7 +56,7 @@ jobs:
         run: |
           export KOI_DIR="$(mktemp -d /tmp/koi-ci-XXXXXXXX)"
           trap 'rm -rf "$KOI_DIR"' EXIT
-          swift test --jobs 2 --filter 'ConfigTests|KeyboardTests|WireTests|SocketTests|PredictionTests|DeviceIconsTests|InstallationTests|IntegrationsTests|UpdatesTests|DiagnosticsTests|DiagnosticIssuesTests|TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests'
+          swift test --jobs 2 --filter 'ConfigTests|KeyboardTests|WireTests|SocketTests|PredictionTests|ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|IntegrationsTests|UpdatesTests|DiagnosticsTests|DiagnosticIssuesTests|TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests'
       - name: Bundle and verify
         env:
           KOI_BUNDLE_OUTPUT: ${{ runner.temp }}/Koi.app

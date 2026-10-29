@@ -26,14 +26,23 @@ import Testing
         #expect(!p.isActive)
     }
 
-    @Test func backspaceTakesBackAPredictionOrPredictsAnErase() {
+    @Test func backspaceTakesBackAnUnconfirmedPrediction() {
         let t = prompt()
         var p = Prediction()
         p.typed("a", in: t)
         p.backspace(in: t)
         #expect(p.overlay.cells.isEmpty, "an unconfirmed letter is simply taken back")
+        // The server must echo both input events before the cancellation is
+        // settled. A bare 'a' still has its Backspace response in flight.
+        t.write(Array("a\u{8} \u{8}".utf8))
+        p.reconcile(with: t)
+        #expect(!p.isActive)
+    }
 
+    @Test func backspacePredictsAnEraseOfConfirmedTyping() {
+        let t = prompt()
         t.write(Array("a".utf8))
+        var p = Prediction()
         p.typed("a", in: t)
         t.write(Array("a".utf8))
         p.reconcile(with: t)
@@ -81,6 +90,91 @@ import Testing
         t.scroll(rows: -5)
         var p = Prediction()
         p.typed("a", in: t)
+        #expect(!p.isActive)
+    }
+
+    /// Cursor-moving input and IME commits cannot leave old guesses painted
+    /// over a TUI while the next remote reply is in flight.
+    @Test func unpredictableInputDropsOutstandingPredictions() {
+        let t = prompt()
+        for action in [0, 1, 2] {
+            var p = Prediction()
+            p.typed("a", in: t)
+            p.typed("b", in: t)
+            #expect(p.overlay.cells.count == 2)
+            switch action {
+            case 0: p.other()
+            case 1: p.entered()
+            default: p.typed("日本", in: t)
+            }
+            #expect(p.overlay.cells.isEmpty)
+            #expect(p.overlay.caret == nil)
+            #expect(!p.isActive)
+        }
+    }
+
+    @Test func anUnfamiliarProgramCanRecoverPredictionAfterReconnect() {
+        let t = prompt()
+        var p = Prediction()
+        p.setProgram("custom-editor")
+        p.reset()
+        p.typed("a", in: t)
+        p.typed("b", in: t)
+        #expect(p.overlay.cells.isEmpty)
+        t.write(Array("ab".utf8))
+        p.reconcile(with: t)
+        p.typed("c", in: t)
+        #expect(p.overlay.cells.map(\.text) == ["c"])
+    }
+
+    @Test(arguments: ["claude-code", "gemini-cli", "opencode-cli", "opencode-ai", "pi-coding-agent", "aider-chat"])
+    func recognizedAgentPackagesRetainTheirTypingPolicy(program: String) {
+        let terminal = prompt()
+        var prediction = Prediction()
+        prediction.setProgram(program)
+        prediction.reset()
+        prediction.typed("a", in: terminal)
+        #expect(prediction.overlay.cells.map(\.text) == ["a"])
+    }
+
+    /// A matching glyph can belong to an earlier canceled key; retain the
+    /// conservative overlay, but another Backspace must hide real text too.
+    @Test func backspaceHidesAnIdenticalReplacementAfterCoalescedEcho() {
+        let t = prompt()
+        var p = Prediction()
+        p.typed("a", in: t)
+        p.backspace(in: t)
+        p.typed("a", in: t)
+        t.write(Array("a\u{8} \u{8}a".utf8))
+        p.reconcile(with: t)
+        p.backspace(in: t)
+        #expect(p.overlay.cells == [Prediction.Cell(x: 2, y: 0, text: " ")])
+        for fragment in ["\u{8}", " ", "\u{8}"] {
+            t.write(Array(fragment.utf8))
+            p.reconcile(with: t)
+        }
+        #expect(!p.isActive)
+    }
+
+    @Test(arguments: ["a", "b"], [0, 2])
+    func delayedEchoOfACorrectedCharacterDoesNotEraseNewerTyping(replacement: String, echoedFragments: Int) {
+        let t = prompt()
+        var p = Prediction()
+        p.typed("a", in: t)
+        p.backspace(in: t)
+        let fragments = ["a", "\u{8}", " ", "\u{8}"]
+        for fragment in fragments.prefix(echoedFragments) {
+            t.write(Array(fragment.utf8))
+            p.reconcile(with: t)
+        }
+        p.typed(replacement, in: t)
+        for fragment in fragments.dropFirst(echoedFragments) {
+            t.write(Array(fragment.utf8))
+            p.reconcile(with: t)
+            #expect(p.overlay.cells.map(\.text) == [replacement])
+        }
+        t.write(Array(replacement.utf8))
+        p.reconcile(with: t)
         #expect(!p.isActive)
     }
 }
