@@ -129,10 +129,14 @@ pub fn sameUserPeer(fd: c_int) bool {
         var gid: c.gid_t = undefined;
         return c.getpeereid(fd, &uid, &gid) == 0 and uid == c.getuid();
     } else {
-        var cred: c.struct_ucred = undefined;
-        var len: c.socklen_t = @sizeOf(c.struct_ucred);
-        return c.getsockopt(fd, c.SOL_SOCKET, c.SO_PEERCRED, &cred, &len) == 0 and
-            len == @sizeOf(c.struct_ucred) and cred.uid == c.getuid();
+        // `struct ucred` is only visible to C with _GNU_SOURCE, which also
+        // turns glibc's sockaddr arguments into transparent unions; its
+        // layout is the same on every Linux architecture.
+        const Ucred = extern struct { pid: i32, uid: u32, gid: u32 };
+        var cred: Ucred = undefined;
+        var len: c.socklen_t = @sizeOf(Ucred);
+        return c.getsockopt(fd, c.SOL_SOCKET, std.os.linux.SO.PEERCRED, &cred, &len) == 0 and
+            len == @sizeOf(Ucred) and cred.uid == c.getuid();
     }
 }
 
