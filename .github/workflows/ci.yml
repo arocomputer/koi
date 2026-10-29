@@ -1,4 +1,4 @@
-name: Build and checks
+name: CI
 
 on:
   push:
@@ -10,22 +10,69 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  programs:
+  changes:
+    name: Select checks
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      core: ${{ steps.select.outputs.core }}
+      app: ${{ steps.select.outputs.app }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select native checks from the complete PR diff
+        id: select
+        run: python3 scripts/ci.py select
+
+  scripts:
+    name: Script regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Application catalog
-        run: |
-          python3 scripts/check-programs.py
-          python3 tests/scripts/programsTests.py
+      - run: ./x scripts
 
-  macos:
+  programs:
+    name: Application catalog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: ./x programs
+
+  core:
+    name: Core tests (macOS)
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.17.0
+          cache-key: core-tests-xcode-26.6
+      - name: Run isolated core tests
+        run: ./x test-core
+
+  app:
+    name: App tests and bundle (macOS)
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: macos-26
     timeout-minutes: 45
     env:
@@ -37,29 +84,56 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.17.0
-      - name: Toolchain
+          cache-key: app-bundle-xcode-26.6
+      - name: Identify native toolchain
+        id: toolchain
         run: |
+          root="$PWD"
+          . scripts/build-metadata.sh
+          key=$({ zig_identity; apple_sdk_identity; } | shasum -a 256 | cut -d' ' -f1)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
           xcodebuild -version
           swift --version
           zig version
-      - name: Script regressions
-        run: |
-          sh tests/scripts/koid-test-isolation.sh
-          python3 tests/scripts/buildProvenanceTests.py
-      - name: Build dependencies and core
-        run: |
-          scripts/build-ghostty-vt.sh
-          scripts/build-core.sh
-      - name: Core tests
-        run: zig build -j2 test
-      - name: Swift checks without Metal
-        run: |
-          export KOI_DIR="$(mktemp -d /tmp/koi-ci-XXXXXXXX)"
-          trap 'rm -rf "$KOI_DIR"' EXIT
-          swift test --jobs 2 --filter 'ConfigTests|KeyboardTests|WireTests|SocketTests|PredictionTests|ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|IntegrationsTests|UpdatesTests|DiagnosticsTests|DiagnosticIssuesTests|TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests'
-      - name: Bundle and verify
+      - name: Restore Ghostty framework
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            vendor/GhosttyVt.xcframework
+            vendor/.ghostty-commit
+          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
+      - name: Restore native core outputs
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            build/core
+            vendor/libkoi
+          key: core-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/core/**', 'scripts/build-core.sh', 'scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
+      # Scripts revalidate input stamps after restore; cache hits never skip validation.
+      - name: Prepare Ghostty framework
+        run: scripts/build-ghostty-vt.sh
+      - name: Build macOS core and cross-compile Linux server
+        run: scripts/build-core.sh
+      - name: Check test-run isolation on macOS
+        run: sh tests/scripts/koid-test-isolation.sh
+      - name: Run hosted Swift tests with isolated fixtures
+        run: ./x test-app
+      - name: Build release bundle and verify signature
         env:
           KOI_BUNDLE_OUTPUT: ${{ runner.temp }}/Koi.app
-        run: |
-          scripts/bundle.sh
-          codesign --verify --deep --strict "$KOI_BUNDLE_OUTPUT"
+        run: ./x bundle
+
+  required:
+    name: CI required
+    if: always()
+    needs: [changes, scripts, programs, core, app]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Require every selected check to pass
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci.py gate

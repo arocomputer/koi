@@ -1,6 +1,8 @@
 # Working in this repository
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for the build, test and Koid workflow.
+`./x help` lists the shared local/CI checks; `./x check` runs the full suite
+and verifies a release bundle without installing it.
 The [architecture guide](docs/architecture.md) describes session ownership,
 transport and storage; [configuration](docs/configuration.md) and
 [CLI](docs/cli.md) are the user-facing references.
