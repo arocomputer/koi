@@ -149,7 +149,7 @@ jobs:
         run: ./x bundle
 
   required:
-    name: CI required
+    name: Required
     if: always()
     needs: [checks, native]
     runs-on: nscloud-ubuntu-24.04-amd64-2x4
