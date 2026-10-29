@@ -4,6 +4,94 @@ import Testing
 @testable import Koi
 
 extension SessionTests {
+    /// Context menus retain the clicked tab across placements, reflow and scrolling.
+    @Test @MainActor func tabContextRenameTargetsTheClickedRow() async throws {
+        _ = NSApplication.shared
+        let server = try TestServer()
+        defer { Layout.flush(); server.stop() }
+        let control = try #require(TestControl())
+        let a = try #require(control.run(.init(op: .newTab)).tab)
+        let b = try #require(control.run(.init(op: .newTab, tab: a)).tab)
+        let c = try #require(control.run(.init(op: .newTab, tab: b)).tab)
+        _ = control.run(.init(op: .renameTab, tab: a, name: "A longer selected tab title for the fixture"))
+        let saved = Config.current
+        defer { Config.current = saved }
+        Config.current.motion = .off
+        let machines = Machines()
+        machines.start()
+        let workspace = machines.workspace
+        defer { workspace.detachAll() }
+        for _ in 0..<200 {
+            if workspace.state.tabs.count == 3, workspace.tab(a)?.tab.name != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        for placement in [Config.Tabs.top, .side, .right] {
+            Config.current.tabs = placement
+            workspace.select(a)
+            let horizontal = placement == .top
+            let drag = TabDrag(horizontal: horizontal)
+            let content = horizontal ? AnyView(HorizontalBar(machines: machines, drag: drag))
+                                     : AnyView(SidebarView(machines: machines, drag: drag))
+            let size = horizontal ? NSSize(width: 1000, height: 52) : NSSize(width: 248, height: 400)
+            let host = NSHostingView(rootView: content)
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            defer { window.close() }
+            host.setFrameSize(size)
+            window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+            window.orderFront(nil)
+            for _ in 0..<100 {
+                host.layoutSubtreeIfNeeded()
+                if drag.frame(for: .tab(c)) != nil { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let anchor = try #require(clickAnchor(in: host))
+
+            /// Invoke the real menu's first command without using the user's screen.
+            func rename(_ id: String, controlClick: Bool = false) async throws {
+                let selected = workspace.selectedTab
+                let frame = try #require(drag.frame(for: .tab(id))).intersection(anchor.bounds)
+                try #require(!frame.isEmpty)
+                let event = try #require(NSEvent.mouseEvent(with: controlClick ? .leftMouseDown : .rightMouseDown,
+                    location: anchor.convert(CGPoint(x: frame.midX, y: frame.midY), to: nil),
+                    modifierFlags: controlClick ? [.control] : [], timestamp: 0, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+                NSApp.sendEvent(event)
+                try #require(window.hasKoiPopup)
+                try await Task.sleep(for: .milliseconds(50))
+                for (code, characters) in [(UInt16(125), "\u{f701}"), (36, "\r")] {
+                    let key = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                        timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                        characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+                    window.sendEvent(key)
+                }
+                #expect(workspace.renamingTab == id, "Rename must edit the row that opened this menu")
+                #expect(workspace.selectedTab == selected, "a context menu must not switch tabs")
+                writeStripPreview(host, name: "\(placement.rawValue)-rename-\(id)")
+                workspace.renamingTab = nil
+                await Task.yield()
+            }
+
+            try await rename(a)
+            try await rename(b, controlClick: true)
+            try await rename(c)
+            if horizontal {
+                window.setContentSize(NSSize(width: 480, height: 52))
+                workspace.select(c)
+                for _ in 0..<100 {
+                    host.layoutSubtreeIfNeeded()
+                    if let frame = drag.frame(for: .tab(c)), frame.minX >= -1, frame.maxX <= anchor.bounds.width + 1 { break }
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                let revealed = try #require(drag.frame(for: .tab(c)))
+                #expect(revealed.minX >= -1 && revealed.maxX <= anchor.bounds.width + 1)
+                try await rename(c, controlClick: true)
+            }
+        }
+    }
+
     /// Submitted names bridge the asynchronous command and authoritative tree.
     @Test @MainActor func submittedNamesStayVisibleUntilServerStateCatchesUp() async throws {
         let server = try TestServer()

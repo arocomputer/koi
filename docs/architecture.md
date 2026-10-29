@@ -262,7 +262,10 @@ categories; committed values reload through the app coordinator, while
 unsaved drafts remain local to the Settings view. See
 [Configuration](configuration.md) for the user-facing controls.
 
-Compact controls use SwiftUI's native `Capsule` shape.
+Compact labeled controls use SwiftUI's native `Capsule` shape. Standalone
+glyph buttons in the title bar, tabs and pane headers use circular hover
+highlights, with square click areas retained for comfortable targeting.
+Their hover fades honor motion off and system Reduce Motion.
 [`buttons.swift`](../src/app/buttons.swift) defines `SelectionSurface`, the
 shared backing for Settings and Diagnostics categories. Tabs and collapsed groups
 containing the selected tab use `GlassTabSurface` in `tabs.swift`: horizontal
@@ -284,8 +287,10 @@ first, since selecting may have resized or scrolled the rows under the
 pointer. While a name field is open the terminal stops reclaiming the
 keyboard on pane updates; closing the field hands it back.
 Context menus open on a right or Control click through one window-local
-monitor per control ([`popover.swift`](../src/app/popover.swift)); a press
-over another control replaces the open menu. Scroll gestures that only
+monitor per control ([`popover.swift`](../src/app/popover.swift)). Hit checks
+use each anchor's bounds as well as its visible area, since unclipped native
+anchors can report visibility across neighboring tabs. A press over another
+control replaces the open menu. Scroll gestures that only
 begin and end, as fingers settling for a physical trackpad press produce,
 leave a menu open; actual travel dismisses it and scrolls what is beneath.
 The selected horizontal tab grows to its natural title width, capped by the
