@@ -40,6 +40,12 @@ struct Prediction {
     }
 
     private var pending: [Pending] = []
+    /// Canceled visible guesses still have echoes in flight. Recognize those
+    /// old glyphs so they cannot contradict newer typing in the same cell.
+    private var superseded: [Pending] = []
+    /// One hidden candidate lets an unfamiliar program earn prediction again
+    /// after Enter, a reconnect or a mismatch, without painting guessed text.
+    private var observation: Pending?
     /// Where the next typed character goes, while predictions are pending.
     private var caret: (x: UInt16, y: UInt16)?
     /// Characters typed since the last key whose effect was unforeseeable;
@@ -59,28 +65,27 @@ struct Prediction {
 
     /// Programs that edit a line and echo it, so typing into them is
     /// predictable from the first key.
-    private static let lineEditors: Set<String> = ["claude", "codex", "opencode", "pi", "aider", "gemini", "amp"]
+    private static let lineEditors: Set<String> = [
+        "claude", "claude-code", "codex", "opencode", "opencode-cli", "opencode-ai",
+        "pi", "pi-coding-agent", "aider", "aider-chat", "gemini", "gemini-cli", "amp",
+    ]
 
     var overlay: Overlay {
         Overlay(cells: pending.map(\.cell), caret: caret)
     }
 
-    var isActive: Bool { !pending.isEmpty || settleUntil != nil }
+    var isActive: Bool { !pending.isEmpty || !superseded.isEmpty || settleUntil != nil }
 
     mutating func setProgram(_ program: String) {
         guard program != self.program else { return }
         self.program = program
         // A new program in front: what it does with keys is unknown.
-        pending.removeAll()
-        caret = nil
-        typed = 0
+        other()
     }
 
     /// Everything is forgotten: the pane reattached or resized.
     mutating func reset() {
-        pending.removeAll()
-        caret = nil
-        typed = 0
+        other()
         confident = false
     }
 
@@ -92,13 +97,21 @@ struct Prediction {
     mutating func typed(_ text: String, in terminal: VTTerminal, now: Date = Date()) {
         settleUntil = nil
         guard text.unicodeScalars.count == 1, let scalar = text.unicodeScalars.first,
-              Self.isNarrow(scalar), showsPredictions,
+              Self.isNarrow(scalar),
               let at = nextCaret(in: terminal) else {
-            caret = nil
-            typed = 0
+            other()
             return
         }
         let original = terminal.text(x: at.x, y: at.y)
+        guard showsPredictions else {
+            // Several keys can precede their first echo over a remote link.
+            // Keep the first candidate instead of replacing it at the same
+            // still-unmoved server cursor on every key.
+            if observation == nil || now.timeIntervalSince(observation!.at) > 2 {
+                observation = Pending(cell: Cell(x: at.x, y: at.y, text: text), original: original, at: now, erase: false)
+            }
+            return
+        }
         pending.append(Pending(cell: Cell(x: at.x, y: at.y, text: text), original: original, at: now, erase: false))
         caret = (at.x + 1, at.y)
         typed += 1
@@ -108,14 +121,20 @@ struct Prediction {
     mutating func backspace(in terminal: VTTerminal, now: Date = Date()) {
         settleUntil = nil
         guard showsPredictions, typed > 0, let at = nextCaret(in: terminal), at.x > 0 else {
-            caret = nil
-            typed = 0
+            other()
             return
         }
         typed -= 1
-        // Taking back a prediction still in flight needs no new one.
+        // Stop painting a canceled character but remember its delayed echo.
         if let last = pending.last, !last.erase, last.cell.x == at.x - 1, last.cell.y == at.y {
             pending.removeLast()
+            superseded.append(last)
+            // Coalesced echoes can leave an identical replacement ambiguous.
+            // If real text is already underneath it, paint the erase now.
+            let shown = terminal.text(x: last.cell.x, y: last.cell.y)
+            if !Self.same(shown, " ") {
+                pending.append(Pending(cell: Cell(x: last.cell.x, y: last.cell.y, text: " "), original: shown, at: now, erase: true))
+            }
             caret = (at.x - 1, at.y)
             return
         }
@@ -127,14 +146,16 @@ struct Prediction {
     /// Enter was sent: what follows may be a password prompt or output, so
     /// nothing is shown until an echo matches again.
     mutating func entered() {
-        caret = nil
-        settleUntil = nil
-        typed = 0
+        other()
         confident = false
     }
 
-    /// A key whose effect cannot be foreseen (arrows, control keys, paste).
+    /// Unpredictable input invalidates every outstanding cell and caret;
+    /// stale guesses must not cover the application's next redraw.
     mutating func other() {
+        pending.removeAll(keepingCapacity: true)
+        superseded.removeAll(keepingCapacity: true)
+        observation = nil
         caret = nil
         settleUntil = nil
         typed = 0
@@ -144,13 +165,38 @@ struct Prediction {
     /// applied to it.
     mutating func reconcile(with terminal: VTTerminal, now: Date = Date()) {
         let cursor = terminal.cursor
+        // Backspace's first cursor move is not its completed erase. Keep
+        // canceled echoes until the blank and final cursor move both arrive.
+        superseded.removeAll { p in
+            Self.same(terminal.text(x: p.cell.x, y: p.cell.y), " ")
+                && cursor.y == p.cell.y && cursor.x <= p.cell.x
+        }
+        if let candidate = observation {
+            let shown = terminal.text(x: candidate.cell.x, y: candidate.cell.y)
+            if now.timeIntervalSince(candidate.at) > 2 {
+                observation = nil
+            } else if Self.same(shown, candidate.cell.text), cursor.y == candidate.cell.y, cursor.x > candidate.cell.x {
+                confident = true
+                observation = nil
+            } else if !Self.same(shown, candidate.original) {
+                observation = nil
+            }
+        }
         guard !pending.isEmpty else {
-            if settleUntil != nil { settle(cursor: cursor, now: now, atOnce: false) }
+            if superseded.isEmpty {
+                settle(cursor: cursor, now: now, atOnce: false)
+            }
             return
         }
         var contradicted = false
         pending.removeAll { p in
             let shown = terminal.text(x: p.cell.x, y: p.cell.y)
+            // An old identical glyph must not confirm its replacement, and
+            // the intermediate erase must not contradict newer typing.
+            if superseded.contains(where: {
+                $0.cell.x == p.cell.x && $0.cell.y == p.cell.y
+                    && (Self.same(shown, $0.cell.text) || Self.same(shown, " "))
+            }) { return false }
             if Self.same(shown, p.cell.text) {
                 // Confirmed; learn how long the echo took.
                 srtt = srtt * 0.8 + now.timeIntervalSince(p.at) * 0.2
@@ -165,7 +211,10 @@ struct Prediction {
             contradicted = true
             return true
         }
-        if pending.isEmpty { settle(cursor: cursor, now: now, atOnce: contradicted) }
+        if pending.isEmpty {
+            settle(cursor: cursor, now: now, atOnce: contradicted)
+            if caret == nil { superseded.removeAll(keepingCapacity: true) }
+        }
     }
 
     /// With nothing pending, the caret stays until the cursor reaches it.
@@ -184,8 +233,12 @@ struct Prediction {
             settleUntil = nil
             caret = nil
         }
-        guard !pending.isEmpty else { return }
         let timeout = min(max(srtt * 3, 0.25), 2)
+        superseded.removeAll { now.timeIntervalSince($0.at) > timeout }
+        guard !pending.isEmpty else {
+            if superseded.isEmpty, settleUntil == nil { caret = nil }
+            return
+        }
         let before = pending.count
         pending.removeAll { now.timeIntervalSince($0.at) > timeout }
         if pending.count < before { confident = false }
@@ -197,7 +250,7 @@ struct Prediction {
     private func nextCaret(in terminal: VTTerminal) -> (x: UInt16, y: UInt16)? {
         guard terminal.viewportIsActive, !terminal.isAlternateScreen || terminal.cursorVisible else { return nil }
         let cursor = terminal.cursor
-        if !pending.isEmpty {
+        if !pending.isEmpty || !superseded.isEmpty {
             guard let caret, caret.y == cursor.y else { return nil }
             return caret.x < terminal.size.cols - 1 ? caret : nil
         }

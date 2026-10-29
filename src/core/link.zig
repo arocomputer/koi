@@ -63,9 +63,13 @@ const Buffer = struct {
         return self.storage.items[self.start..];
     }
 
-    /// Copies bytes into the queue, compacting consumed storage as needed.
+    /// Compact only after consuming at least half the storage. Sliding a large
+    /// backlog on every 64 KiB append makes streaming work quadratic under
+    /// the link mutex, delaying unrelated interactive streams.
     fn append(self: *Buffer, gpa: Allocator, bytes_: []const u8) !void {
-        if (self.start == self.storage.items.len or self.start > 64 * 1024) {
+        if (self.start == self.storage.items.len or
+            (self.start > 64 * 1024 and self.start >= self.storage.items.len / 2))
+        {
             const left = self.bytes().len;
             std.mem.copyForwards(u8, self.storage.items[0..left], self.bytes());
             self.storage.shrinkRetainingCapacity(left);
@@ -150,6 +154,9 @@ pub const Link = struct {
     retired_peer_id: u32 = 0,
     next_stream_id: u32,
     cwnd: usize = 16 * mss,
+    /// Resume scheduling after the last stream served, even when an ACK
+    /// reopens only enough congestion credit for one segment.
+    send_cursor: usize = 0,
     ssthresh: usize = std.math.maxInt(usize),
     in_flight: usize = 0,
     srtt: f64 = 0.1,
@@ -589,7 +596,8 @@ pub const Link = struct {
         self.cwnd = self.ssthresh;
     }
 
-    /// Packs ACKs/pongs first, then fairly takes one segment per stream per pass.
+    /// Packs ACKs/pongs first, then rotates across streams between passes and
+    /// calls. A busy older stream must not starve an interactive newer one.
     /// Running out of memory just ends the pass; queued bytes stay queued and
     /// the next tick tries again.
     fn pump(self: *Link) void {
@@ -613,8 +621,11 @@ pub const Link = struct {
         var progress = true;
         while (progress and self.in_flight < self.cwnd) {
             progress = false;
-            for (self.streams.items) |slot| {
+            for (0..self.streams.items.len) |_| {
                 if (self.in_flight >= self.cwnd) break;
+                const index = self.send_cursor % self.streams.items.len;
+                self.send_cursor = (index + 1) % self.streams.items.len;
+                const slot = self.streams.items[index];
                 const stream = slot.stream orelse continue;
                 const unsent = stream.unsent.bytes();
                 if (unsent.len == 0 and (!stream.fin_queued or stream.fin_sent)) continue;
@@ -749,8 +760,9 @@ pub const Stream = struct {
         return .{ .ptr = self, .vtable = &vtable };
     }
 
-    /// Copies bytes to the send queue; the timer pumps without blocking on UDP.
-    /// Never blocks. If the queue would pass `max_unsent` (the peer is not
+    /// Copies and pumps under the link mutex without waiting for network credit.
+    /// Embedders must keep this work off their UI input thread. If the queue
+    /// would pass `max_unsent` (the peer is not
     /// keeping up), exhaust sequence space (reserving one FIN byte), or cannot
     /// grow, the stream is reset instead: queued unsent bytes are dropped,
     /// a FIN follows what is already in flight, and this and
@@ -1241,6 +1253,40 @@ fn testReceive(link: *Link, id: u32, offset: u64, data: []const u8, fin: bool) v
 }
 
 fn testAccept(_: ?*anyopaque, _: *Stream) void {}
+
+test "appending to a large link backlog amortizes compaction" {
+    const gpa = std.testing.allocator;
+    var buffer: Buffer = .{};
+    defer buffer.deinit(gpa);
+    const data = try gpa.alloc(u8, 1024 * 1024);
+    defer gpa.free(data);
+    @memset(data, 'x');
+    try buffer.append(gpa, data);
+    buffer.consume(gpa, 128 * 1024);
+    try buffer.append(gpa, "y");
+    try std.testing.expectEqual(@as(usize, 128 * 1024), buffer.start);
+    try std.testing.expectEqual(@as(u8, 'y'), buffer.bytes()[buffer.bytes().len - 1]);
+    buffer.consume(gpa, 512 * 1024);
+    try buffer.append(gpa, "z");
+    try std.testing.expectEqual(@as(usize, 0), buffer.start);
+    try std.testing.expectEqualStrings("yz", buffer.bytes()[buffer.bytes().len - 2 ..]);
+}
+
+test "a busy older stream cannot consume every reopened byte of congestion credit" {
+    const link = try testLink(std.testing.allocator, false);
+    defer link.free();
+    const bulk = try link.open();
+    const interactive = try link.open();
+    link.cwnd = 1;
+    bulk.send("bulk output keeps arriving");
+    interactive.send("key");
+    try std.testing.expectEqual(@as(u64, 0), interactive.send_offset);
+    link.acknowledged(bulk.id, bulk.send_offset, receive_window);
+    link.cwnd = 1;
+    link.pump();
+    try std.testing.expectEqual(@as(u64, 1), interactive.send_offset);
+    try std.testing.expectEqual(@as(u64, 1), bulk.send_offset);
+}
 
 test "a snapshot-size burst is accepted and a slow backlog past max_unsent resets the stream" {
     const link = try testLink(std.testing.allocator, false);

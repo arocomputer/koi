@@ -83,7 +83,9 @@ and unfocused pane outlines stay neutral; there is no active-border setting.
 
 The benchmarks in `tests/app/benchmarkTests.swift` run with every full suite.
 They print engine parse rate, full and incremental frame assembly, snapshot
-cost and a keystroke's round trip through a private server and real process.
+cost and a keystroke's round trip through a private server and real process,
+using both a local socket and the encrypted UDP link over loopback. Loopback
+does not measure WAN latency or typing-to-display latency.
 Parse/frame/echo measurements have regression bounds; echo polling also has
 a monotonic deadline so a missing response fails instead of hanging.
 Snapshot timings are informational, with restored screen text checked for
@@ -242,7 +244,8 @@ Hover hints use `hint:` followed by an action ID, such as
 `palette run ID [VALUE]` invokes a catalog action or submits a prompt. For
 example, `palette run rename_tab Review` names the selected tab. Use
 `palette inspect /absolute/path/state.json [QUERY]` to read selection,
-catalog matches and presentation state while waiting for asynchronous work.
+catalog matches, window visibility, pane connection/frame counters and
+presentation state while waiting for asynchronous work.
 These hooks are compiled only into Koid. Window capture can be unavailable
 in some desktop sessions; offscreen view rendering can still check layouts.
 
@@ -339,7 +342,8 @@ actual license; see [Third-party notices](THIRD_PARTY_NOTICES.md) and
 
 ## Program icons
 
-Program names and styling come from
+Adding an application normally requires no Swift or Zig changes. Program
+names and styling come from
 [`programs.json`](src/app/resources/programs/programs.json). An entry can use
 an existing SVG logo, an SF Symbol or a short text glyph:
 
@@ -357,7 +361,57 @@ an existing SVG logo, an SF Symbol or a short text glyph:
 without `#`; optional `ink` sets the glyph color, defaulting to white.
 Optional `mark` provides a separate pane-header `symbol` or `text` glyph.
 
-SVG logos live in `src/app/resources/programs/logos/`. Include the applicable
-redistribution notice for new artwork. Rebuild and relaunch Koid after
-changing the catalog or assets; program styles are cached for the app's
-lifetime. The existing program tests validate aliases, styles and logos.
+Use the actual executable names, not arguments (`agent`, not `agent chat`),
+and keep aliases unique across the catalog. Lookup strips paths and ignores
+case. Node/Bun scripts inside `node_modules` report the owning package's
+unscoped name: `@anthropic-ai/claude-code/cli.js` reports `claude-code`.
+Include that alias when applicable; do not map generic `cli` or `index`
+names to a brand. A local integrated shell reports the command it launched;
+remote discovery may report its interpreter or wrapper instead.
+
+The catalog includes OpenCode, Claude Code, Codex, Gemini, Copilot, Aider,
+Pi, Amp, Cursor Agent, Factory Droid, Qwen Code, Goose, Crush, Mistral Vibe,
+Auggie, Kilo Code, Kimi Code, Cline and OpenHands, plus other CLI tools.
+These entries control identification and branding; adding one does not
+install an application, alter its terminal colors, or enable speculative
+typing or agent lifecycle hooks. Unknown programs keep Koi's `>_` mark on
+a neutral tile. Known programs with missing artwork also use `>_`.
+
+### Add an icon
+
+Reuse a bundled `logo`, use an SF Symbol, or use a short `text` glyph.
+New SVGs belong in `src/app/resources/programs/logos/`. Use a square viewBox,
+self-contained paths/shapes and transparency; Koi tints the image with `ink`.
+Check legibility at the 18-point tab tile and 13-point pane-header sizes.
+Keep background gradients and ink colors readable together.
+
+For a new SVG, add a record to `logos/sources.json` with `file`, `sha256`
+and the immutable upstream `revision`. Records inherit the manifest's
+repository and license unless overridden. For artwork outside Simple Icons,
+also provide a `source` HTTPS URL and `license` identifier in that record,
+add the applicable license text under `licenses/`, and update
+[third-party notices](THIRD_PARTY_NOTICES.md) and [assets](docs/assets.md).
+Only submit artwork you can redistribute; a generic symbol or your own
+text mark is welcome when a logo's license is unclear.
+
+### Check and submit
+
+Run the catalog check on Linux or macOS with Python 3; it needs no downloads,
+Zig, Swift, Xcode or third-party Python packages:
+
+```sh
+python3 scripts/check-programs.py
+```
+
+It checks aliases, fields, colors, glyph choices, SVGs and source checksums.
+CI runs it as a separate job so catalog mistakes appear before the Mac build.
+On a Mac, the full `scripts/koid test` suite also verifies that AppKit loads
+the logos and resolves the SF Symbols. Rebuild and relaunch Koid after
+changing the catalog; styles and images are cached for the app's lifetime.
+
+Use the [application PR template](.github/PULL_REQUEST_TEMPLATE/application.md).
+Include the command/package names, an upstream application link, the artwork
+source and license (if new), check results, and a Koid screenshot when you
+have a Mac. State when visual validation needs a maintainer. To confirm the
+reported program, run the application in a disposable Koid pane and inspect
+`scripts/koid koi ls --json`; never submit credentials or private terminal text.

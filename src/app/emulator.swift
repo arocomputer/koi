@@ -6,6 +6,12 @@ import GhosttyVt
 final class VTTerminal {
     let raw: GhosttyTerminal
 
+    /// Synchronous text-only clipboard sink for live output. Mirrors install
+    /// this after restoration; headless terminals never access a clipboard.
+    var onClipboardWrite: ((String) -> Bool)?
+    private var oscNumber: Int?
+    private var readingOSCNumber = false
+
     /// Default history for a fresh mirror; snapshots carry the server's limit.
     static let scrollbackBytes = 32 * 1024 * 1024
 
@@ -62,6 +68,48 @@ final class VTTerminal {
         ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT, &grapheme)
         if restored { ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_MODE, &current) }
         applyCursorStyle()
+        installClipboardHandler()
+        if restored { restoreOSCNumber() }
+    }
+
+    /// The engine decodes clipboard contents; only OSC 52 may write the Mac
+    /// clipboard. Acknowledged protocols need server/client reply routing first.
+    /// Callback data is borrowed until return; reads are never exposed.
+    private func installClipboardHandler() {
+        ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_USERDATA, Unmanaged.passUnretained(self).toOpaque())
+        var limit = 1024 * 1024
+        ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES, &limit)
+        let callback: GhosttyTerminalClipboardWriteFn = { _, userdata, request in
+            guard let userdata, let request,
+                  request.pointee.size >= MemoryLayout<GhosttyClipboardWrite>.size else { return }
+            let terminal = Unmanaged<VTTerminal>.fromOpaque(userdata).takeUnretainedValue()
+            var reply = GhosttyClipboardWriteReply()
+            reply.size = MemoryLayout<GhosttyClipboardWriteReply>.size
+            reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED
+            defer { request.pointee.reply?(request, &reply) }
+            guard terminal.oscNumber == 52 else { return }
+            guard request.pointee.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD else { return }
+            // macOS has one system clipboard. A protocol clear writes empty
+            // text; primary/selection destinations are unsupported.
+            if request.pointee.contents_len == 0 {
+                reply.result = terminal.onClipboardWrite?("") == true
+                    ? GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS : GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED
+                return
+            }
+            guard request.pointee.contents_len == 1, let content = request.pointee.contents?.pointee,
+                  let mime = content.mime.ptr, content.mime.len == 10,
+                  String(decoding: UnsafeBufferPointer(start: mime, count: 10), as: UTF8.self) == "text/plain",
+                  content.data.len <= 1024 * 1024 else { return }
+            let bytes = UnsafeBufferPointer(start: content.data.ptr, count: content.data.len)
+            guard let text = String(bytes: bytes, encoding: .utf8) else {
+                reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
+                return
+            }
+            reply.result = terminal.onClipboardWrite?(text) == true
+                ? GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS : GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED
+        }
+        ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
+                             unsafeBitCast(callback, to: UnsafeRawPointer.self))
     }
 
     /// Re-applies the current theme and cursor, after a config reload.
@@ -86,7 +134,50 @@ final class VTTerminal {
 
     func write(_ bytes: UnsafeRawBufferPointer) {
         guard let base = bytes.baseAddress else { return }
-        ghostty_terminal_vt_write(raw, base.assumingMemoryBound(to: UInt8.self), bytes.count)
+        let data = base.assumingMemoryBound(to: UInt8.self)
+        let start = UInt32(GHOSTTY_TERMINAL_BOUNDARY_OSC_START.rawValue)
+        let end = UInt32(GHOSTTY_TERMINAL_BOUNDARY_OSC_END.rawValue)
+        var offset = 0
+        while offset < bytes.count {
+            // Ask the engine for framing; inspect only the command number.
+            // Ordinary output and the entire payload still use bulk writes.
+            let count = readingOSCNumber ? 1 : bytes.count - offset
+            if readingOSCNumber { observeOSCNumber(data[offset]) }
+            var stop = GhosttyTerminalWriteStop()
+            stop.size = MemoryLayout<GhosttyTerminalWriteStop>.size
+            let result = ghostty_terminal_vt_write_until(raw, data + offset, count, start | end, &stop)
+            precondition(result == GHOSTTY_SUCCESS || result == GHOSTTY_NO_VALUE)
+            precondition(stop.consumed > 0)
+            offset += stop.consumed
+            if stop.reached & end != 0 { readingOSCNumber = false; oscNumber = nil }
+            if stop.reached & start != 0 { readingOSCNumber = true; oscNumber = 0 }
+        }
+    }
+
+    /// Track a bounded OSC command identifier, never its payload or framing.
+    private func observeOSCNumber(_ byte: UInt8) {
+        if byte == 59 { readingOSCNumber = false }
+        else if (48...57).contains(byte), let number = oscNumber, number < 10_000 {
+            oscNumber = number * 10 + Int(byte - 48)
+        } else if byte < 32, byte != 7, byte != 24, byte != 26, byte != 27 {
+            return // C0 controls ignored by the engine within an OSC header.
+        } else { oscNumber = nil; readingOSCNumber = false }
+    }
+
+    /// Snapshot decoding replays unfinished input before callbacks are installed.
+    /// Recover just an unfinished OSC's identifier without replaying side effects.
+    private func restoreOSCNumber() {
+        var ptr: UnsafeMutablePointer<UInt8>?
+        var len = 0
+        guard ghostty_terminal_continuation_alloc(raw, nil, &ptr, &len) == GHOSTTY_SUCCESS, let ptr else { return }
+        defer { ghostty_free(nil, ptr, len) }
+        guard len >= 2, ptr[0] == 27, ptr[1] == 93 || ptr[1] == 157 else { return }
+        readingOSCNumber = true
+        oscNumber = 0
+        for byte in UnsafeBufferPointer(start: ptr + 2, count: len - 2) {
+            guard readingOSCNumber else { break }
+            observeOSCNumber(byte)
+        }
     }
 
     func write(_ bytes: [UInt8]) {
