@@ -36,7 +36,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var hasRestored = false
     static let cursorGrace: UInt64 = 2_000_000_000
     private(set) var terminal: VTTerminal?
-    /// The focused pane's application copy destination; tests inject a private sink.
+    /// Destination for explicit selection copies and focused application copies;
+    /// tests inject a private sink.
     var clipboardWriter: (String) -> Bool = { text in
         NSPasteboard.general.clearContents()
         return NSPasteboard.general.setString(text, forType: .string)
@@ -993,10 +994,10 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     // MARK: Selection and copy
 
+    /// Copy the selected terminal text through the pane's clipboard destination.
     @objc func copy(_ sender: Any?) {
         guard let text = terminal?.selectedText(), !text.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        _ = clipboardWriter(text)
     }
 
     override func selectAll(_ sender: Any?) {

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   changes:
     name: Select checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       core: ${{ steps.select.outputs.core }}
@@ -32,7 +32,7 @@ jobs:
 
   scripts:
     name: Script regressions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -42,7 +42,7 @@ jobs:
 
   programs:
     name: Application catalog
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -51,13 +51,19 @@ jobs:
       - run: ./x programs
 
   core:
-    name: Core tests (macOS)
+    name: Core tests (${{ matrix.platform }})
     needs: changes
     if: needs.changes.outputs.core == 'true'
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macOS
+            runner: macos-26
+          - platform: Linux
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -65,7 +71,10 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.17.0
-          cache-key: core-tests-xcode-26.6
+          cache-key: core-tests-${{ matrix.platform }}-v1
+      - name: Select Xcode
+        if: runner.os == 'macOS'
+        run: echo 'DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer' >> "$GITHUB_ENV"
       - name: Run isolated core tests
         run: ./x test-core
 
@@ -127,7 +136,7 @@ jobs:
     name: CI required
     if: always()
     needs: [changes, scripts, programs, core, app]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

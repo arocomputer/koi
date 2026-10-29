@@ -17,7 +17,7 @@ The [workflow](../.github/workflows/ci.yml) always starts for PRs, pushes to
 | Select checks | Compute the complete PR diff | Always |
 | Script regressions | `./x scripts` on Linux | Always |
 | Application catalog | `./x programs` on Linux | Always |
-| Core tests (macOS) | `./x test-core`, native Zig tests | Core/build/CI or unknown inputs |
+| Core tests (macOS / Linux) | `./x test-core`, native Zig tests | Core/build/CI or unknown inputs |
 | App tests and bundle (macOS) | `./x test-app`, `./x bundle` | App/core/build inputs or packaged resources outside the program catalog |
 | CI required | Verify all selected checks succeeded | Always, including failures |
 
@@ -31,8 +31,9 @@ Selection uses a NUL-delimited Git diff from the PR merge base, includes
 deleted files and both sides of renames, and has no changed-file API limit.
 Unknown paths or unavailable history run all native jobs. Main and manual
 runs always run everything. Core tests run in parallel with the app job;
-app tests and bundling share a runner to reuse their dependencies. Linux is
-cross-compiled for the bundle; CI does not yet execute Linux core tests.
+app tests and bundling share a runner to reuse their dependencies. Linux core tests execute natively with musl (the shipped server libc) on
+Ubuntu 24.04, in addition to the Linux
+server cross-build used by the Mac bundle. Both core matrix entries must pass.
 
 The final gate requires successful selection, script and catalog checks.
 Each selected native job must succeed; an unselected job must be skipped.
@@ -70,14 +71,11 @@ successful full run on main seeds caches available to later PRs. See
 
 Measure cold and warm main/PR runs before adding a Swift `.build` cache or
 splitting app tests and bundling into separate runners. Moving them without
-sharing dependencies would duplicate the expensive preparation. Native Linux
-test execution would add useful coverage; it should be introduced and tested
-as a separate lane rather than describing a cross-build as Linux testing.
+sharing dependencies would duplicate the expensive preparation. The Linux and macOS core jobs run independently and retain their own compiler caches.
 
 ## Repository policy
 
-The audit found no Koi branch rulesets or legacy protection on `main`.
-The proposed [ruleset](../.github/rulesets/main.json) follows ask/aft with
+The [ruleset](../.github/rulesets/main.json) follows ask/aft with
 one stable required gate and a narrower administrator bypass:
 
 - PRs and resolved review threads; squash merging and linear history.
@@ -88,83 +86,48 @@ one stable required gate and a narrower administrator bypass:
 - Administrator bypass only through a PR, not unrestricted direct pushes.
 
 The JSON is an importable API payload, not an automatically applied policy.
-Activate it only after the new `CI required` check has passed on GitHub.
-Check live settings for actual enforcement. A future merge queue needs a
+The matching main protection is active; check live settings for actual enforcement. A future merge queue needs a
 `merge_group` trigger and validation before it is enabled.
 
 ## Dependency updates
 
-The custom [Action updates workflow](../.github/workflows/deps.yml) runs on
-Mondays at 09:00 UTC or manually on main. It replaces Dependabot and follows
-Aft's separation of discovery, validation and publication. It maintains one
-`chore/action-updates` PR and never merges it automatically.
+The custom [Dependency updates workflow](../.github/workflows/deps.yml) runs on
+Mondays at 09:00 UTC or manually on main. It maintains one
+`chore/dependency-updates` PR authored by `github-actions[bot]` and never merges
+it automatically. It uses GitHub's built-in workflow token.
 
-`./x deps` is a read-only discovery command requiring Python 3 and an
-authenticated GitHub CLI. Remote Actions must use a full commit SHA and a
-`# vMAJOR` comment. The updater resolves that upstream major tag, follows
-annotated tags, and rejects backward or divergent movements. Major versions,
-Ghostty's pin, Zig and Xcode remain manual upgrades.
+`./x deps` discovers a forward stable Ghostty tag within the current major
+version. Discovery checks ancestry, the tagged manifest and unchanged Zig
+requirements. A development pin ahead of the newest stable release is left
+alone. Major engine changes, Zig, Xcode and Action pins receive manual review.
+The scheduled run reports available same-major Action pins in its summary;
+`python3 scripts/check-actions.py` runs that read-only report locally.
+Both commands require Python 3 and an authenticated GitHub CLI.
 
-The discovery job has only repository read permission. It verifies candidate
-SHA substitutions and runs portable regressions and catalog checks. A small
-SHA map passes to the publishing job; no new artifact Actions or Python
-packages are needed. The publisher checks out the same base commit and
-revalidates the map against upstream before reconstructing just the pin edits.
-If main or an upstream tag moved in the meantime, it fails for a fresh retry.
+Discovery runs with read permission. Publication reconstructs only the
+Ghostty commit pin at the same base, rechecks upstream and only creates an absent automation branch. An existing
+PR is left untouched, preserving all commits and maintainer notes. The publisher
+opens a draft, explicitly dispatches CI, and marks the PR ready
+only when that exact commit passes. Failed validation leaves the PR draft for maintainer review. After merging,
+the repository deletes its branch so the next update can be proposed.
+An observed head change withdraws readiness; required CI still guards merges.
 
-The publisher refuses branches without an owned PR, commits with non-bot
-authorship or an unexpected title, and branch diffs beyond workflow pins. Updates
-use a lease against the observed remote head. It creates a
-draft (or withdraws an existing PR's readiness before pushing), watches the
-normal PR-triggered CI run for the exact new commit, and marks it ready only
-after success, checking the head before and after marking it ready. GitHub
-does not offer an atomic readiness/head update; an observed race withdraws
-readiness, and required CI remains the merge guard for later pushes. Failed
-CI leaves a draft for the next
-run to refresh. There is no duplicate manual CI dispatch.
+Engine updates also require the full `scripts/koid test` suite on an Apple
+silicon Mac with Metal and `scripts/bundle.sh`, at the proposed commit, before
+manual merge. Hosted checks do not replace that gate. Review the engine diff
+and packaged notices with the test results.
 
-### Publishing credential
+## Release drafts
 
-Updating `.github/workflows/` requires **Workflows write** permission, which
-the built-in `GITHUB_TOKEN` cannot request. See GitHub's
-[workflow permission list](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)
-and [additional authentication options](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token#granting-additional-permissions).
+[Release draft](../.github/workflows/release.yml) is a manual main-branch workflow.
+It accepts an existing stable tag matching `build.zig.zon`, requires successful
+main CI for that commit, and records the maintainer's exact-commit full Metal
+suite attestation. Read-only build and test work completes before a separate
+job signs the bundle, submits it for notarization, staples the accepted ticket,
+and validates an installation extracted into a private directory.
 
-Create a fine-grained personal access token restricted to this repository:
-
-- Contents: read and write.
-- Workflows: read and write.
-- Pull requests: read and write.
-- Actions: read (to watch CI).
-
-Store it as the repository Actions secret `WORKFLOW_UPDATES_TOKEN` in GitHub
-Settings → Secrets and variables → Actions. It is used only by the publisher,
-never by candidate checks or PR CI. The workflow does not provision this credential.
-With no updates, discovery succeeds without it; when updates exist but the
-secret is missing, publication fails with a setup message. The PR is opened
-as the token's user; commits use `github-actions[bot]` attribution. Renew the
-token before it expires and retain the same account for existing update PRs.
-
-### Dependency inventory
-
-| Boundary | Count | Dependencies |
-| --- | --- | --- |
-| Direct external product code | 1 | libghostty-vt, pinned in `build-ghostty-vt.sh` |
-| Remote Swift packages | 0 | GhosttyVt is locally built; CKoi/libkoi is Koi's own code |
-| External libraries used through the pinned VT build | 4 | uucode, Wuffs, SIMDUTF, Highway |
-| Distinct GitHub Actions | 3 | actions/checkout, mlugg/setup-zig, actions/cache |
-
-These categories are not a complete runtime/build bill of materials. The
-engine also uses build helpers such as translate-c and includes Unicode/color
-data. Zig supplies its standard library and compiler/runtime support; the
-Linux target uses musl and LLVM C++ runtimes. Apple SDK frameworks and the
-Swift/Xcode toolchain are platform dependencies. Bundled logo artwork has
-separate provenance. See [third-party notices](../THIRD_PARTY_NOTICES.md) for
-the shipped components and licenses. The full Ghostty application's manifest
-lists additional dependencies that Koi's VT-only build does not use.
-
-Next priorities are native Linux tests, auditing omitted hosted integration
-tests, and a release workflow with explicit signing/notarization and artifact
-verification when Koi is ready to distribute. A merge queue, mandatory second
-reviewer, and a new generic build framework add little value for the current
-single-maintainer repository.
+The output is a Developer ID signed archive, checksum file and **draft** GitHub
+release. Missing signing configuration or failed verification stops the run.
+Publication remains a separate maintainer action; the workflow never installs
+into Applications or launches the app. Development bundles continue to use the
+ordinary `scripts/bundle.sh` signing behavior.

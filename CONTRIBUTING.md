@@ -34,9 +34,9 @@ scripts/koid run
 `./x test` delegates to `scripts/koid test`, and `./x bundle` runs
 `scripts/bundle.sh` followed by signature verification. Neither installs or
 launches an app. Development builds and interaction remain under `scripts/koid`.
-`./x deps` checks for same-major GitHub Actions updates without changing files;
+`./x deps` checks for forward stable Ghostty updates without changing files;
 it needs an authenticated `gh`. The [dependency workflow](docs/ci.md#dependency-updates)
-documents the scheduled publisher and its required credential.
+documents the scheduled update process.
 
 `build` fetches dependencies as needed, builds the Mac and Linux server
 binaries, and installs Koid at the same path across worktrees. Its bundle ID
@@ -99,7 +99,12 @@ The benchmarks in `tests/app/benchmarkTests.swift` run with every full suite.
 They print engine parse rate, full and incremental frame assembly, snapshot
 cost and a keystroke's round trip through a private server and real process,
 using both a local socket and the encrypted UDP link over loopback. Loopback
-does not measure WAN latency or typing-to-display latency.
+does not measure WAN latency or typing-to-display latency. The network fixtures
+also exercise 12–28 ms one-way delay, deterministic packet loss, port rebinding
+and reconnecting to the same process. These are reliability checks, not WAN
+performance measurements. Hosted tests include those fixtures and synthetic
+TUI paste/color/Unicode/resize/snapshot checks. Actual selection and Command-C
+menu dispatch remain in the full offscreen AppKit suite.
 Parse/frame/echo measurements have regression bounds; echo polling also has
 a monotonic deadline so a missing response fails instead of hanging.
 Snapshot timings are informational, with restored screen text checked for
@@ -108,6 +113,20 @@ integrity. Read the figures with:
 ```sh
 swift test --filter "engineWriteAndFrameAssembly|keystrokeEchoRoundTrip" 2>&1 | grep -E "engine|frame|snapshot|keystroke"
 ```
+
+After compiling the full test suite, measure a real Mac-to-Linux link with:
+
+```sh
+python3 scripts/benchmark-remote.py --ssh-host my-linux-host
+```
+
+This copies the built Linux server into a disposable remote directory over
+SSH and measures direct encrypted UDP process echo with three warmups and
+40 samples. It requires Python 3 on both hosts and reachable UDP. The optional
+`--binary` selects a local Linux server binary; `--udp-host` overrides the
+resolved SSH hostname. Setup and display time are excluded. The test is disabled
+in normal runs, coordinates with the checkout test lock, and removes its own
+remote pane, server and temporary files. It never attaches to existing sessions.
 
 The app logs `first pane ready N ms after launch` once per start and shows
 it in Diagnostics; that is the startup number to watch.
@@ -132,7 +151,7 @@ The [CI workflow](.github/workflows/ci.yml) runs script regressions and catalog
 checks on Linux, then selects native jobs from the complete PR diff. Ordinary
 docs and catalog-only changes skip native builds. App changes run hosted Swift
 tests and bundle verification; core, build, workflow and unknown inputs also
-run core tests in parallel. Packaged licenses and notices still require bundle
+run native core tests on macOS and Linux in parallel. Packaged licenses and notices still require bundle
 verification. Main pushes and manual runs execute all checks. The final
 `CI required` check rejects failures, cancellations and unexpected skips.
 

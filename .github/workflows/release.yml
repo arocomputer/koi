@@ -1,0 +1,123 @@
+name: Release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable version tag (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+      metal_attestation:
+        description: 'Maintainer attestation: Full Metal suite passed at <40-character commit SHA>'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release candidate
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    outputs:
+      sha: ${{ steps.gate.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate tag, ancestry, CI and maintainer attestation
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          METAL_ATTESTATION: ${{ inputs.metal_attestation }}
+        run: scripts/release.sh gate
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.17.0
+          cache-key: release-build
+      - run: ./x scripts
+      - run: ./x programs
+      - run: ./x test-core
+      - run: ./x test-app
+      - name: Build without signing secrets
+        env:
+          KOI_BUNDLE_OUTPUT: ${{ runner.temp }}/bundle/Koi.app
+        run: |
+          ./x bundle
+          ditto -c -k --sequesterRsrc --keepParent "$KOI_BUNDLE_OUTPUT" "$RUNNER_TEMP/prebuilt.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: prebuilt-${{ steps.gate.outputs.sha }}
+          path: ${{ runner.temp }}/prebuilt.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-publish:
+    name: Sign and stage release draft
+    needs: build
+    runs-on: macos-26
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      # Use the dispatched main revision's release tooling, not executable artifact contents.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Recheck release gates before credentials are available
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          METAL_ATTESTATION: ${{ inputs.metal_attestation }}
+          EXPECTED_SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          GITHUB_OUTPUT="$RUNNER_TEMP/release-gate" scripts/release.sh gate
+          grep -Fx "sha=$EXPECTED_SHA" "$RUNNER_TEMP/release-gate"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: prebuilt-${{ needs.build.outputs.sha }}
+          path: ${{ runner.temp }}/artifact
+      - name: Unpack prebuilt bundle
+        run: ditto -x -k "$RUNNER_TEMP/artifact/prebuilt.zip" "$RUNNER_TEMP/prebuilt"
+      - name: Sign, notarize and validate private staged installation
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: scripts/release.sh sign "$RUNNER_TEMP/prebuilt/Koi.app" "$RUNNER_TEMP/distribution"
+      - name: Create draft only using the built-in workflow token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_SHA: ${{ needs.build.outputs.sha }}
+          METAL_ATTESTATION: ${{ inputs.metal_attestation }}
+        run: |
+          resolved=$(scripts/release.sh resolve-tag)
+          [[ "$resolved" == "$RELEASE_SHA" ]] || { echo 'Release tag moved; refusing publication.' >&2; exit 1; }
+          printf 'Commit: %s\nMaintainer: %s\n%s\n' "$RELEASE_SHA" "$GITHUB_ACTOR" "$METAL_ATTESTATION" > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/distribution/"* --repo "$GITHUB_REPOSITORY" \
+            --draft --verify-tag --title "Koi $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"

@@ -1,4 +1,4 @@
-name: Action updates
+name: Dependency updates
 
 on:
   schedule:
@@ -8,60 +8,67 @@ on:
 permissions: {}
 
 concurrency:
-  group: action-updates-${{ github.repository }}
+  group: deps-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
-  update:
-    name: Find and check Action updates
+  discover:
+    name: Find stable engine updates
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
     outputs:
       changed: ${{ steps.plan.outputs.changed }}
-      updates: ${{ steps.plan.outputs.updates }}
+      update: ${{ steps.plan.outputs.update }}
       base: ${{ steps.plan.outputs.base }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Resolve same-major Action pins
+      - name: Resolve forward stable Ghostty pin
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           ./x deps >> "$GITHUB_OUTPUT"
-      - name: Check proposed substitutions
+      - name: Report Action pins for manual review
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check-actions.py >> "$GITHUB_STEP_SUMMARY"
+      - name: Check proposed pin
         if: steps.plan.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          ACTION_UPDATES: ${{ steps.plan.outputs.updates }}
+          DEPENDENCY_UPDATE: ${{ steps.plan.outputs.update }}
         run: |
-          python3 scripts/update-actions.py apply >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/update-dependencies.py apply >> "$GITHUB_STEP_SUMMARY"
           ./x scripts
           ./x programs
           git diff --check
 
   publish:
-    name: Publish draft and validate exact commit
-    needs: update
-    if: needs.update.outputs.changed == 'true'
-    runs-on: ubuntu-latest
+    name: Propose engine update and run CI
+    needs: discover
+    if: needs.discover.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.update.outputs.base }}
+          ref: ${{ needs.discover.outputs.base }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Publish verified pins and wait for CI
+      - name: Publish verified pin and wait for exact-commit CI
         env:
-          GH_TOKEN: ${{ secrets.WORKFLOW_UPDATES_TOKEN }}
-          ACTION_UPDATES: ${{ needs.update.outputs.updates }}
-          UPDATE_BASE: ${{ needs.update.outputs.base }}
-        run: scripts/publish-action-updates.sh
+          GH_TOKEN: ${{ github.token }}
+          DEPENDENCY_UPDATE: ${{ needs.discover.outputs.update }}
+          UPDATE_BASE: ${{ needs.discover.outputs.base }}
+        run: scripts/publish-dependency-updates.sh

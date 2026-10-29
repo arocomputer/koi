@@ -150,7 +150,10 @@ with os.fdopen(fd, 'r+') as guard:
     suites = ('ConfigTests|KeyboardTests|WireTests|SocketTests|RemoteTests|PredictionTests|'
               'ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|'
               'IntegrationsTests|UpdatesTests|DiagnosticsTests|DiagnosticIssuesTests|'
-              'TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests')
+              'TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests|'
+              'impairedUDPDeliversOrderedProcessEcho|encryptedSessionSurvivesRebindAndReconnect|'
+              'compatibilityPrivatePasteFollowsRestoredModes|compatibilityColorsAndUnicodeCellsSurviveSnapshot|'
+              'compatibilityResizeAndSnapshotRestoreTheShell')
     commands = ([['swift', 'test', '--jobs', '2', '--filter', suites]] if mode == 'headless'
                 else [['zig', 'build', 'test'], ['swift', 'test']])
     for command in commands:
