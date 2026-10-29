@@ -65,31 +65,33 @@ jobs:
           xcodebuild -version
           swift --version
           zig version
-      - name: Run isolated core tests
-        id: core
-        if: needs.checks.outputs.core == 'true'
-        run: ./x test-core
-      - name: Restore Ghostty framework
+      - name: Restore Ghostty source and framework
         id: ghostty
         if: needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
+            vendor/ghostty
             vendor/GhosttyVt.xcframework
             vendor/.ghostty-commit
-          key: ghostty-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
+          key: ghostty-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('scripts/build-ghostty-vt.sh', 'scripts/build-metadata.sh') }}
       # Validate restored inputs before use; save completed work before later tests can fail.
       - name: Prepare Ghostty framework
         if: needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
         run: scripts/build-ghostty-vt.sh
-      - name: Save Ghostty framework
+      - name: Save Ghostty source and framework
         if: (needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true') && steps.ghostty.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
+            vendor/ghostty
             vendor/GhosttyVt.xcframework
             vendor/.ghostty-commit
           key: ${{ steps.ghostty.outputs.cache-primary-key }}
+      - name: Run isolated core tests
+        id: core
+        if: needs.checks.outputs.core == 'true'
+        run: ./x test-core
       - name: Restore macOS core outputs
         id: mac
         if: needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'

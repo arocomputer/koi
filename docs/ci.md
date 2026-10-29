@@ -121,10 +121,13 @@ Swift test build and 28 seconds for the production Swift build. A separate
 71-second core job and a Mac handoff added to elapsed time. These cold-run
 figures are a baseline, not a claim about the revised or warmed workflow.
 
-The workflow keeps three completed-output caches: Ghostty, macOS
+The workflow keeps three caches: pinned Ghostty source/framework, macOS
 server/library, and Linux server. Keys use actual Zig/Xcode/SDK identities and
 relevant source/build hashes; there are no broad fallback keys. Each build
 script rechecks input stamps and required outputs after a restore. The
+Ghostty restore precedes core tests so they reuse its pinned source checkout
+instead of fetching it again on each fresh runner. Tracked source changes
+are rejected by the same build validation used locally. The
 macOS and Linux stamps are independent, so missing/stale Linux output cannot
 force a macOS rebuild or let a macOS-only preparation satisfy packaging.
 
