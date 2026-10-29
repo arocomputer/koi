@@ -164,17 +164,19 @@ import SwiftUI
     static func workItems(in workspace: Workspace, navigate: @escaping @MainActor (String, String?) -> Void) -> [PaletteItem] {
         var items: [PaletteItem] = []
         /// Adds destinations using the group context already known by the traversal.
-        func appendWork(for tab: Wire.TabInfo, groupName: String) {
+        @MainActor func appendWork(for tab: Wire.TabInfo, groupName: String) {
+            let tabID = tab.id
             if tab.panes.count > 1 {
                 let title = tab.name.flatMap { $0.isEmpty ? nil : $0 } ?? "Tab with \(tab.panes.count) panes"
                 items.append(.init(id: "tab:\(workspace.endpoint.key):\(tab.id)", title: title,
                                    detail: "\(workspace.endpoint.title) · \(tab.panes.count) panes", symbol: "rectangle.stack",
                                    keywords: [title, groupName, workspace.endpoint.title, "tab"], kind: .tab,
-                                   operation: .perform { navigate(tab.id, nil) }))
+                                   operation: .perform { navigate(tabID, nil) }))
             }
             for pane in tab.panes {
+                let paneID = pane.id
                 items.append(paneItem(pane, tabName: tab.name, group: groupName, endpoint: workspace.endpoint,
-                                      isSplit: tab.panes.count > 1, navigate: { navigate(tab.id, pane.id) }))
+                                      isSplit: tab.panes.count > 1, navigate: { navigate(tabID, paneID) }))
             }
         }
         for item in workspace.state.items {

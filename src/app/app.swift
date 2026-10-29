@@ -989,6 +989,12 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
                 "matches": PaletteSearch.results(paletteItems(), query: request["query"] ?? "", recent: []).map(\.id)]
             state["tab"] = workspace.selectedTab
             state["pane"] = workspace.focusedPane
+            state["visible"] = window?.occlusionState.contains(.visible) == true
+            state["panes"] = diagnosticSnapshot(for: machines.current).panes.map { pane -> [String: Any] in
+                ["id": pane.id, "connection": pane.connection,
+                 "frames": pane.rendering?.framesSubmitted ?? 0,
+                 "drawable": [pane.rendering?.drawableWidth ?? 0, pane.rendering?.drawableHeight ?? 0]]
+            }
             if let data = try? JSONSerialization.data(withJSONObject: state) {
                 try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
             }

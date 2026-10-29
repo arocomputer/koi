@@ -2358,12 +2358,13 @@ test "a shell deferred for its client starts on attach, or by the deadline alone
         try server.registerTab(tab, child, null);
         published = true;
         defer child.unpin();
-        const grace: i64 = if (attaches) 5000 else 60;
-        child.deferExecution(sys.nowMillis() + grace);
+        // macOS can coalesce a 20 ms sleep past a short expiry. Check the
+        // closed gate with ample grace, then explicitly exercise expiration.
+        child.deferExecution(sys.nowMillis() + 60_000);
         sys.sleepMillis(20);
         try testing.expect(c.access(marker.path, c.F_OK) != 0);
         // What the open handler does once the client's size is applied.
-        if (attaches) try child.releaseExecution();
+        if (attaches) try child.releaseExecution() else child.deferExecution(sys.nowMillis());
         var executed = false;
         for (0..300) |_| {
             if (c.access(marker.path, c.F_OK) == 0) {

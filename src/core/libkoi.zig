@@ -10,7 +10,8 @@
 //!   all threads using the link or its streams have returned. `koi_link_close`
 //!   first wakes blocked readers (they return 0), so close, join readers, then
 //!   destroy. The owner of a stream must keep its link alive until then.
-//! - `koi_stream_send` never blocks; a peer too slow to drain 64 MiB of queued
+//! - `koi_stream_send` locks and pumps but never waits for network credit;
+//!   embedders call it off the UI thread. A peer too slow to drain 64 MiB of queued
 //!   output has that stream ended (reads return 0) rather than buffered further.
 const std = @import("std");
 const link_mod = @import("link.zig");

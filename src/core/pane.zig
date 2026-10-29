@@ -226,6 +226,12 @@ pub const Pane = struct {
         self.terminal.setOption(vt.GHOSTTY_TERMINAL_OPT_PWD_CHANGED, @ptrCast(pwd));
         const status: vt.GhosttyTerminalProgramStatusFn = &statusCallback;
         self.terminal.setOption(vt.GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS, @ptrCast(status));
+        const unknown: vt.GhosttyTerminalUnknownSequenceFn = &shellCommandCallback;
+        var limit: usize = 1024;
+        self.terminal.setOption(vt.GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES, &limit);
+        self.terminal.setOption(vt.GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE, @ptrCast(unknown));
+        const prompt: vt.GhosttyTerminalSemanticPromptFn = &promptCallback;
+        self.terminal.setOption(vt.GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, @ptrCast(prompt));
     }
 
     fn writePtyCallback(_: vt.GhosttyTerminal, userdata: ?*anyopaque, data: [*c]const u8, len: usize) callconv(.c) void {
@@ -407,28 +413,31 @@ pub const Pane = struct {
         self.refreshMetadataLocked(false);
     }
 
-    /// Applies the shell integration's reports in `chunk`, with `mutex`
-    /// held: OSC 7502 `cmd=NAME` as a command starts, and OSC 133 A or D as
-    /// the prompt returns. A sequence split across chunks is ignored.
-    fn scanShellReports(self: *Pane, chunk: []const u8) void {
-        var rest = chunk;
-        while (std.mem.indexOf(u8, rest, "\x1b]")) |at| {
-            const body = rest[at + 2 ..];
-            const stop = std.mem.indexOfAny(u8, body, "\x07\x1b") orelse return;
-            const osc = body[0..stop];
-            if (std.mem.startsWith(u8, osc, "7502;cmd=")) {
-                self.setShellCommandLocked(osc["7502;cmd=".len..]);
-            } else if (std.mem.eql(u8, osc, "133;A") or std.mem.startsWith(u8, osc, "133;D")) {
-                self.setShellCommandLocked("");
-            }
-            rest = body[stop..];
-        }
+    /// The engine owns framing across PTY reads, cancellation and terminators.
+    /// Only complete bounded OSC 7502 reports can name the foreground program.
+    fn shellCommandCallback(_: vt.GhosttyTerminal, userdata: ?*anyopaque, sequence: [*c]const vt.GhosttyTerminalUnknownSequence) callconv(.c) void {
+        const self: *Pane = @ptrCast(@alignCast(userdata orelse return));
+        if (sequence.*.tag != vt.GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE_OSC) return;
+        const osc = sequence.*.value.osc;
+        if (osc.truncated or osc.content.ptr == null) return;
+        const content = osc.content.ptr[0..osc.content.len];
+        if (std.mem.startsWith(u8, content, "7502;cmd=")) self.setShellCommandLocked(content["7502;cmd=".len..]);
+    }
+
+    /// A completed command or primary prompt releases shell-reported identity.
+    /// Secondary/continuation prompts do not end a running command.
+    fn promptCallback(_: vt.GhosttyTerminal, userdata: ?*anyopaque, event: [*c]const vt.GhosttyTerminalSemanticPrompt) callconv(.c) void {
+        const self: *Pane = @ptrCast(@alignCast(userdata orelse return));
+        if (event.*.kind == vt.GHOSTTY_SEMANTIC_PROMPT_COMMAND_END or
+            (event.*.kind == vt.GHOSTTY_SEMANTIC_PROMPT_PROMPT_START and
+                event.*.prompt_kind == vt.GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY)) self.setShellCommandLocked("");
     }
 
     /// The shell's word for what runs becomes the program, or the prompt
     /// returns with an empty name; the caller holds `mutex`.
     fn setShellCommandLocked(self: *Pane, name: []const u8) void {
-        const clean = name[0..@min(name.len, 64)];
+        if (name.len > 64 or !std.unicode.utf8ValidateSlice(name)) return;
+        const clean = name;
         for (clean) |b| if (b < 0x20 or b == 0x7f) return;
         if (std.mem.eql(u8, clean, self.shell_command.items)) return;
         self.shell_command.clearRetainingCapacity();
@@ -761,8 +770,9 @@ pub const Pane = struct {
     }
 
     /// Commits an engine edit and one replacement snapshot under the same lock
-    /// as output/attach/resize. All fallible work precedes the swap: a failed
+    /// as output/attach/resize. All fallible work precedes the commit: a failed
     /// edit leaves the authoritative terminal and every mirror unchanged.
+    /// Non-reset edits retain the live parser and its embedder callbacks.
     pub fn edit(self: *Pane, op: wire.Op, appearance: ?wire.Appearance, arena: Allocator) !void {
         return self.editOwned(op, appearance, arena, null);
     }
@@ -782,7 +792,7 @@ pub const Pane = struct {
             defer Terminal.freeSnapshot(before);
             break :copy Terminal.fromSnapshot(before) orelse return error.Snapshot;
         };
-        errdefer updated.deinit();
+        defer updated.deinit();
         updated.defaults = self.terminal.defaults;
         updated.applyDefaults();
         switch (op) {
@@ -795,9 +805,15 @@ pub const Pane = struct {
         defer Terminal.freeSnapshot(snapshot);
         if (snapshot.len > wire.max_payload) return error.SnapshotTooLarge;
         const frame = try wire.frame(arena, .snapshot, snapshot);
-        self.terminal.deinit();
-        self.terminal = updated;
-        self.installCallbacks();
+        switch (op) {
+            .clearPane => self.terminal.clearScrollback(),
+            .configurePane => self.terminal.applyAppearance(appearance.?) catch unreachable,
+            .resetPane => {
+                std.mem.swap(Terminal, &self.terminal, &updated);
+                self.installCallbacks();
+            },
+            else => unreachable,
+        }
         if (op == .resetPane) {
             self.reported = null;
             // Reject process samples taken before reset; cwd is process-owned
@@ -873,7 +889,6 @@ pub const Pane = struct {
                     const chunk = buf[0..@intCast(n)];
                     self.last_output = sys.nowMillis();
                     _ = self.activityLocked(self.last_output);
-                    self.scanShellReports(chunk);
                     self.terminal.write(chunk);
                     self.releaseHeldInputLocked(self.last_output);
                     if (self.clients.items.len > 0) {
@@ -1482,19 +1497,59 @@ test "the shell's own report names the program until its prompt returns" {
     defer pane.program.deinit(pane.gpa);
     defer pane.cwd.deinit(pane.gpa);
     defer pane.shell_command.deinit(pane.gpa);
-    pane.scanShellReports("\x1b]133;C\x07\x1b]7502;cmd=make\x07output");
+    pane.installCallbacks();
+    pane.terminal.write("\x1b]133;C\x07\x1b]7502;cmd=make\x07output");
     try std.testing.expectEqualStrings("make", pane.program.items);
     // Discovery sees make's child; the header keeps what the user ran.
     pane.applyForegroundLocked(pane.metadata_version, .{ .pid = 200, .program = "cc", .cwd = "/tmp/work" });
     try std.testing.expectEqualStrings("make", pane.program.items);
     try std.testing.expectEqualStrings("/tmp/work", pane.cwd.items);
-    pane.scanShellReports("\x1b]133;D;0\x07\x1b]133;A\x07");
+    pane.terminal.write("\x1b]133;D;0\x07\x1b]133;A\x07");
     try std.testing.expectEqualStrings("", pane.program.items);
     pane.applyForegroundLocked(pane.metadata_version, .{ .pid = 300, .program = "vim", .cwd = "/tmp/work" });
     try std.testing.expectEqualStrings("vim", pane.program.items);
-    // Control bytes and a split sequence never become a name.
-    pane.scanShellReports("\x1b]7502;cmd=bad\x01name\x07\x1b]7502;cmd=cut");
+    // Cancelled and unfinished reports never become a name.
+    pane.terminal.write("\x1b]7502;cmd=bad\x18name\x07\x1b]7502;cmd=cut");
     try std.testing.expectEqualStrings("vim", pane.program.items);
+    pane.terminal.write("\x07");
+    try std.testing.expectEqualStrings("cut", pane.program.items);
+}
+
+test "shell identity and prompt reports survive every PTY split" {
+    const command = "\x1b]7502;cmd=opencode\x1b\\";
+    const prompt = "\x1b]133;A\x07";
+    for (0..command.len + 1) |split| {
+        var pane = try testMetadataPane();
+        defer pane.terminal.deinit();
+        defer pane.program.deinit(pane.gpa);
+        defer pane.cwd.deinit(pane.gpa);
+        defer pane.shell_command.deinit(pane.gpa);
+        pane.installCallbacks();
+        pane.terminal.write(command[0..split]);
+        pane.terminal.write(command[split..]);
+        try std.testing.expectEqualStrings("opencode", pane.program.items);
+        for (0..prompt.len + 1) |at| {
+            pane.terminal.write(command);
+            pane.terminal.write(prompt[0..at]);
+            pane.terminal.write(prompt[at..]);
+            try std.testing.expectEqualStrings("", pane.program.items);
+        }
+    }
+}
+
+test "pane edits preserve an unfinished shell identity report" {
+    for ([_]wire.Op{ .clearPane, .configurePane }) |op| {
+        var pane = try testMetadataPane();
+        defer freeMetadataPane(&pane);
+        defer pane.shell_command.deinit(pane.gpa);
+        pane.installCallbacks();
+        pane.terminal.write("\x1b]7502;cmd=open");
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        try pane.edit(op, if (op == .configurePane) wire.Appearance{} else null, arena.allocator());
+        pane.terminal.write("code\x07");
+        try std.testing.expectEqualStrings("opencode", pane.program.items);
+    }
 }
 
 test "a sample of the child before exec is never the pane's program" {

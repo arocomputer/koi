@@ -33,10 +33,10 @@ enum Programs {
     /// when `program` is "".
     static func style(for program: String, shell: String) -> ProgramStyle {
         if program.isEmpty { return shellStyle(shell) }
-        if let s = table[program] { return s }
-        // Anything else gets its initial on a neutral tile.
-        let initial = program.first.map { String($0).uppercased() } ?? "?"
-        return ProgramStyle(name: program, glyph: .text(initial), top: hex(0x3B3B42), bottom: hex(0x26262B), ink: hex(0xDADAE0))
+        let name = (program as NSString).lastPathComponent.lowercased()
+        if let s = table[name] { return s }
+        // Unknown programs keep Koi's prompt mark and a neutral tile.
+        return ProgramStyle(name: program, glyph: .text(">_"), top: hex(0x3B3B42), bottom: hex(0x26262B), ink: hex(0xDADAE0))
     }
 
     static func shellStyle(_ shell: String) -> ProgramStyle {
@@ -111,6 +111,7 @@ enum Programs {
     /// in development from the repository.
     @MainActor static func logo(_ name: String) -> NSImage? {
         if let cached = logos[name] { return cached }
+        if missingLogos.contains(name) { return nil }
         for dir in directories {
             if let image = NSImage(contentsOf: dir.appendingPathComponent("logos/\(name).svg")) {
                 image.isTemplate = true
@@ -118,9 +119,11 @@ enum Programs {
                 return image
             }
         }
+        missingLogos.insert(name)
         return nil
     }
     @MainActor private static var logos: [String: NSImage] = [:]
+    @MainActor private static var missingLogos: Set<String> = []
 }
 
 /// A program's tile: its colors as a soft gradient with a hairline highlight
@@ -152,6 +155,10 @@ struct ProgramTile: View {
             if let image = Programs.logo(name) {
                 Image(nsImage: image).renderingMode(.template).resizable().scaledToFit()
                     .frame(width: size * 0.6, height: size * 0.6)
+            } else {
+                Text(">_")
+                    .font(.system(size: size * 0.42, weight: .heavy, design: .monospaced))
+                    .tracking(-0.5)
             }
         case .symbol(let name):
             Image(systemName: name).font(.system(size: size * 0.5, weight: .semibold))

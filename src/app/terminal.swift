@@ -434,6 +434,12 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         selection = nil
         terminal = restored
         renderer?.bind(to: restored)
+        restored.onClipboardWrite = { text in
+            MainActor.assumeIsolated {
+                NSPasteboard.general.clearContents()
+                return NSPasteboard.general.setString(text, forType: .string)
+            }
+        }
         applyTerminalConfiguration()
         selection = TerminalSelection(terminal: restored)
         selectingWithMouse = false
@@ -486,17 +492,19 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     /// A foreground-program change invalidates the predictor's learned echo.
     func setProgram(_ program: String) {
+        guard predictor?.program != program else { return }
         predictor?.setProgram(program)
         pushOverlay()
     }
 
-    /// A prediction shows on the keystroke itself, not the next display
-    /// tick: for a remote pane that is the whole point of predicting.
-    private func pushOverlay() {
+    /// Only changed predictions invalidate a frame. Input may present at once;
+    /// output and timer updates share their caller's single presentation.
+    private func pushOverlay(immediate: Bool = false) {
         guard let predictor else { return }
+        guard renderer.overlay != predictor.overlay else { return }
         renderer.overlay = predictor.overlay
         needsRender = true
-        if focused, window?.occlusionState.contains(.visible) == true { renderNow(inTransaction: false) }
+        if immediate, focused, window?.occlusionState.contains(.visible) == true { renderNow(inTransaction: false) }
     }
 
     /// Composition is a local drawing overlay; only committed text goes to
@@ -813,7 +821,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         default:
             if let text, mods.isEmpty { predictor?.typed(text, in: terminal) } else { predictor?.other() }
         }
-        pushOverlay()
+        pushOverlay(immediate: true)
     }
 
     private func send(text: String) {

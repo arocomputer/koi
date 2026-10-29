@@ -284,8 +284,9 @@ private func projectDirectory() throws -> URL {
     private var pendingReads = 0
     private var serial = 0
 
-    /// Bind a restorer to this fake's isolated state and command log.
-    func restorer(timeout: Duration = .seconds(1)) -> ProjectRestorer {
+    /// Use the production deadline; unrelated main-actor fixtures can delay
+    /// delivery. Timeout-specific tests supply zero explicitly.
+    func restorer(timeout: Duration = .seconds(3)) -> ProjectRestorer {
         .init(command: { try self.send($0) }, state: { self.read() }, select: { self.selected = $0 }, stateTimeout: timeout)
     }
 

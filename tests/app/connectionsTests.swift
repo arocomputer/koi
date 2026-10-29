@@ -16,6 +16,30 @@ import Testing
 /// A busy main actor must apply backpressure rather than retaining unlimited
 /// output; closing the connection must still wake its reader immediately.
 @Suite @MainActor struct ClientTests {
+    /// A full pending queue must yield to another main-queue operation before
+    /// parsing the rest, rather than delivering all 8 MiB in one callback.
+    @Test func outputBacklogYieldsBetweenBoundedDeliveries() async throws {
+        let source = BurstTransport(metadata: false)
+        let connection = PaneConnection(.init(pane: "test", cols: 80, rows: 24, cellWidth: 8, cellHeight: 16), socket: source)
+        defer { connection.close() }
+        var deliveries = 0
+        var observed: Int?
+        connection.onEvents = { events in
+            deliveries += 1
+            #expect(events.reduce(0) { $0 + $1.byteCount } <= 256 * 1024)
+            if deliveries == 1 {
+                DispatchQueue.main.async {
+                    observed = deliveries
+                    connection.close()
+                }
+            }
+        }
+        #expect(source.waitForBackpressure())
+        for _ in 0..<100 where observed == nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(observed == 1)
+        #expect(source.waitUntilDone())
+    }
+
     @Test(arguments: [false, true]) func aBusyMainActorBoundsOutputAndCloseWakesTheReader(metadata: Bool) async throws {
         let source = BurstTransport(metadata: metadata)
         let connection = PaneConnection(.init(pane: "test", cols: 80, rows: 24, cellWidth: 8, cellHeight: 16), socket: source)
@@ -66,6 +90,9 @@ private final class BurstTransport: Transport, @unchecked Sendable {
         }
         return false
     }
+
+    /// Bounded join after closing the fixture, outside async semaphore APIs.
+    func waitUntilDone() -> Bool { done.wait(timeout: .now() + 2) == .success }
 
     func send(_ bytes: [UInt8]) {}
 

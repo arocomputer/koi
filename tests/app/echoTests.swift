@@ -174,11 +174,13 @@ import Testing
             #expect(p.overlay.caret == nil)
             #expect(!p.isActive)
         }
-        var p = echoingPrediction(in: t)
-        p.typed("a", in: t)
-        p.typed("paste", in: t)
-        #expect(!p.isActive)
-        #expect(p.overlay.cells.isEmpty)
+        for text in ["paste", "日本"] {
+            var p = echoingPrediction(in: t)
+            p.typed("a", in: t)
+            p.typed(text, in: t)
+            #expect(!p.isActive)
+            #expect(p.overlay.cells.isEmpty && p.overlay.caret == nil)
+        }
     }
 
     @Test func expiryClearsTheWholePredictionAndCaret() {
@@ -278,6 +280,63 @@ import Testing
         #expect(!p.isActive)
         p.typed("x", in: t)
         #expect(p.overlay.cells.isEmpty && p.overlay.caret == nil, "a wrong guess stays hidden until echo matches")
+    }
+
+    /// Aliases and unfamiliar programs all learn echo after reconnect.
+    @Test(arguments: ["custom-editor", "claude-code", "gemini-cli", "opencode-cli", "opencode-ai", "pi-coding-agent", "aider-chat"])
+    func programsLearnEchoAfterReconnect(program: String) {
+        let t = prompt()
+        var p = Prediction()
+        p.setProgram(program)
+        p.reset()
+        p.typed("a", in: t)
+        p.typed("b", in: t)
+        #expect(p.overlay.cells.isEmpty && p.overlay.caret == nil)
+        t.write(Array("ab".utf8))
+        p.reconcile(with: t)
+        p.typed("c", in: t)
+        #expect(p.overlay.cells.map(\.text) == ["c"])
+    }
+
+    /// A coalesced identical replacement must still be covered by a later erase.
+    @Test func backspaceHidesAnIdenticalReplacementAfterCoalescedEcho() {
+        let t = prompt()
+        var p = echoingPrediction(in: t)
+        p.typed("a", in: t)
+        p.backspace(in: t)
+        p.typed("a", in: t)
+        t.write(Array("a\u{8} \u{8}a".utf8))
+        p.reconcile(with: t)
+        p.backspace(in: t)
+        #expect(p.overlay.cells == [Prediction.Cell(x: 2, y: 0, text: " ")])
+        for fragment in ["\u{8}", " ", "\u{8}"] {
+            t.write(Array(fragment.utf8))
+            p.reconcile(with: t)
+        }
+        #expect(!p.isActive)
+    }
+
+    /// Delayed fragments of a canceled key cannot displace its replacement.
+    @Test(arguments: ["a", "b"], [0, 2])
+    func delayedEchoOfACorrectedCharacterDoesNotEraseNewerTyping(replacement: String, echoedFragments: Int) {
+        let t = prompt()
+        var p = echoingPrediction(in: t)
+        p.typed("a", in: t)
+        p.backspace(in: t)
+        let fragments = ["a", "\u{8}", " ", "\u{8}"]
+        for fragment in fragments.prefix(echoedFragments) {
+            t.write(Array(fragment.utf8))
+            p.reconcile(with: t)
+        }
+        p.typed(replacement, in: t)
+        for fragment in fragments.dropFirst(echoedFragments) {
+            t.write(Array(fragment.utf8))
+            p.reconcile(with: t)
+            #expect(p.overlay.cells.map(\.text) == [replacement])
+        }
+        t.write(Array(replacement.utf8))
+        p.reconcile(with: t)
+        #expect(!p.isActive)
     }
 
     @Test func nothingIsPredictedWhileScrolledBack() {

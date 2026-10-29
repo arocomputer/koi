@@ -1,7 +1,8 @@
 [
   {
     "runs": [
-      "claude"
+      "claude",
+      "claude-code"
     ],
     "name": "Claude Code",
     "logo": "claude",
@@ -24,7 +25,22 @@
   },
   {
     "runs": [
-      "gemini"
+      "opencode",
+      "opencode-cli",
+      "opencode-ai"
+    ],
+    "name": "OpenCode",
+    "logo": "opencode",
+    "colors": [
+      "353535",
+      "181818"
+    ],
+    "ink": "F1ECEC"
+  },
+  {
+    "runs": [
+      "gemini",
+      "gemini-cli"
     ],
     "name": "Gemini",
     "logo": "googlegemini",
@@ -32,6 +48,193 @@
       "8E75B2",
       "5C4A8A"
     ]
+  },
+  {
+    "runs": [
+      "amp"
+    ],
+    "name": "Amp",
+    "symbol": "bolt.fill",
+    "colors": [
+      "DA7756",
+      "A44830"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "cursor-agent",
+      "agent"
+    ],
+    "name": "Cursor Agent",
+    "logo": "cursor",
+    "colors": [
+      "343434",
+      "181818"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "droid"
+    ],
+    "name": "Factory Droid",
+    "symbol": "cpu",
+    "colors": [
+      "D97745",
+      "9D4828"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "qwen",
+      "qwen-code"
+    ],
+    "name": "Qwen Code",
+    "logo": "qwen",
+    "colors": [
+      "6950EF",
+      "4934B0"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "goose"
+    ],
+    "name": "Goose",
+    "symbol": "bird.fill",
+    "colors": [
+      "384A40",
+      "22322A"
+    ],
+    "ink": "F4E9D5"
+  },
+  {
+    "runs": [
+      "crush"
+    ],
+    "name": "Crush",
+    "symbol": "diamond.fill",
+    "colors": [
+      "7B286D",
+      "4E1848"
+    ],
+    "ink": "FF94DC"
+  },
+  {
+    "runs": [
+      "vibe",
+      "mistral-vibe"
+    ],
+    "name": "Mistral Vibe",
+    "logo": "mistralai",
+    "colors": [
+      "FA520F",
+      "C73E08"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "auggie"
+    ],
+    "name": "Auggie",
+    "symbol": "sparkles",
+    "colors": [
+      "245E50",
+      "163D35"
+    ],
+    "ink": "8FE4BB"
+  },
+  {
+    "runs": [
+      "kilo",
+      "kilocode"
+    ],
+    "name": "Kilo Code",
+    "text": "K",
+    "colors": [
+      "E8D849",
+      "B9A92A"
+    ],
+    "ink": "202020"
+  },
+  {
+    "runs": [
+      "kimi",
+      "kimi-cli",
+      "kimi-code"
+    ],
+    "name": "Kimi Code",
+    "text": "K",
+    "colors": [
+      "473399",
+      "2B205E"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "cline"
+    ],
+    "name": "Cline",
+    "logo": "cline",
+    "colors": [
+      "35353B",
+      "18181B"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "openhands"
+    ],
+    "name": "OpenHands",
+    "symbol": "hand.raised.fill",
+    "colors": [
+      "E6B958",
+      "B68C34"
+    ],
+    "ink": "252525"
+  },
+  {
+    "runs": [
+      "aichat"
+    ],
+    "name": "AIChat",
+    "symbol": "bubble.left.and.bubble.right.fill",
+    "colors": [
+      "3D658F",
+      "29476A"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "llm"
+    ],
+    "name": "LLM",
+    "text": "L",
+    "colors": [
+      "5D4B85",
+      "3C305B"
+    ],
+    "ink": "FFFFFF"
+  },
+  {
+    "runs": [
+      "interpreter",
+      "open-interpreter"
+    ],
+    "name": "Open Interpreter",
+    "text": "OI",
+    "colors": [
+      "393939",
+      "202020"
+    ],
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -860,7 +1063,8 @@
   },
   {
     "runs": [
-      "aider"
+      "aider",
+      "aider-chat"
     ],
     "name": "Aider",
     "symbol": "sparkles",
@@ -871,7 +1075,8 @@
   },
   {
     "runs": [
-      "pi"
+      "pi",
+      "pi-coding-agent"
     ],
     "name": "Pi",
     "symbol": "pi",
@@ -896,7 +1101,7 @@
   {
     "runs": [
       "huggingface-cli",
-      "huggingface-cli"
+      "hf"
     ],
     "name": "Hugging Face",
     "logo": "huggingface",

@@ -158,6 +158,8 @@ Shells the app bundle carries integration for (zsh through a Koi-owned
 configuration on `XDG_DATA_DIRS`) name each command themselves (OSC 7502 at
 preexec, cleared by the OSC 133 prompt markers); that name is the program
 until the prompt returns, and discovery then only tracks the directory.
+Shell reports use the engine's streaming OSC callbacks, so command and prompt
+markers remain ordered even when split across PTY reads.
 Servers installed on remote machines carry no integration files, so there
 discovery alone names programs. The app reads its bundled server's version at launch and reports
 in Diagnostics and the machine picker when the running local server is
@@ -308,7 +310,9 @@ Renderers share the immutable Metal device and pipeline. Per-pane engine
 state and glyph atlases stay independent; unchanged font metrics survive
 view reparenting. A failed drawable/presentation attempt retains its pending
 frame for the next display tick; a failed GPU completion wakes the view to retry
-the latest frame. The focused pane draws completed output the moment it
+the latest frame. Main-thread output deliveries are bounded to
+256 KiB or 64 events, with indivisible snapshots allowed alone, so streaming
+output yields between deliveries. The focused pane draws completed output the moment it
 arrives instead of waiting for that tick, which is up to one frame less
 between a keystroke and its echo; other panes draw on the tick. Remote panes
 predict typing locally (see `echo.swift`): the predicted cell is drawn on the
@@ -368,6 +372,16 @@ field, and only when it contains no configured host alias.
 
 ## Terminal text and activity
 
+App mirrors handle OSC 52 text clipboard writes through the engine callback,
+after snapshot restoration. A complete UTF-8 text value up to 1 MiB is copied
+to the Mac pasteboard. A clear request writes empty text; primary and
+selection destinations are unsupported. Terminal clipboard reads are not exposed. Local
+Shift-drag selection and Cmd-C remain independent of application-owned mouse
+selections.
+The mirror uses the engine's OSC boundaries to accept only OSC 52 writes.
+Kitty clipboard transactions remain unsupported: they need acknowledged
+server/client routing before they can change a client's clipboard.
+
 [`accessibility.swift`](../src/app/accessibility.swift) builds a read-only AX
 text document lazily, using UTF-16 indices and physical terminal rows across
 screen and history. It maps wide cells and graphemes, visible ranges, cursor
@@ -417,11 +431,17 @@ queues indefinitely. The principal limits are:
 | Scrollback per terminal | Default 32 MiB of engine pages; public config 1–32 MiB, JSON 0–1,024 MiB; snapshot limits still apply |
 | Pending pane events | 8 MiB or 1,024 events; one larger frame may occupy an otherwise empty batch |
 | App socket writes | 128 MiB and 4,096 pending writes |
+| App link writes awaiting the worker | 64 MiB and 4,096 pending writes per stream |
 | Server socket backlog | 16 MiB plus the current frame |
 | Remote unsent data | 64 MiB per stream |
 | Remote receive window | 4 MiB per stream; out-of-order storage is also bounded |
 | Unreclaimed remote streams | 128 per link |
 | Retained closed-stream records | 4,096 per link |
+
+Remote app writes run on an ordered worker per link; keyboard handling never
+waits for the native link mutex or packet encryption. The transport rotates
+between streams as congestion credit becomes available, so a bulk stream
+cannot always take the next available slot.
 
 An application must release closed remote streams; awaiting FIN completion
 continues to consume a stream slot. When old closed-stream records are

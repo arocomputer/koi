@@ -16,6 +16,12 @@ Metal for rendering, and AppKit and SwiftUI for its interface.
 - Searchable Settings and keyboard shortcuts apply without restarting.
 - Activity reporting and optional notifications help find work needing attention.
 
+Application tiles recognize coding agents such as OpenCode, Claude Code, Codex,
+Gemini, Copilot, Amp, Cursor Agent and Qwen Code. Unknown applications retain
+Koi's `>_` mark. Icons and colors come from a bundled catalog; [adding your
+application](CONTRIBUTING.md#program-icons) usually needs only a JSON entry,
+with a Python-only check available before submitting a PR.
+
 ## Build from source
 
 Use an Apple silicon Mac running macOS 26 or later, a full Xcode installation
@@ -100,6 +106,11 @@ Double-click terminal text to select a word, or triple-click to select a
 logical line, including its soft wraps. Drag past the pane's top or bottom
 edge to extend a selection through scrollback. Hold Shift when starting a
 drag to select text inside a program that captures the mouse.
+Use ⌘C to copy that selection. Ordinary drags in mouse-aware applications
+belong to the application; their OSC 52 text-copy requests reach the Mac
+clipboard too, including over remote connections. Clipboard writes accept
+UTF-8 text up to 1 MiB; applications cannot read the Mac clipboard through
+terminal escape sequences. Use ⌘V to paste.
 
 Terminal accessibility exposes a read-only text document for screen and
 scrollback, selected text, visible ranges and native text navigation.

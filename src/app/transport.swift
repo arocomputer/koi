@@ -86,18 +86,20 @@ final class Socket: Transport, @unchecked Sendable {
             guard queuedWrites < 4096, bytes.count <= maxQueued - queued else { return false }
             queued += bytes.count
             queuedWrites += 1
+            // Serialize admission and scheduling so concurrent callers cannot
+            // reverse the order in which their writes enter the queue.
+            writes.async { [self] in
+                defer { lock.withLock { queued -= bytes.count; queuedWrites -= 1 } }
+                var off = 0
+                while off < bytes.count {
+                    guard !lock.withLock({ closed }) else { return }
+                    let n = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress! + off, bytes.count - off) }
+                    if n > 0 { off += n } else if n < 0 && errno == EINTR { continue } else { close(); return }
+                }
+            }
             return true
         }
         guard accepted else { close(); return }
-        writes.async { [self] in
-            defer { lock.withLock { queued -= bytes.count; queuedWrites -= 1 } }
-            var off = 0
-            while off < bytes.count {
-                guard !lock.withLock({ closed }) else { return }
-                let n = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress! + off, bytes.count - off) }
-                if n > 0 { off += n } else if n < 0 && errno == EINTR { continue } else { close(); return }
-            }
-        }
     }
 
     func readFrames(_ handle: (Wire.Kind, ArraySlice<UInt8>) -> Void) {
@@ -148,6 +150,9 @@ extension sockaddr_un {
 /// carrying a stream per connection to that machine's server.
 final class LinkClient: @unchecked Sendable {
     private let raw: OpaquePointer
+    /// Native sends acquire the link mutex and may encrypt other streams'
+    /// queued output. Keep that work off the AppKit input thread.
+    fileprivate let writes = DispatchQueue(label: "koi.link.write", qos: .userInitiated)
 
     init?(host: String, port: UInt16, secret: [UInt8]) {
         guard secret.count == 32, let p = secret.withUnsafeBufferPointer({ koi_link_connect(host, port, $0.baseAddress) }) else { return nil }
@@ -178,6 +183,10 @@ final class LinkStream: Transport, @unchecked Sendable {
     var receivedBytes: UInt64 { progressLock.withLock { bytesRead } }
     private let raw: OpaquePointer
     let owner: LinkClient
+    private let lock = NSLock()
+    private var closed = false
+    private var queued = 0
+    private var queuedWrites = 0
 
     fileprivate init(_ raw: OpaquePointer, owner: LinkClient) {
         self.raw = raw
@@ -190,7 +199,19 @@ final class LinkStream: Transport, @unchecked Sendable {
     deinit { koi_stream_release(raw) }
 
     func send(_ bytes: [UInt8]) {
-        bytes.withUnsafeBufferPointer { koi_stream_send(raw, $0.baseAddress, $0.count) }
+        guard !bytes.isEmpty else { return }
+        let accepted = lock.withLock {
+            guard !closed, queuedWrites < 4096, bytes.count <= 64 * 1024 * 1024 - queued else { return false }
+            queued += bytes.count
+            queuedWrites += 1
+            owner.writes.async { [self] in
+                defer { lock.withLock { queued -= bytes.count; queuedWrites -= 1 } }
+                guard !lock.withLock({ closed }) else { return }
+                bytes.withUnsafeBufferPointer { koi_stream_send(raw, $0.baseAddress, $0.count) }
+            }
+            return true
+        }
+        if !accepted { close() }
     }
 
     func readFrames(_ handle: (Wire.Kind, ArraySlice<UInt8>) -> Void) {
@@ -209,6 +230,12 @@ final class LinkStream: Transport, @unchecked Sendable {
     }
 
     func close() {
-        koi_stream_close(raw)
+        lock.withLock {
+            guard !closed else { return }
+            closed = true
+            // Queued sends observe closed and discard their bytes; this owner
+            // remains alive until the worker has woken its native reader.
+            owner.writes.async { [self] in koi_stream_close(raw) }
+        }
     }
 }

@@ -9,12 +9,12 @@ import Testing
 /// suite so parallel fixtures neither skew them nor get starved by them.
 @MainActor extension SessionTests {
     /// A keystroke's round trip through the whole stack but the display: the
-    /// client socket, the server, the PTY, the shell's echo, back through the
+    /// client socket or encrypted loopback link, the server, the PTY, the shell's echo, back through the
     /// server to a client engine. Uses a private server and a program that
     /// echoes each byte itself with the terminal's own echo off, so every
     /// sample crosses the PTY twice and a real process once, like a shell's
     /// line editor does, independent of the user's prompt.
-    @Test @MainActor func keystrokeEchoRoundTrip() throws {
+    @Test(arguments: [false, true]) @MainActor func keystrokeEchoRoundTrip(remote: Bool) throws {
         let server = try TestServer()
         defer { server.stop() }
         let control = try #require(TestControl())
@@ -22,7 +22,15 @@ import Testing
         create.startup = "stty -echo -icanon; exec /bin/cat"
         let made = control.run(create)
         let id = try #require(made.pane)
-        let pane = try #require(TestPane(id))
+        var transport: Transport?
+        if remote {
+            let offer = try #require(server.offer())
+            let link = try #require(LinkClient(host: "127.0.0.1", port: offer.port, secret: Wire.secretBytes(offer.secret)))
+            let stream: LinkStream = try #require(link.open(), "UDP benchmark must not fall back to a local socket")
+            transport = stream
+        }
+        let pane = try #require(TestPane(id, transport: transport))
+        defer { pane.close() }
         pane.type("ready")
         #expect(pane.waitForText("ready"))
         var samples: [Double] = []
@@ -39,7 +47,7 @@ import Testing
         }
         samples.sort()
         let median = samples[samples.count / 2]
-        print(String(format: "keystroke echo round trip: median %.2f ms, p90 %.2f ms, min %.2f ms (n=%d)",
+        print(String(format: "keystroke echo round trip (\(remote ? "UDP loopback" : "local socket")): median %.2f ms, p90 %.2f ms, min %.2f ms (n=%d)",
                      median, samples[Int(Double(samples.count) * 0.9)], samples[0], samples.count))
         #expect(median < 5, "a keystroke's round trip through server and shell runs in tenths of a millisecond")
     }

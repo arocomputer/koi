@@ -70,13 +70,20 @@ fn name(pid: c.pid_t, buf: []u8, used: *usize) []const u8 {
 
 /// The interpreter's script is its first argument that looks like a file:
 /// a path or a name with a script suffix. Inline code (`node -e …`) and
-/// module names leave the interpreter's own name.
+/// module names leave the interpreter's own name. A Node/Bun entry point in
+/// node_modules identifies its package, rather than a generic cli.js/index.js.
 fn nameFrom(args: *Args, buf: []u8, used: *usize) []const u8 {
     const first = args.next() orelse return "";
     const exe = base(first);
     for (interpreters) |interp| {
         if (!std.mem.eql(u8, exe, interp)) continue;
         while (args.next()) |arg| {
+            // Inline source and module names may contain paths or suffixes;
+            // neither identifies a script. Stop before interpreting operands.
+            if (std.mem.eql(u8, arg, "-e") or std.mem.eql(u8, arg, "-c") or
+                std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "-p") or
+                std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "--print") or
+                std.mem.startsWith(u8, arg, "--eval=") or std.mem.startsWith(u8, arg, "--print=")) break;
             if (arg.len == 0 or arg[0] == '-') continue;
             var script = base(arg);
             const is_path = std.mem.indexOfScalar(u8, arg, '/') != null;
@@ -88,11 +95,43 @@ fn nameFrom(args: *Args, buf: []u8, used: *usize) []const u8 {
                     break;
                 }
             }
-            if (is_path or has_suffix) return copyInto(buf, used, script);
+            if (is_path or has_suffix) {
+                if (std.mem.eql(u8, exe, "node") or std.mem.eql(u8, exe, "bun")) {
+                    if (packageName(arg)) |package| return copyInto(buf, used, package);
+                }
+                return copyInto(buf, used, script);
+            }
         }
         break;
     }
     return copyInto(buf, used, exe);
+}
+
+/// The innermost installed npm package owns its entry point. Scoped packages
+/// report their unscoped name; paths outside node_modules keep script naming.
+fn packageName(path: []const u8) ?[]const u8 {
+    const marker = "node_modules/";
+    const at = std.mem.lastIndexOf(u8, path, marker) orelse return null;
+    if (at > 0 and path[at - 1] != '/') return null;
+    var rest = path[at + marker.len ..];
+    if (rest.len == 0) return null;
+    if (rest[0] == '@') {
+        const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+        rest = rest[slash + 1 ..];
+    }
+    const end = std.mem.indexOfScalar(u8, rest, '/') orelse return null;
+    if (end == 0 or rest[0] == '.') return null;
+    return rest[0..end];
+}
+
+test "installed agent entry points identify their package instead of cli or index" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("claude-code", testName(&buf, "node\x00/opt/lib/node_modules/@anthropic-ai/claude-code/cli.js\x00", 2));
+    try std.testing.expectEqualStrings("gemini-cli", testName(&buf, "node\x00/opt/lib/node_modules/@google/gemini-cli/dist/index.js\x00", 2));
+    try std.testing.expectEqualStrings("qwen-code", testName(&buf, "bun\x00/opt/lib/node_modules/@qwen-code/qwen-code/cli.js\x00", 2));
+    try std.testing.expectEqualStrings("nested-agent", testName(&buf, "node\x00/a/node_modules/outer/node_modules/nested-agent/index.js\x00", 2));
+    try std.testing.expectEqualStrings("cli", testName(&buf, "node\x00/work/cli.js\x00", 2));
+    try std.testing.expectEqualStrings("cli", testName(&buf, "node\x00/work/not_node_modules/agent/cli.js\x00", 2));
 }
 
 fn testName(buf: []u8, argv: []const u8, count: usize) []const u8 {
@@ -107,6 +146,8 @@ test "an interpreter is named after its script, not its inline code" {
     try std.testing.expectEqualStrings("app", testName(&buf, "node\x00app.js\x00", 2));
     try std.testing.expectEqualStrings("node", testName(&buf, "node\x00-e\x00setInterval(()=>{},1000)\x00", 3));
     try std.testing.expectEqualStrings("python3", testName(&buf, "/usr/bin/python3\x00-m\x00http.server\x00", 3));
+    try std.testing.expectEqualStrings("node", testName(&buf, "node\x00-e\x00require('/tmp/example.js')\x00", 3));
+    try std.testing.expectEqualStrings("python3", testName(&buf, "python3\x00-c\x00print('/tmp/example.py')\x00", 3));
 }
 
 /// The process's arguments, NUL-separated in `buf`.

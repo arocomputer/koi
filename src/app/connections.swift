@@ -14,7 +14,8 @@ struct ConnectionDeadline {
 
 /// One pane's connection to the server. Events arrive on a reader thread and
 /// are handed to `onEvents` on the main thread in batches, in order, so a
-/// burst of output costs one main-thread hop, not one per read.
+/// burst coalesces reads while bounded deliveries leave time for keyboard and
+/// display events between batches.
 final class PaneConnection: @unchecked Sendable {
     enum Event {
         case attached(Wire.PaneInfo)
@@ -26,6 +27,19 @@ final class PaneConnection: @unchecked Sendable {
         case negotiated(ownership: Bool, observing: Bool)
         case ownership(Bool)
         case failure(String)
+
+        /// Charge owned payloads and event overhead to the pending budget.
+        var byteCount: Int {
+            switch self {
+            case .snapshot(let data): data.count
+            case .output(let data): data.count
+            case .attached(let info):
+                info.id.utf8.count + info.title.utf8.count + info.cwd.utf8.count
+                    + (info.home?.utf8.count ?? 0) + info.program.utf8.count + info.shell.utf8.count + 256
+            case .failure(let message): message.utf8.count + 256
+            default: 256
+            }
+        }
     }
 
     private let socket: Transport
@@ -216,19 +230,10 @@ final class PaneConnection: @unchecked Sendable {
     }
 
     private func post(_ event: Event) {
-        let bytes: Int = switch event {
-        case .snapshot(let data): data.count
-        case .output(let data): data.count
-        case .attached(let info):
-            // Charge owned metadata too; a long program-supplied title must
-            // not bypass the pending-byte limit.
-            info.id.utf8.count + info.title.utf8.count + info.cwd.utf8.count
-                + (info.home?.utf8.count ?? 0) + info.program.utf8.count + info.shell.utf8.count + 256
-        default: 256
-        }
+        let bytes = event.byteCount
         lock.lock()
         // Pause the reader, letting socket/link flow control take over. A
-        // single large snapshot is allowed when the batch is otherwise empty.
+        // single large event is allowed when the batch is otherwise empty.
         while !closed && !pending.isEmpty && (pendingBytes + bytes > 8 * 1024 * 1024 || pending.count >= 1024) {
             lock.wait()
         }
@@ -239,16 +244,29 @@ final class PaneConnection: @unchecked Sendable {
         scheduled = true
         lock.unlock()
         guard schedule else { return }
-        DispatchQueue.main.async { [self] in
-            lock.lock()
-            let events = pending
-            pending.removeAll(keepingCapacity: true)
-            pendingBytes = 0
-            scheduled = false
-            lock.broadcast()
-            lock.unlock()
-            MainActor.assumeIsolated { if !events.isEmpty { onEvents?(events) } }
+        DispatchQueue.main.async { self.deliver() }
+    }
+
+    /// Drain at most 256 KiB / 64 events per main-queue turn. An event is
+    /// indivisible and may occupy one larger delivery. Keep wire ordering and
+    /// backpressure while scheduling the remaining output behind input work.
+    @MainActor private func deliver() {
+        lock.lock()
+        var count = 0, bytes = 0
+        for event in pending.prefix(64) {
+            if count > 0, bytes + event.byteCount > 256 * 1024 { break }
+            count += 1
+            bytes += event.byteCount
         }
+        let events = Array(pending.prefix(count))
+        pending.removeFirst(count)
+        pendingBytes -= bytes
+        let more = !pending.isEmpty
+        scheduled = more
+        lock.broadcast()
+        lock.unlock()
+        if !events.isEmpty { onEvents?(events) }
+        if more { DispatchQueue.main.async { self.deliver() } }
     }
 }
 

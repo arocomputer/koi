@@ -32,8 +32,9 @@ void koi_link_close(koi_link *link);
 /// every thread using the link or its streams has returned.
 void koi_link_destroy(koi_link *link);
 
-/// Queues bytes; never blocks. A peer that falls 64 MiB behind has the stream
-/// ended instead (reads return 0).
+/// Queues and pumps bytes under the link mutex; run off the UI input thread.
+/// Does not wait for network credit. A peer that falls 64 MiB behind has the
+/// stream ended instead (reads return 0).
 void koi_stream_send(koi_stream *stream, const uint8_t *bytes, size_t len);
 
 /// Blocks until bytes arrive, returning how many were copied into `buf`;
