@@ -76,7 +76,6 @@ as a separate lane rather than describing a cross-build as Linux testing.
 
 ## Repository policy
 
-The audit found no Koi branch rulesets or legacy protection on `main`.
 The proposed [ruleset](../.github/rulesets/main.json) follows ask/aft with
 one stable required gate and a narrower administrator bypass:
 
@@ -112,7 +111,8 @@ packages are needed. The publisher checks out the same base commit and
 revalidates the map against upstream before reconstructing just the pin edits.
 If main or an upstream tag moved in the meantime, it fails for a fresh retry.
 
-The publisher refuses branches without an owned PR, commits with non-bot
+Publication uses a short-lived GitHub App installation token scoped to this
+repository. The publisher refuses branches without an owned PR, commits with non-bot
 authorship or an unexpected title, and branch diffs beyond workflow pins. Updates
 use a lease against the observed remote head. It creates a
 draft (or withdraws an existing PR's readiness before pushing), watches the
@@ -123,28 +123,6 @@ readiness, and required CI remains the merge guard for later pushes. Failed
 CI leaves a draft for the next
 run to refresh. There is no duplicate manual CI dispatch.
 
-### Publishing credential
-
-Updating `.github/workflows/` requires **Workflows write** permission, which
-the built-in `GITHUB_TOKEN` cannot request. See GitHub's
-[workflow permission list](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions)
-and [additional authentication options](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token#granting-additional-permissions).
-
-Create a fine-grained personal access token restricted to this repository:
-
-- Contents: read and write.
-- Workflows: read and write.
-- Pull requests: read and write.
-- Actions: read (to watch CI).
-
-Store it as the repository Actions secret `WORKFLOW_UPDATES_TOKEN` in GitHub
-Settings → Secrets and variables → Actions. It is used only by the publisher,
-never by candidate checks or PR CI. The workflow does not provision this credential.
-With no updates, discovery succeeds without it; when updates exist but the
-secret is missing, publication fails with a setup message. The PR is opened
-as the token's user; commits use `github-actions[bot]` attribution. Renew the
-token before it expires and retain the same account for existing update PRs.
-
 ### Dependency inventory
 
 | Boundary | Count | Dependencies |
@@ -152,7 +130,7 @@ token before it expires and retain the same account for existing update PRs.
 | Direct external product code | 1 | libghostty-vt, pinned in `build-ghostty-vt.sh` |
 | Remote Swift packages | 0 | GhosttyVt is locally built; CKoi/libkoi is Koi's own code |
 | External libraries used through the pinned VT build | 4 | uucode, Wuffs, SIMDUTF, Highway |
-| Distinct GitHub Actions | 3 | actions/checkout, mlugg/setup-zig, actions/cache |
+| Distinct GitHub Actions | 4 | actions/checkout, mlugg/setup-zig, actions/cache, actions/create-github-app-token |
 
 These categories are not a complete runtime/build bill of materials. The
 engine also uses build helpers such as translate-c and includes Unicode/color

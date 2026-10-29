@@ -79,7 +79,7 @@ class ActionUpdatesTests(unittest.TestCase):
                 updates.workflows(Path(directory))
 
     def test_publication_keeps_failed_commit_draft_and_preserves_human_branch(self):
-        for mode in ('success', 'failed-ci', 'human', 'forged', 'refresh', 'head-race'):
+        for mode in ('success', 'failed-ci', 'human', 'forged', 'refresh', 'other-app', 'head-race'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory) / 'repo'
                 root.mkdir()
@@ -112,7 +112,7 @@ class ActionUpdatesTests(unittest.TestCase):
                     remote_sha = git('rev-parse', 'HEAD')
                     git('push', '-q', 'origin', 'HEAD:refs/heads/chore/action-updates')
                     git('switch', '-q', 'main')
-                elif mode == 'human':
+                elif mode in ('human', 'other-app'):
                     git('push', '-q', 'origin', 'HEAD:refs/heads/chore/action-updates')
                 binary = root / 'bin'
                 binary.mkdir()
@@ -122,9 +122,7 @@ import json, os, subprocess, sys
 args = sys.argv[1:]
 with open(os.environ['GH_LOG'], 'a') as log:
     log.write(json.dumps(args) + '\\n')
-if args[:2] == ['api', 'user']:
-    print('fixture')
-elif args[:1] == ['api']:
+if args[:1] == ['api']:
     if '/actions/runs/' in args[1]:
         sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
         print(sha, 'completed', 'failure' if os.environ['MODE'] == 'failed-ci' else 'success', sep=' ')
@@ -132,8 +130,8 @@ elif args[:1] == ['api']:
         print(json.dumps({'status': 'ahead'} if '/compare/' in args[1] else
                          {'object': {'type': 'commit', 'sha': 'b' * 40}}))
 elif args[:2] == ['pr', 'list']:
-    print(json.dumps([{'number': 42, 'author': {'login': 'fixture'},
-                      'headRefOid': os.environ['REMOTE_SHA']}] if os.environ['MODE'] in ('human', 'forged', 'refresh') else []))
+    print(json.dumps([{'number': 42, 'author': {'login': 'app/other' if os.environ['MODE'] == 'other-app' else 'app/fixture'},
+                      'headRefOid': os.environ['REMOTE_SHA']}] if os.environ['MODE'] in ('human', 'forged', 'refresh', 'other-app') else []))
 elif args[:2] == ['pr', 'view']:
     field = args[args.index('--json') + 1]
     if field == 'commits': print('human-commit' if os.environ['MODE'] == 'human' else '')
@@ -150,7 +148,7 @@ elif args[:2] == ['run', 'list']:
                 log = root / 'gh.log'
                 env = {**os.environ, 'PATH': str(binary) + ':' + os.environ['PATH'],
                        'GH_TOKEN': 'fixture-not-a-credential', 'GITHUB_REPOSITORY': 'fixture/koi',
-                       'UPDATE_BASE': base, 'ACTION_UPDATES': json.dumps({KEY: NEW}),
+                       'UPDATE_APP_SLUG': 'fixture', 'UPDATE_BASE': base, 'ACTION_UPDATES': json.dumps({KEY: NEW}),
                        'RUNNER_TEMP': directory, 'GH_LOG': str(log), 'MODE': mode, 'REMOTE_SHA': remote_sha}
                 result = subprocess.run(['bash', str(root / 'scripts/publish-action-updates.sh')],
                                         cwd=root, env=env, capture_output=True, text=True)
@@ -165,9 +163,10 @@ elif args[:2] == ['run', 'list']:
                         self.assertTrue(any(call[:2] == ['pr', 'ready'] and '--undo' in call for call in calls))
                     else:
                         self.assertEqual(ready, [])
-                if mode in ('human', 'forged'):
+                if mode in ('human', 'forged', 'other-app'):
                     self.assertEqual(git('ls-remote', 'origin', 'refs/heads/chore/action-updates').split()[0], remote_sha)
-                    self.assertIn('human changes' if mode == 'human' else 'non-pin workflow changes', result.stderr)
+                    self.assertIn({'human': 'human changes', 'forged': 'non-pin workflow changes',
+                                   'other-app': 'another author'}[mode], result.stderr)
                 elif mode != 'refresh':
                     self.assertTrue(any(call[:2] == ['pr', 'create'] and '--draft' in call for call in calls))
 

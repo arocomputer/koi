@@ -6,12 +6,13 @@ cd "$(dirname "$0")/.."
 : "${GITHUB_REPOSITORY:?This publisher runs inside GitHub Actions}"
 : "${UPDATE_BASE:?Missing checked base commit}"
 if [[ -z "${GH_TOKEN:-}" ]]; then
-  echo 'Set WORKFLOW_UPDATES_TOKEN: a fine-grained token for this repository with Contents, Workflows and Pull requests write, plus Actions read. See docs/ci.md.' >&2
+  echo 'Action update publishing is not configured; contact the repository maintainer.' >&2
   exit 1
 fi
 branch=chore/action-updates
 remote_ref="refs/heads/$branch"
-actor=$(gh api user --jq .login)
+: "${UPDATE_APP_SLUG:?Missing publishing App identity}"
+[[ "$UPDATE_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo 'Invalid App identity.' >&2; exit 1; }
 gh auth setup-git
 
 # Inspect ownership before touching an existing automation branch or PR.
@@ -29,7 +30,7 @@ if [[ "$pr_count" -gt 1 ]] || [[ "$pr_count" -eq 0 && -n "$remote_sha" ]]; then
   exit 1
 fi
 if [[ -n "$pr_number" ]]; then
-  [[ "$pr_author" == "$actor" ]] || {
+  [[ "$pr_author" == "$UPDATE_APP_SLUG[bot]" || "$pr_author" == "app/$UPDATE_APP_SLUG" ]] || {
     echo 'Update PR belongs to another author; refusing to replace it.' >&2; exit 1;
   }
   [[ -n "$remote_sha" && "$pr_head" == "$remote_sha" ]] || {
@@ -83,7 +84,7 @@ else
   gh pr edit "$pr_number" --repo "$GITHUB_REPOSITORY" --body-file "$body"
 fi
 
-# The PAT-created PR already triggers CI. Watch that merge test, avoiding a second full build.
+# The App-created PR already triggers CI. Watch that merge test, avoiding a second full build.
 run_id=''
 for _ in $(seq 1 30); do
   run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch "$branch" --event pull_request \
@@ -93,7 +94,7 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 [[ -n "$run_id" ]] || { echo 'No PR CI run found for this commit; leaving the PR draft.' >&2; exit 1; }
-# REST polling supports fine-grained PATs; gh run watch does not.
+# Poll the run for this exact commit using the installation token.
 ci_state=''
 for _ in $(seq 1 300); do
   read -r checked_sha ci_state ci_conclusion < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
