@@ -50,7 +50,7 @@ is `com.fschrhunt.koid`; its config, layout, server log and socket live under
 benchmarks and Linux cross-compilation are separate. `./x test FILTER` runs
 only matching Swift tests, and `./x test-core FILTER` runs matching native
 tests after fetching the pinned engine source. `./x test-app` runs the hosted
-Swift subset in release mode, including selected real-server/session checks.
+Swift subset in debug mode, including selected real-server/session checks.
 All use the same private roots, checkout lock and cleanup. `./x bundle`
 validates both server targets and assembles the production release app.
 Each invocation owns a short temporary root and exports its own `KOI_DIR`,
@@ -135,7 +135,7 @@ python3 tests/scripts/buildProvenanceTests.py
 ```
 
 The [CI workflow](.github/workflows/ci.yml) runs portable checks before
-starting one Mac job. PRs select core tests, optimized Swift tests and
+starting one Mac job. PRs select core tests, Swift tests and
 packaging independently from the complete diff. Swift/test-only edits do not
 cross-compile Linux or assemble a bundle. Resource/packaging changes select
 bundling; core/build/workflow and unknown inputs select everything. Main pushes select changed inputs and package Swift source changes;

@@ -18,7 +18,7 @@
 #   koid test --filter REGEX  focused Swift tests
 #   koid test --core [FILTER] focused core tests
 #   koid test --bench       Swift benchmarks
-#   koid test --headless [--release]  hosted Swift subset
+#   koid test --headless    hosted Swift subset
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -83,18 +83,16 @@ case "${1:-}" in
   test)
     # All modes share the checkout lock, private paths and fixture cleanup.
     test_filter=
-    test_release=0
     case "$#:${2:-}:${3:-}" in
       1::) test_mode=full ;;
       2:--headless:) test_mode=headless ;;
-      3:--headless:--release) test_mode=headless; test_release=1 ;;
       2:--bench:) test_mode=bench ;;
       2:--core:) test_mode=core ;;
       3:--core:*|3:--filter:*)
         case "$3" in ''|-*) echo 'koid: filter must be nonempty and cannot start with -' >&2; exit 2 ;; esac
         test_filter=$3
         if [ "$2" = --core ]; then test_mode=core; else test_mode=filter; fi ;;
-      *) echo 'usage: scripts/koid test [--filter REGEX | --core [FILTER] | --bench | --headless [--release]]' >&2; exit 2 ;;
+      *) echo 'usage: scripts/koid test [--filter REGEX | --core [FILTER] | --bench | --headless]' >&2; exit 2 ;;
     esac
     # Keep fixture socket paths short enough to avoid the shared /tmp fallback.
     test_root=$(mktemp -d /tmp/koi-tests-XXXXXXXX)
@@ -141,9 +139,9 @@ PY
     mkdir -p "$TMPDIR" "$KOI_DIR"
     # Serialize the entire pipeline for this checkout, including compilation
     # against shared build outputs. The OS releases the lock on process exit.
-    python3 - "$root" "$test_root/koi" "${KOI_SERVER_BIN:-}" "$test_mode" "$test_filter" "$test_release" <<'PY'
+    python3 - "$root" "$test_root/koi" "${KOI_SERVER_BIN:-}" "$test_mode" "$test_filter" <<'PY'
 import fcntl, hashlib, os, shutil, subprocess, sys
-root, snapshot, selected, mode, test_filter, release = sys.argv[1:]
+root, snapshot, selected, mode, test_filter = sys.argv[1:]
 key = hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:24]
 lock = f'/tmp/koi-test-build-{os.getuid()}-{key}.lock'
 fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -179,7 +177,7 @@ with os.fdopen(fd, 'r+') as guard:
     elif mode == 'full':
         commands = [zig, swift + ['--skip', benchmarks]]
     elif mode == 'headless':
-        commands = [swift + (['-c', 'release'] if release == '1' else []) + ['--filter', suites]]
+        commands = [swift + ['--filter', suites]]
     else:
         commands = [swift + ['--filter', benchmarks if mode == 'bench' else test_filter]]
     for command in commands:

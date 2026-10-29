@@ -14,7 +14,7 @@ usage: ./x [command]
   test [FILTER] Full correctness suite or focused Swift tests (Mac)
   test-core [FILTER] Isolated core tests; optional Zig test-name filter
   bench        Isolated Swift benchmarks (Mac with Metal)
-  test-app     Hosted Swift subset in release mode (Mac)
+  test-app     Hosted Swift subset with isolated fixtures (Mac)
   bundle       Release bundle and signature verification; never installs
   help         Show this help
 EOF
@@ -48,7 +48,7 @@ case "$task" in
     ;;
   deps) exec python3 scripts/update-actions.py plan ;;
   bench) exec scripts/koid test --bench ;;
-  test-app) exec scripts/koid test --headless --release ;;
+  test-app) exec scripts/koid test --headless ;;
   bundle)
     scripts/bundle.sh
     codesign --verify --deep --strict "${KOI_BUNDLE_OUTPUT:-$PWD/build/Koi.app}"

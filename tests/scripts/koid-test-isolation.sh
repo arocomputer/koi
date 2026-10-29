@@ -77,8 +77,8 @@ cat > "$fixture/bin/swift" <<'MOCK'
 printf '%s\n' "$*" > "$RECORDS/$RUN.swift-args"
 case "$RUN" in
   headless)
-    [ "$#" = 7 ] && [ "$1 $2 $3 $4 $5 $6" = 'test --jobs 2 -c release --filter' ] || exit 1
-    case "$7" in *ProgramsTests*ClipboardTests*paneOutlivesItsClient*treeCommandsRoundTripThroughTheRealServer*stdioRelayCarriesTheProtocol*offerFromTheServerOpensALinkForItsSecretOnly*streamKeepsItsLinkAlive*) ;; *) exit 1 ;; esac ;;
+    [ "$#" = 5 ] && [ "$1 $2 $3 $4" = 'test --jobs 2 --filter' ] || exit 1
+    case "$5" in *ProgramsTests*ClipboardTests*paneOutlivesItsClient*treeCommandsRoundTripThroughTheRealServer*stdioRelayCarriesTheProtocol*offerFromTheServerOpensALinkForItsSecretOnly*streamKeepsItsLinkAlive*) ;; *) exit 1 ;; esac ;;
   focused) [ "$*" = 'test --jobs 2 --filter ConfigTests|WireTests' ] || exit 1 ;;
   bench) [ "$*" = 'test --jobs 2 --filter engineWriteAndFrameAssembly|keystrokeEchoRoundTrip' ] || exit 1 ;;
   *) [ "$*" = 'test --jobs 2 --skip engineWriteAndFrameAssembly|keystrokeEchoRoundTrip' ] || exit 1 ;;
@@ -243,7 +243,7 @@ assert_stopped "$RECORDS/alternate.zig.pid"
 assert_stopped "$RECORDS/alternate.swift.pid"
 # Hosted Swift uses the same isolated server/cleanup without rerunning Zig tests.
 touch "$RECORDS/headless.release"
-RUN=headless "$fixture/repo/scripts/koid" test --headless --release
+RUN=headless "$fixture/repo/scripts/koid" test --headless
 [ ! -e "$RECORDS/headless.zig" ]
 [ "$(cat "$RECORDS/headless.core-args")" = --mac-only ]
 [ "$(cat "$RECORDS/headless.version")" = '# built for headless' ]
@@ -266,7 +266,7 @@ RUN=core KOI_SERVER_BIN="$fixture/alternate" "$fixture/repo/scripts/koid" test -
 [ "$(cat "$RECORDS/core.ghostty-args")" = --source-only ]
 [ ! -e "$RECORDS/core.core-args" ] && [ ! -e "$RECORDS/core.swift" ]
 [ ! -e "$(cat "$RECORDS/core.root")" ]
-for args in '--filter' '--core --release' '--bench --release' '--headless --release extra' '--release'; do
+for args in '--filter' '--core --release' '--bench --release' '--headless --release' '--release'; do
   # Deliberate word splitting tests separate invalid arguments.
   if RUN=invalid "$fixture/repo/scripts/koid" test $args >/dev/null 2>&1; then
     echo "invalid arguments accepted: $args" >&2; exit 1

@@ -4,7 +4,7 @@ Koi borrows the shared `./x` command interface from
 [ask](https://github.com/arocomputer/ask/blob/main/x) and
 [aft](https://github.com/arocomputer/aft/blob/main/x). Commands remain small
 wrappers around Koi's existing build and isolated test scripts. `./x check`
-runs all local checks; it requires an Apple silicon Mac with Metal. Hosted
+runs all local correctness checks; it requires an Apple silicon Mac with Metal. Hosted
 Actions uses the individual commands described below.
 
 ## Runners
@@ -55,7 +55,7 @@ requests. It has three jobs:
 | Job | Work |
 | --- | --- |
 | Portable checks | Complete PR diff, script regressions and catalog validation on Linux |
-| Native checks | Selected core tests, optimized Swift tests and/or packaging on one Mac |
+| Native checks | Selected core tests, Swift tests and/or packaging on one Mac |
 | CI required | Require the portable job and every selected native step to pass |
 
 Portable checks finish before a Mac is requested. The Mac steps share one
@@ -79,18 +79,17 @@ and provenance; review runtime artwork on a Mac when changing it.
 The isolation regression is a portable-test exception: edits also select
 the Mac lane to verify its Darwin process-ownership path.
 
-Hosted Swift tests run in release mode through the isolated runner. They
+Hosted Swift tests run in debug mode through the isolated runner. They
 include existing private-server checks for session persistence, command/watch
 round trips, the stdio relay, link authentication and link lifetime. They
 exclude benchmarks and the rest of the serialized UI/GPU fixtures; use
 focused local tests for those changes. The entire test target still compiles.
 
 Routine Swift PRs do not cross-compile a Linux server or assemble a signed
-bundle. Release-mode tests exercise optimized Swift; production packaging
-still runs for relevant changes and on main. SwiftPM can recompile when
-changing testability flags, so release tests do not promise a reusable
-production binary. Linux is cross-compiled for packaging, not executed as a
-native Linux test lane.
+bundle. Production packaging runs for relevant changes and on main. Tests
+use development resource lookup, which production release builds intentionally
+omit. Linux is cross-compiled for packaging, not executed as a native Linux
+test lane.
 
 The final gate checks both the Mac job result and each selected step's
 outcome. A green job with a skipped selected test/bundle step fails the gate.

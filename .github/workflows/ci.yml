@@ -27,7 +27,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Select checks from the complete PR diff
+      - name: Select checks from changed inputs
         id: select
         run: python3 scripts/ci.py select
       - name: Script regressions
