@@ -114,7 +114,7 @@ integrity. Read the figures with:
 swift test --filter "engineWriteAndFrameAssembly|keystrokeEchoRoundTrip" 2>&1 | grep -E "engine|frame|snapshot|keystroke"
 ```
 
-After compiling the full test suite, measure a real Mac-to-Linux link with:
+After compiling the full test suite, measure a real Mac-to-x86_64-Linux link with:
 
 ```sh
 python3 scripts/benchmark-remote.py --ssh-host my-linux-host

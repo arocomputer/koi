@@ -86,7 +86,7 @@ class ReleaseTests(unittest.TestCase):
 
     def run_release(self, mode):
         """Capture diagnostics without displaying signing arguments."""
-        args = ['bash', str(ROOT / 'scripts/release.sh'), mode]
+        args = [str(ROOT / 'scripts/release.sh'), mode]
         if mode == 'sign': args += [str(self.app), str(self.base / 'dist')]
         return subprocess.run(args, env=self.env, capture_output=True, text=True)
 
