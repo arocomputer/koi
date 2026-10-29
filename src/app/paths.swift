@@ -100,25 +100,38 @@ enum Paths {
     /// never talks to a server that speaks another one.
     static var socket: String { runtime.appendingPathComponent(socketName).path }
 
-    /// Create or verify a user-owned 0700 directory without following symlinks.
-    /// Ancestors must be root/user-owned and not writable by others, except
+    /// Create or verify a user-owned 0700 directory; the walk follows no symlinks
+    /// after resolving existing ancestors. Ancestors must be root/user-owned and not writable by others, except
     /// root-owned sticky directories. Existing permissions are never repaired.
     /// Call before placing a socket or SSH ControlPath inside the directory.
     /// Pass create: false for deferred writes that must not recreate removed paths.
     static func ensurePrivateDirectory(_ directory: URL, create: Bool = true) throws {
         let path = directory.path
         guard path.hasPrefix("/"), !path.utf8.contains(0) else { throw CocoaError(.fileWriteNoPermission) }
-        // Only the standard root-managed Darwin aliases bypass O_NOFOLLOW.
-        let aliased = path.hasPrefix("/tmp/") || path.hasPrefix("/var/")
-        let actual = aliased ? "/private" + path : path
-        let parts = actual.split(separator: "/")
-        guard !parts.isEmpty else { throw CocoaError(.fileWriteNoPermission) }
+        // Resolve symlinks among the existing ancestors (`/tmp`, `/var`, a
+        // relocated home), as the server does; the leaf itself is never followed.
+        var components = path.split(separator: "/").map(String.init)
+        guard let leaf = components.popLast() else { throw CocoaError(.fileWriteNoPermission) }
+        var missing: [String] = []
+        var resolved: String?
+        while resolved == nil {
+            let prefix = "/" + components.joined(separator: "/")
+            if let real = realpath(prefix, nil) {
+                resolved = String(cString: real)
+                free(real)
+            } else if errno == ENOENT, let last = components.popLast() {
+                missing.insert(last, at: 0)
+            } else {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        }
+        let parts = (resolved!.split(separator: "/").map(String.init) + missing + [leaf])
         var fd = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard fd >= 0 else { throw POSIXError(.EACCES) }
         defer { Darwin.close(fd) }
         for (index, part) in parts.enumerated() {
             guard part != ".", part != ".." else { throw CocoaError(.fileWriteNoPermission) }
-            let name = String(part)
+            let name = part
             if create, mkdirat(fd, name, 0o700) != 0, errno != EEXIST { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EACCES) }
             let next = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard next >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EACCES) }

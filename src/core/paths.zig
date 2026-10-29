@@ -93,17 +93,22 @@ test "path allocation failures release every owned string" {
 /// Walk without following symlinks. Ancestors must be owned by root or this user
 /// and not writable by others, except root-owned sticky directories such as /tmp.
 /// Existing leaf directories must already be private; never repair permissions.
+/// Symlinks among the existing ancestors (`/home` on an image-based system,
+/// `/tmp` on macOS) are resolved first, and every resolved directory is checked.
 pub fn ensurePrivateDir(path: []const u8) !void {
     if (path.len == 0 or path[0] != '/' or std.mem.indexOfScalar(u8, path, 0) != null)
         return error.UnsafeDirectory;
-    // Darwin's system aliases are root-managed; all subsequent components use O_NOFOLLOW.
-    const aliased = builtin.os.tag == .macos and
-        (std.mem.startsWith(u8, path, "/tmp/") or std.mem.startsWith(u8, path, "/var/"));
-    const actual = if (aliased) path[1..] else path;
-    var fd = sys.c.open(if (aliased) "/private" else "/", sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_CLOEXEC);
+    const trimmed = std.mem.trimEnd(u8, path, "/");
+    const slash = std.mem.lastIndexOfScalar(u8, trimmed, '/') orelse return error.UnsafeDirectory;
+    const leaf = trimmed[slash + 1 ..];
+    var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const parent = try resolveExisting(if (slash == 0) "/" else trimmed[0..slash], &resolved_buf);
+    var full_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full = std.fmt.bufPrint(&full_buf, "{s}/{s}", .{ parent, leaf }) catch return error.PathTooLong;
+    var fd = sys.c.open("/", sys.c.O_RDONLY | sys.c.O_DIRECTORY | sys.c.O_CLOEXEC);
     if (fd < 0) return error.UnsafeDirectory;
     defer _ = sys.c.close(fd);
-    var parts = std.mem.tokenizeScalar(u8, actual, '/');
+    var parts = std.mem.tokenizeScalar(u8, full, '/');
     var found = false;
     while (parts.next()) |part| {
         found = true;
@@ -116,15 +121,50 @@ pub fn ensurePrivateDir(path: []const u8) !void {
         _ = sys.c.close(fd);
         fd = next;
         const st = try sys.directoryInfo(fd);
-        const leaf = parts.peek() == null;
-        if (leaf) {
+        if (parts.peek() == null) {
             if (st.uid != sys.c.getuid() or st.mode & 0o777 != 0o700) return error.UnsafeDirectory;
-        } else {
-            if (st.uid != 0 and st.uid != sys.c.getuid()) return error.UnsafeDirectory;
-            if (st.mode & 0o022 != 0 and !(st.uid == 0 and st.mode & 0o1000 != 0)) return error.UnsafeDirectory;
+        } else if (!safeAncestor(st.uid, st.gid, st.mode)) {
+            return error.UnsafeDirectory;
         }
     }
     if (!found) return error.UnsafeDirectory;
+}
+
+/// Owned by root or this user, and writable by no one else: other users only
+/// through a root-owned sticky directory such as /tmp. On Linux a directory
+/// this user owns may also be writable by the user's own primary group, which
+/// `umask 002` systems give every new directory (user private groups); macOS
+/// users share `staff`, so there it still counts as writable by others.
+fn safeAncestor(uid: c.uid_t, gid: c.gid_t, mode: u32) bool {
+    const me = sys.c.getuid();
+    if (uid != 0 and uid != me) return false;
+    const sticky_root = uid == 0 and mode & 0o1000 != 0;
+    if (mode & 0o002 != 0 and !sticky_root) return false;
+    if (mode & 0o020 != 0 and !sticky_root) {
+        const private_group = builtin.os.tag == .linux and uid == me and gid == sys.c.getgid();
+        if (!private_group) return false;
+    }
+    return true;
+}
+
+/// The longest existing prefix of `path` with its symlinks resolved, followed
+/// by the components that do not exist yet.
+fn resolveExisting(path: []const u8, out: *[std.fs.max_path_bytes]u8) ![]const u8 {
+    var prefix = path;
+    while (true) {
+        var zbuf: [std.fs.max_path_bytes]u8 = undefined;
+        const z = std.fmt.bufPrintSentinel(&zbuf, "{s}", .{prefix}, 0) catch return error.PathTooLong;
+        var real: [std.fs.max_path_bytes]u8 = undefined;
+        if (sys.c.realpath(z.ptr, &real) != null) {
+            const head = std.mem.sliceTo(&real, 0);
+            const rest = path[prefix.len..];
+            const joined = std.fmt.bufPrint(out, "{s}{s}", .{ if (head.len == 1) "" else head, rest }) catch return error.PathTooLong;
+            return if (joined.len == 0) "/" else joined;
+        }
+        if (sys.errno() != sys.c.ENOENT) return error.UnsafeDirectory;
+        const slash = std.mem.lastIndexOfScalar(u8, prefix, '/') orelse return error.UnsafeDirectory;
+        prefix = if (slash == 0) "/" else prefix[0..slash];
+    }
 }
 
 test "private directories reject public modes and symlinks without changing them" {
@@ -148,8 +188,24 @@ test "private directories reject public modes and symlinks without changing them
     try std.testing.expectEqual(0, sys.c.symlink(child, link));
     defer _ = sys.c.unlink(link);
     try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(link));
+    // A symlinked ancestor is followed, and its target is checked like any other.
     var nested_buf: [256]u8 = undefined;
     const nested = try std.fmt.bufPrintSentinel(&nested_buf, "{s}/nested", .{link}, 0);
+    try ensurePrivateDir(nested);
+    var nested_real_buf: [256]u8 = undefined;
+    const nested_real = try std.fmt.bufPrintSentinel(&nested_real_buf, "{s}/nested", .{child}, 0);
+    try std.testing.expectEqual(0, sys.c.rmdir(nested_real));
+    try std.testing.expectEqual(0, sys.c.chmod(child, 0o757));
     try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(nested));
+    // `umask 002` leaves new directories writable by the user's primary group,
+    // private on Linux and shared (`staff`) on macOS.
+    try std.testing.expectEqual(0, sys.c.chmod(child, 0o775));
+    if (builtin.os.tag == .linux) {
+        try ensurePrivateDir(nested);
+        try std.testing.expectEqual(0, sys.c.rmdir(nested_real));
+    } else {
+        try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir(nested));
+    }
+    try std.testing.expectEqual(0, sys.c.chmod(child, 0o755));
     try std.testing.expectError(error.UnsafeDirectory, ensurePrivateDir("/"));
 }

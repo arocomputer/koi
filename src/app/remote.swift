@@ -219,7 +219,9 @@ enum Remote {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         p.arguments = try sshOptions + ["-T", host, command]
-        let result = try runProcess(p, input: input)
+        // Uploading the server binary can take minutes on a slow uplink: allow
+        // 32 KB/s (about 256 kbit/s) for the input on top of the base deadline.
+        let result = try runProcess(p, input: input, timeout: 60 + Double(input?.count ?? 0) / 32_000)
         guard p.terminationStatus == 0 else {
             let message = String(decoding: result.errors, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw Failure(description: message.isEmpty ? "ssh \(host) failed" : message)

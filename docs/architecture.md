@@ -485,10 +485,12 @@ Long socket paths move the runtime directory to `/tmp/koi-<uid>`.
 The socket is what authorizes a client to read and drive panes, so its
 directory is the security boundary. The app and server create the state and
 runtime directories (and the SSH control directory) private to the user, and
-refuse to use one that is not: it must be owned by this user with mode 0700,
-reached without symlinks through ancestors owned by root or this user that no
-one else can write to (a root-owned sticky directory such as `/tmp` excepted).
-Existing permissions are never repaired. The runtime directory is never `/tmp`
+refuse to use one that is not: it must be owned by this user with mode 0700
+and not itself a symlink. Symlinks among its existing ancestors are resolved,
+and every resolved ancestor must be owned by root or this user and writable by
+no one else: a root-owned sticky directory such as `/tmp` is accepted, and on
+Linux so is a directory of this user's writable by their own primary group,
+which `umask 002` produces. Existing permissions are never repaired. The runtime directory is never `/tmp`
 itself, and the server also accepts a connection only from a peer running as
 the same user. A refusal appears as `cannot serve from …: UnsafeDirectory` in
 the server log.
