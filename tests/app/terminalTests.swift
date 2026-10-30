@@ -68,7 +68,7 @@ import Testing
 }
 
 /// The empty-shell cursor is held back only on the first snapshot, until the
-/// shell speaks or the user types, however slowly the shell starts; a
+/// shell draws or the user types, however slowly the shell starts; a
 /// restored screen with content is never held back.
 @MainActor @Test func emptyShellCursorWaitsForTheShellOrTheUser() async throws {
     let view = TerminalView(pane: "cursor-test", at: .local)
@@ -77,10 +77,16 @@ import Testing
     #expect(view.cursorSuppressed)
     try await Task.sleep(for: .milliseconds(200))
     #expect(view.cursorSuppressed, "a slow shell does not get a cursor on an empty screen")
+    view.writeOutput(Array("\u{1B}]133;A\u{07}".utf8)[...])
+    #expect(view.cursorSuppressed, "prompt markers alone do not reveal the cursor")
+    view.writeOutput(Array("❯ ".utf8)[...])
+    #expect(!view.cursorSuppressed, "visible prompt output reveals the cursor")
+    let inputView = TerminalView(pane: "input-test", at: .local)
+    #expect(inputView.restoreTerminal(from: blank))
     let key = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 1, windowNumber: 0,
                                             context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
-    view.keyDown(with: key)
-    #expect(!view.cursorSuppressed)
+    inputView.keyDown(with: key)
+    #expect(!inputView.cursorSuppressed)
     // A later snapshot (a reconnect) is never suppressed.
     #expect(view.restoreTerminal(from: blank))
     #expect(!view.cursorSuppressed)
@@ -93,6 +99,130 @@ import Testing
 }
 
 @MainActor extension SessionTests {
+    /// Real zsh clear output can be split anywhere, including its temporary
+    /// percent marker. Only presentation waits; the mirror keeps parsing.
+    @Test func reportedClearWaitsForDelayedPromptAcrossOutputSplits() throws {
+        let view = TerminalView(pane: "clear", at: .local)
+        let source = VTTerminal(cols: 20, rows: 3)
+        source.write(Array("\u{1b}]133;A\u{7}$ clear\u{1b}]133;B\u{7}\r\n".utf8))
+        let snapshot = source.snapshot()
+        let output = Array(("\u{1b}]133;C\u{7}\u{1b}]7502;cmd=clear\u{7}"
+            + "\u{1b}[3J\u{1b}[H\u{1b}[2J"
+            + "\u{1b}[1m\u{1b}[7m%\u{1b}[27m\u{1b}[1m\u{1b}[0m" + String(repeating: " ", count: 19) + "\r \r").utf8)
+        for split in 0...output.count {
+            #expect(view.restoreTerminal(from: snapshot))
+            view.writeOutput(output[..<split])
+            view.writeOutput(output[split...])
+            #expect(view.cursorSuppressed, "split \(split) still waits on the blank screen")
+            let terminal = try #require(view.terminal)
+            #expect(terminal.cursor.x == 0 && terminal.cursor.y == 0)
+            #expect((0..<terminal.size.rows).allSatisfy { row in
+                terminal.viewportRow(row).allSatisfy { $0.isEmpty || $0 == " " }
+            })
+            #expect(terminal.cursorVisible, "suppression does not send DECTCEM to the engine")
+            view.writeOutput(Array("\u{1b}]133;D;0\u{7}\u{1b}]133;A\u{7}".utf8)[...])
+            #expect(view.cursorSuppressed, "prompt markers alone are not a prompt")
+            view.writeOutput(Array("❯ ".utf8)[...])
+            #expect(!view.cursorSuppressed)
+            #expect(terminal.text(x: 0, y: 0) == "❯")
+        }
+    }
+
+    /// Erases, home positioning and semantic prompts are valid interactive
+    /// program output; they cannot establish ownership by the clear command.
+    @Test func ordinaryInteractiveClearsKeepTheirCursor() {
+        let view = TerminalView(pane: "interactive-clear", at: .local)
+        let source = VTTerminal(cols: 20, rows: 3)
+        source.write(Array("ready".utf8))
+        let snapshot = source.snapshot()
+        for prefix in ["", "\u{1b}]133;A\u{7}", "\u{1b}]7502;cmd=vim\u{7}",
+                       "\u{1b}]7502;cmd=clear\u{7}", "\u{1b}]133;C\u{7}\u{1b}]7502;cmd=clearer\u{7}",
+                       "\u{1b}]133;C\u{7}\u{1b}]7502;cmd=clear\u{18}",
+                       "\u{1b}]133;C\u{7}\u{1b}]0;7502;cmd=clear\u{7}"] {
+            #expect(view.restoreTerminal(from: snapshot))
+            view.writeOutput(Array((prefix + "\u{1b}[H\u{1b}[2J").utf8)[...])
+            #expect(!view.cursorSuppressed)
+        }
+    }
+
+    /// Input-ready prompts, program transitions and lifecycle changes end a
+    /// clear grace even if the next screen has no printable characters.
+    @Test func clearCursorGraceYieldsToInputProgramsAndSnapshots() throws {
+        let view = TerminalView(pane: "clear-release", at: .local)
+        let source = VTTerminal(cols: 20, rows: 3)
+        source.write(Array("ready".utf8))
+        let snapshot = source.snapshot()
+        let clear = Array("\u{1b}]133;C\u{7}\u{1b}]7502;cmd=clear\u{7}\u{1b}[H\u{1b}[2J".utf8)
+        for output in ["\u{1b}]133;A\u{7}\u{1b}]133;B\u{7}", "\u{1b}]133;C\u{7}",
+                       "\u{1b}]7502;cmd=less\u{7}", "\u{1b}[?1049h", "\u{1b}[?1000h", "\u{1b}c"] {
+            #expect(view.restoreTerminal(from: snapshot))
+            view.writeOutput(clear[...])
+            #expect(view.cursorSuppressed)
+            view.writeOutput(Array(output.utf8)[...])
+            #expect(!view.cursorSuppressed)
+        }
+        view.writeOutput(clear[...])
+        let key = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 1,
+                                               windowNumber: 0, context: nil, characters: "a",
+                                               charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
+        view.keyDown(with: key)
+        #expect(!view.cursorSuppressed)
+        view.writeOutput(clear[...])
+        #expect(view.restoreTerminal(from: VTTerminal(cols: 20, rows: 3).snapshot()))
+        #expect(!view.cursorSuppressed, "replacement snapshots cancel any old grace")
+        view.writeOutput(clear[...])
+        view.detach()
+        #expect(!view.cursorSuppressed)
+    }
+
+    /// The presentation hold must not disturb parser continuation, DECTCEM,
+    /// cursor style or VTTerminal's existing clipboard callback/userdata.
+    @Test func clearCursorGracePreservesTerminalStateAndEffects() throws {
+        let view = TerminalView(pane: "clear-semantics", at: .local)
+        let source = VTTerminal(cols: 20, rows: 3)
+        source.write(Array("history\r\nready".utf8))
+        #expect(view.restoreTerminal(from: source.snapshot()))
+        let terminal = try #require(view.terminal)
+        var copied: [String] = []
+        terminal.onClipboardWrite = { copied.append($0); return true }
+        let output = Array(("\u{1b}]133;C\u{7}\u{1b}]7502;cmd=clear\u{7}"
+            + "\u{1b}[H\u{1b}[2J\u{1b}[?25l\u{1b}[5 q\u{1b}]52;c;b2").utf8)
+        source.write(output)
+        view.writeOutput(output[...])
+        #expect(view.cursorSuppressed)
+        #expect(terminal.snapshot() == source.snapshot())
+        let end = Array("s=\u{7}\u{1b}]133;A\u{7}$ \u{1b}]133;B\u{7}".utf8)
+        source.write(end)
+        view.writeOutput(end[...])
+        #expect(!view.cursorSuppressed)
+        #expect(!terminal.cursorVisible, "the program's hidden cursor stays hidden after the grace")
+        #expect(copied == ["ok"])
+        #expect(terminal.snapshot() == source.snapshot())
+    }
+
+    /// Trickle control output and duplicate reports cannot postpone the fixed
+    /// deadline; a genuine new command may start another grace afterward.
+    @Test func clearCursorGraceHasAFixedDeadline() async throws {
+        let view = TerminalView(pane: "clear-deadline", at: .local)
+        let source = VTTerminal(cols: 20, rows: 3)
+        source.write(Array("ready".utf8))
+        #expect(view.restoreTerminal(from: source.snapshot()))
+        let clear = Array("\u{1b}]133;C\u{7}\u{1b}]7502;cmd=clear\u{7}\u{1b}[H\u{1b}[2J".utf8)
+        view.writeOutput(clear[...])
+        #expect(view.cursorSuppressed)
+        let deadline = ContinuousClock.now + .nanoseconds(Int64(TerminalView.cursorGrace)) + .milliseconds(100)
+        while ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+            view.writeOutput(Array("\u{1b}]133;A\u{7}\u{1b}]7502;cmd=clear\u{7}\u{1b}[0m".utf8)[...])
+        }
+        #expect(!view.cursorSuppressed, "control output does not restart the deadline")
+        view.writeOutput(clear[...])
+        #expect(view.cursorSuppressed)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(view.cursorSuppressed)
+        view.detach()
+    }
+
     /// Native AX text getters expose history, viewport, UTF-16 navigation and
     /// the cursor after trailing spaces, and invalidate on snapshot replacement.
     @Test func accessibilityReadsTerminalHistoryAndCursor() throws {

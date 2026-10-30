@@ -347,4 +347,49 @@ import Testing
         p.typed("a", in: t)
         #expect(!p.isActive)
     }
+
+    /// Shell metadata can lag a command that disables echo; it must not
+    /// reveal input or a predicted caret after Enter.
+    @Test(arguments: [false, true])
+    func shellDoesNotPredictHiddenInputAfterEnter(programChanges: Bool) {
+        let t = prompt()
+        var p = echoingPrediction(in: t)
+        p.typed("x", in: t)
+        p.entered()
+        t.write(Array("\r\nPassword: ".utf8))
+        if programChanges { p.setProgram("custom-command") }
+        p.setProgram("")
+        for text in ["a", "b"] {
+            p.typed(text, in: t)
+            p.reconcile(with: t)
+            #expect(p.overlay == Prediction.Overlay())
+        }
+        p.backspace(in: t)
+        p.typed("c", in: t)
+        #expect(p.overlay == Prediction.Overlay())
+    }
+
+    /// A new shell prompt alone does not restore confidence; a matching
+    /// echo does, and the next Enter must invalidate it again.
+    @Test func shellPredictionResumesOnlyAfterMatchingEcho() {
+        let t = prompt()
+        var p = echoingPrediction(in: t)
+        p.entered()
+        t.write(Array("\r\n$ ".utf8))
+        p.reconcile(with: t)
+        p.typed("a", in: t)
+        p.typed("b", in: t)
+        p.reconcile(with: t)
+        #expect(p.overlay == Prediction.Overlay())
+
+        t.write(Array("ab".utf8))
+        p.reconcile(with: t)
+        p.typed("c", in: t)
+        #expect(p.overlay.cells.map(\.text) == ["c"])
+        #expect(p.overlay.caret?.x == 5)
+
+        p.entered()
+        p.typed("d", in: t)
+        #expect(p.overlay == Prediction.Overlay())
+    }
 }

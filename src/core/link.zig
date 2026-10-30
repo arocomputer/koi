@@ -219,15 +219,15 @@ pub const Link = struct {
             if (ai.ai_addrlen > @sizeOf(c.struct_sockaddr_storage)) continue;
             const fd = socket(ai.ai_family) catch continue;
             try self.startAttempt(fd, @as([*]const u8, @ptrCast(ai.ai_addr))[0..ai.ai_addrlen]);
-            const deadline = sys.nowMillis() + 2500;
-            while (sys.nowMillis() < deadline) {
+            const deadline = sys.elapsedMillis() + 2500;
+            while (sys.elapsedMillis() < deadline) {
                 self.mutex.lockUncancelable(self.runtime.io());
                 const generation = self.pong_generation;
-                self.sendPacket(&pingFrame(.ping, sys.nowMicros()));
-                const until = @min(deadline, sys.nowMillis() + 400);
-                while (!self.closed and self.pong_generation == generation and sys.nowMillis() < until) {
+                self.sendPacket(&pingFrame(.ping, sys.monotonicMicros()));
+                const until = @min(deadline, sys.elapsedMillis() + 400);
+                while (!self.closed and self.pong_generation == generation and sys.elapsedMillis() < until) {
                     self.changed.waitTimeout(self.runtime.io(), &self.mutex, .{ .duration = .{
-                        .raw = .fromMilliseconds(@max(until - sys.nowMillis(), 1)),
+                        .raw = .fromMilliseconds(@max(until - sys.elapsedMillis(), 1)),
                         .clock = .awake,
                     } }) catch {};
                 }
@@ -253,7 +253,7 @@ pub const Link = struct {
         self.peer = std.mem.zeroes(c.struct_sockaddr_storage);
         @memcpy(std.mem.asBytes(&self.peer)[0..address.len], address);
         self.peer_len = @intCast(address.len);
-        self.last_received = sys.nowMillis();
+        self.last_received = sys.elapsedMillis();
         try self.start();
     }
 
@@ -326,8 +326,8 @@ pub const Link = struct {
             .seal_key = if (is_server) s2c else c2s,
             .open_key = if (is_server) c2s else s2c,
             .next_stream_id = if (is_server) 2 else 1,
-            .last_received = sys.nowMillis(),
-            .last_sent = sys.nowMillis(),
+            .last_received = sys.elapsedMillis(),
+            .last_sent = sys.elapsedMillis(),
         };
         return self;
     }
@@ -488,7 +488,7 @@ pub const Link = struct {
         } else self.recv_seen |= @as(u64, 1) << @intCast(self.recv_max - number);
         self.peer = from;
         self.peer_len = length;
-        self.last_received = sys.nowMillis();
+        self.last_received = sys.elapsedMillis();
         var i: usize = 0;
         while (i < body.len) {
             const kind = std.enums.fromInt(FrameKind, body[i]) orelse return;
@@ -519,7 +519,7 @@ pub const Link = struct {
                 },
                 .pong => {
                     if (body.len - i < 8) return;
-                    const elapsed = sys.nowMicros() -% get(u64, body, i);
+                    const elapsed = sys.monotonicMicros() -% get(u64, body, i);
                     self.sample(@as(f64, @floatFromInt(elapsed)) / 1_000_000);
                     self.pong_generation +%= 1;
                     self.changed.broadcast(self.runtime.io());
@@ -602,7 +602,7 @@ pub const Link = struct {
                 const first = stream.unacked.orderedRemove(0);
                 acked += first.data.len;
                 self.in_flight -= first.data.len;
-                if (first.retransmits == 0) self.sample(@as(f64, @floatFromInt(@as(i64, @intCast(sys.nowMicros())) - first.sent_at)) / 1_000_000);
+                if (first.retransmits == 0) self.sample(@as(f64, @floatFromInt(@as(i64, @intCast(sys.monotonicMicros())) - first.sent_at)) / 1_000_000);
                 self.gpa.free(first.data);
             }
             if (acked > 0) self.cwnd += if (self.cwnd < self.ssthresh) @min(acked, mss) else @max(mss * acked / self.cwnd, 1);
@@ -669,7 +669,7 @@ pub const Link = struct {
                 const fin = stream.fin_queued and !stream.fin_sent and take == unsent.len;
                 if (take == 0 and !fin) continue;
                 const data = self.gpa.dupe(u8, unsent[0..take]) catch return;
-                const seg = Segment{ .offset = stream.send_offset, .data = data, .fin = fin, .sent_at = @intCast(sys.nowMicros()) };
+                const seg = Segment{ .offset = stream.send_offset, .data = data, .fin = fin, .sent_at = @intCast(sys.monotonicMicros()) };
                 const end = seg.end() catch {
                     self.gpa.free(data);
                     self.finish();
@@ -693,13 +693,13 @@ pub const Link = struct {
     /// Retransmits timed-out segments, probes closed windows, sends keepalives,
     /// and expires silent peers.
     fn tick(self: *Link) void {
-        const now = sys.nowMillis();
+        const now = sys.elapsedMillis();
         if (now - self.last_received >= 10_000) {
             self.finish();
             return;
         }
         const rto = std.math.clamp(self.srtt + 4 * self.rttvar, 0.05, 2);
-        const now_micros: i64 = @intCast(sys.nowMicros());
+        const now_micros: i64 = @intCast(sys.monotonicMicros());
         var lost = false;
         for (self.streams.items) |slot| {
             const stream = slot.stream orelse continue;
@@ -726,7 +726,7 @@ pub const Link = struct {
                 self.sendPacket(dataFrame(&frame, stream.id, .{ .offset = stream.send_offset, .data = &none, .fin = false, .sent_at = 0 }));
             }
         }
-        if (now - self.last_sent > 3000) self.sendPacket(&pingFrame(.ping, sys.nowMicros()));
+        if (now - self.last_sent > 3000) self.sendPacket(&pingFrame(.ping, sys.monotonicMicros()));
         self.pump();
         self.collect();
     }
@@ -734,7 +734,7 @@ pub const Link = struct {
     /// Retransmits an owned segment with a fresh packet number and timestamp.
     fn resend(self: *Link, stream: *Stream, i: usize) void {
         const seg = &stream.unacked.items[i];
-        seg.sent_at = @intCast(sys.nowMicros());
+        seg.sent_at = @intCast(sys.monotonicMicros());
         seg.retransmits +|= 1;
         var frame: [mss]u8 = undefined;
         self.sendPacket(dataFrame(&frame, stream.id, seg.*));
@@ -744,7 +744,7 @@ pub const Link = struct {
     fn sendPacket(self: *Link, body: []const u8) void {
         if (self.peer_len == 0) return;
         std.debug.assert(body.len <= mss);
-        self.last_sent = sys.nowMillis();
+        self.last_sent = sys.elapsedMillis();
         const source = std.Random.IoSource{ .io = self.runtime.io() };
         if (test_loss > 0 and source.interface().float(f64) < test_loss) return;
         // Never reuse a GCM nonce if a link exhausts its packet-number space.
@@ -1076,9 +1076,9 @@ const TestDeadline = struct {
 
     /// Closes both links after 22 seconds to wake every blocked test reader.
     fn run(self: *TestDeadline) void {
-        const deadline = sys.nowMillis() + 22_000;
+        const deadline = sys.elapsedMillis() + 22_000;
         while (!self.done.load(.acquire)) {
-            if (sys.nowMillis() >= deadline) {
+            if (sys.elapsedMillis() >= deadline) {
                 self.expired.store(true, .release);
                 self.client.close();
                 self.server.close();
@@ -1367,10 +1367,17 @@ fn testAccept(_: ?*anyopaque, _: *Stream) void {}
 
 test "silent peers expire on client and server links" {
     for ([_]bool{ false, true }) |is_server| {
+        const started: i64 = @intCast(sys.monotonicMillis());
         const link = try testLink(std.testing.allocator, is_server);
         defer link.free();
         const stream = try link.open();
-        link.last_received = sys.nowMillis() - 10_001;
+        // A freshly active peer must survive a tick in the same monotonic
+        // clock domain before we advance it beyond the silent-peer deadline.
+        const now: i64 = @intCast(sys.monotonicMillis());
+        try std.testing.expect(link.last_received >= started and link.last_received <= now);
+        link.tick();
+        try std.testing.expect(!link.closed);
+        link.last_received = sys.elapsedMillis() - 10_001;
         link.tick();
         try std.testing.expect(link.closed);
         var buf: [1]u8 = undefined;

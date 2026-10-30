@@ -46,6 +46,8 @@ final class VTTerminal {
     }
 
     deinit {
+        // Search owns native allocations and references into this grid.
+        if let search { ghostty_search_free(search) }
         ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, nil)
         ghostty_terminal_set(raw, GHOSTTY_TERMINAL_OPT_USERDATA, nil)
         ghostty_terminal_free(raw)

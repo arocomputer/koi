@@ -466,7 +466,8 @@ extension AppDelegate {
         }
     }
 
-    /// Shows the selected tab's panes, the focused one with the keyboard.
+    /// Shows the selected tab's panes, preserving editing within the focused
+    /// pane across metadata refreshes and focusing newly selected panes.
     func show(_ tab: Wire.TabInfo?) {
         let ws = workspace
         if actionsOwner != ObjectIdentifier(ws) {
@@ -482,7 +483,7 @@ extension AppDelegate {
                 dragEnded: { [weak self] id, t in self?.card.paneDragEnded(id, t) }
             )
         }
-        card.show(tab, focused: ws.focusedPane, zoomed: ws.zoomedPane) { id in
+        card.show(tab.map(ws.presentedTab), focused: ws.focusedPane, zoomed: ws.zoomedPane) { id in
             let v = ws.view(for: id)
             if v.fontSize != fontSize { v.fontSize = fontSize }
             return v
@@ -491,8 +492,12 @@ extension AppDelegate {
         // Pane updates arrive while a name field is open; its focus stays put.
         let editing = ws.renamingTab != nil || ws.renamingGroup != nil
         if let view = ws.selectedView {
-            if window.firstResponder !== view && !window.hasKoiPopup && !editing { window.makeFirstResponder(view) }
-            view.setFocused(window.isKeyWindow)
+            let responder = window.firstResponder as? NSView
+            // AppKit can host the field editor outside its owning text field.
+            let editorOwner = (responder as? NSTextView)?.delegate as? NSView
+            let ownsFocus = (editorOwner ?? responder)?.isDescendant(of: view) == true
+            if !ownsFocus && !window.hasKoiPopup && !editing { window.makeFirstResponder(view) }
+            view.setFocused(window.isKeyWindow && window.firstResponder === view)
         }
         let group = ws.tab(ws.selectedTab)?.group?.name ?? ""
         let name = Paths.isDev ? "Koid" : "Koi"

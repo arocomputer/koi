@@ -215,6 +215,7 @@ private struct TabItem: View {
     }
 
     var body: some View {
+        let tab = workspace.presentedTab(self.tab)
         let pane = workspace.focusedPane(in: tab)
         let style = Programs.style(for: pane)
         let label = horizontal ? TabLabel.make(pane, style) : TabLabel.tab(pane, style)
@@ -475,7 +476,7 @@ private struct TabGroupLabel: View {
         guard containsHiddenSelection, let tab = group.tabs.first(where: { $0.id == workspace.selectedTab }) else {
             return "\(group.tabs.count) tabs"
         }
-        let pane = workspace.focusedPane(in: tab)
+        let pane = workspace.focusedPane(in: workspace.presentedTab(tab))
         let style = Programs.style(for: pane)
         let label = TabLabel.tab(pane, style)
         return "Selected tab: \(tab.name?.isEmpty == false ? tab.name! : label.title + " " + label.detail)"
@@ -519,7 +520,7 @@ private struct TabGroupingMenu: View {
                 result.append(.init(title: "Move to \(group.name.isEmpty ? "Untitled Group" : group.name)", symbol: "folder",
                                     action: { workspace.drop(tab.id, intoGroup: group.id) }))
             case .tab(let target) where target.id != tab.id:
-                let pane = workspace.focusedPane(in: target)
+                let pane = workspace.focusedPane(in: workspace.presentedTab(target))
                 let style = Programs.style(for: pane)
                 let caption = TabLabel.tab(pane, style)
                 result.append(.init(title: "Group with \(target.name?.isEmpty == false ? target.name! : caption.title + " " + caption.detail)",

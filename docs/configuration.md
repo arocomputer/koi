@@ -188,8 +188,9 @@ Shells Koi starts carry its prompt integration without touching your files:
 zsh starts in a Koi-owned `ZDOTDIR` whose startup files run your own with
 your `ZDOTDIR` restored, and fish finds a Koi vendor configuration on
 `XDG_DATA_DIRS`. Inside Koi, those shells emit OSC 133 prompt markers for
-Previous/Next Prompt and name each command as it starts, so pane headers
-show `make` the moment you run it and keep showing it while it runs `cc`.
+Previous/Next Prompt and name each command as it starts. Pane headers show
+commands that continue running, such as `make` while it runs `cc`, after a
+brief delay that avoids flashing for short commands.
 For bash, source `"$KOI_SHELL_INTEGRATION/bash/koi.bash"` from `~/.bashrc`.
 
 Advanced offers optional agent guidance. Only clicking Install writes files:
