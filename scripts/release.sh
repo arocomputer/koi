@@ -101,12 +101,17 @@ PY
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
     security find-identity -v -p codesigning "$keychain" | grep -F "\"$APPLE_SIGNING_IDENTITY\"" >/dev/null
     # Sign actual Mach-O files inside out; the Linux payload is deliberately skipped.
+    # Only the app executable, the process macOS holds responsible for what a pane
+    # asks for, carries the resource-access entitlements; the bundled server does not.
+    entitlements=src/app/resources/Koi.entitlements
     while IFS= read -r -d '' binary; do
       if file -b "$binary" | grep -q 'Mach-O'; then
-        codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" --options runtime --timestamp "$binary"
+        extra=()
+        [[ "$binary" == "$app/Contents/MacOS/koi" ]] && extra=(--entitlements "$entitlements")
+        codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" --options runtime --timestamp ${extra[@]+"${extra[@]}"} "$binary"
       fi
     done < <(find "$app" -depth -type f -print0)
-    codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" --options runtime --timestamp "$app"
+    codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" --options runtime --timestamp --entitlements "$entitlements" "$app"
     codesign --verify --deep --strict --verbose=2 "$app"
     ditto -c -k --sequesterRsrc --keepParent "$app" "$private/submit.zip"
     xcrun notarytool submit "$private/submit.zip" --key "$private/key.p8" --key-id "$APPLE_API_KEY_ID" \

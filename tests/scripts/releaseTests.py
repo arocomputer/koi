@@ -159,6 +159,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(signs[-1][-1].endswith('/Koi.app'))
         self.assertTrue(any(c[-1].endswith('/Resources/koi') for c in signs))
         self.assertFalse(any('linux' in c[-1] for c in signs))
+        # Only the app executable and the bundle carry the resource-access
+        # entitlements; the bundled server and everything else do not.
+        with_entitlements = {c[-1].split('/Koi.app')[-1] for c in signs if '--entitlements' in c}
+        self.assertEqual(with_entitlements, {'', '/Contents/MacOS/koi'})
         for call in signs:
             self.assertIn('--timestamp', call)
             self.assertIn('runtime', call)
