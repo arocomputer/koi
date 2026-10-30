@@ -189,7 +189,17 @@ left unanswered is not repeated for ten minutes: each costs an SSH round
 trip and a blocked port rarely opens within minutes. Bundled server
 builds support Apple silicon macOS and x86_64 Linux. Setup commands have a
 60-second deadline and retain at most 1 MiB each of stdout and stderr;
-cancellation stops and reaps the local SSH process. See
+cancellation stops and reaps the local SSH process.
+
+An SSH channel cannot tell its far end has vanished: a laptop that sleeps or
+drops off the network leaves `koi --stdio` and its server connection running
+on the remote machine, because SSH there may never report the loss. So the app
+sends an empty `keepalive` frame every 20 seconds on each relay connection. The
+relay swallows these, so the server never sees the kind, which an older one
+would reject, and once it has seen one it exits after 75 seconds of silence
+(three lost keepalives and slack). A peer that never sends one is never timed
+out, so an older app behaves as before. The app only sends them through a relay
+it installed itself, which the hash check in `prepare` guarantees. See
 [`remote.swift`](../src/app/remote.swift) and
 [`link.zig`](../src/core/link.zig) for the connection implementation.
 

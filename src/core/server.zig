@@ -378,6 +378,8 @@ pub const Server = struct {
                             t.send(frame);
                         } else |_| break :outer;
                     },
+                    // The relay swallows these; one that arrives anyway means nothing.
+                    .keepalive => {},
                     else => {
                         if (negotiated) self.sendFailure(t, arena, "unexpected frame");
                         break :outer;

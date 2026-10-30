@@ -200,8 +200,16 @@ enum Remote {
         return nil
     }
 
+    /// How often a keepalive crosses each SSH connection. Mirrors
+    /// `keepalive_interval_ms` in src/core/remote.zig, whose relay drops a
+    /// connection that goes quiet for longer than three of these once it has
+    /// seen one. Without that, a laptop that sleeps or loses its network leaves
+    /// a relay and a server connection behind on the other machine for good.
+    private static let keepaliveInterval: TimeInterval = 20
+
     /// An SSH channel running `koi --stdio` on `host`, which relays to that
-    /// machine's server.
+    /// machine's server. The remote copy is the one `prepare` installed from
+    /// this app, so it understands the keepalive frames sent over the channel.
     private static func relay(_ host: String) -> Socket? {
         guard let options = try? sshOptions else { return nil }
         var fds: [Int32] = [0, 0]
@@ -219,7 +227,14 @@ enum Remote {
         }
         try? theirs.close()
         let socket = Socket(fd: fds[0])
-        socket.onClose = { [p] in if p.isRunning { p.terminate() } }
+        let beat = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        beat.schedule(deadline: .now() + keepaliveInterval, repeating: keepaliveInterval)
+        beat.setEventHandler { [weak socket] in socket?.send(.keepalive) }
+        beat.resume()
+        socket.onClose = { [p] in
+            beat.cancel()
+            if p.isRunning { p.terminate() }
+        }
         return socket
     }
 
