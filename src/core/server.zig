@@ -21,7 +21,7 @@ const Allocator = std.mem.Allocator;
 /// Release plus source/build hash embedded at compilation. Never consults
 /// Git, a bundle, or the executable that may have replaced this process on disk.
 pub const binary_version = @import("build_options").version;
-const capabilities = [_][]const u8{ "serverInfo", "clearPane", "resetPane", "configurePane", "startup", "resizeSplitWeights", "reportStatus", "splitCwd", "paneControl", "ownedCommands" };
+pub const capabilities = [_][]const u8{ "serverInfo", "clearPane", "resetPane", "configurePane", "startup", "resizeSplitWeights", "reportStatus", "splitCwd", "paneControl", "ownedCommands" };
 const transports = [_][]const u8{ "unix", "encryptedUDP", "sshStdio" };
 
 const Tab = struct {
