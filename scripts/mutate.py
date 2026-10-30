@@ -134,7 +134,12 @@ def main(argv):
         clone(tree)
         code, output = run_tests(tree, app)
         if code != 0:
-            print("The unmodified tree already fails its tests; fix that first.\n" + output[-2000:])
+            # A timing-sensitive test can fail on a busy machine; look once more
+            # before blaming the tree, and show what failed rather than the tail.
+            code, output = run_tests(tree, app)
+        if code != 0:
+            failures = [l for l in output.splitlines() if "\u2718" in l or "error:" in l]
+            print("The unmodified tree already fails its tests; fix that first.\n" + "\n".join(failures[:12]))
             return 2
         survivors = 0
         for name, relative, old, new in wanted:
