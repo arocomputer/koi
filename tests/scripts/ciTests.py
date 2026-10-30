@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Protect selective CI from missed native changes and falsely green gates."""
+"""Protect selective CI from missed Mac-only changes and falsely green gates."""
 import copy
 import importlib.util
 from pathlib import Path
@@ -17,7 +17,7 @@ spec.loader.exec_module(ci)
 class CITests(unittest.TestCase):
     """Exercise the boundaries that decide whether expensive checks may be skipped."""
 
-    def test_docs_and_catalog_skip_native_but_packaged_files_do_not(self):
+    def test_docs_and_catalog_skip_the_mac_but_packaged_files_do_not(self):
         self.assertEqual(ci.select(["docs/cli.md", "src/app/resources/programs/logos/new.svg"]),
                          {"core": False, "app": False, "bundle": False})
         for path in ("THIRD_PARTY_NOTICES.md", "licenses/new.txt", "src/app/resources/shell/koi.zsh"):
@@ -88,7 +88,7 @@ class CITests(unittest.TestCase):
             needs = {
                 "checks": {"result": "success", "outputs": {
                     name: str(name in selected).lower() for name in ("core", "app", "bundle")}},
-                "native": {"result": "success" if selected else "skipped", "outputs": {
+                "macos": {"result": "success" if selected else "skipped", "outputs": {
                     name: "success" if name in selected else "skipped" for name in ("core", "app", "bundle")}},
                 "linux-core": {"result": "success" if "core" in selected else "skipped"},
             }
@@ -107,11 +107,11 @@ class CITests(unittest.TestCase):
                 for step in selected:
                     for result in ("failure", "cancelled", "skipped", ""):
                         bad = copy.deepcopy(needs)
-                        bad["native"]["outputs"][step] = result
+                        bad["macos"]["outputs"][step] = result
                         with self.subTest(step=step, result=result), self.assertRaises(ValueError):
                             ci.check_results(bad)
                 bad = copy.deepcopy(needs)
-                del bad["native"]["outputs"]
+                del bad["macos"]["outputs"]
                 with self.assertRaises(ValueError):
                     ci.check_results(bad)
             needs["checks"]["outputs"]["core"] = ""
