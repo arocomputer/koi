@@ -162,7 +162,7 @@ pub const Server = struct {
         }
         const listener = transport_mod.listenUnix(paths.socket) catch |e| fail(@errorName(e));
         const self = gpa.create(Server) catch fail("out of memory");
-        self.* = .{ .gpa = gpa, .paths = paths, .idle_since = sys.nowMillis(), .started_at = sys.monotonicMillis(), .mutex = sys.Mutex.init(), .notify_mutex = sys.Mutex.init(), .notify_cond = sys.Cond.init(), .state_mutex = sys.Mutex.init() };
+        self.* = .{ .gpa = gpa, .paths = paths, .idle_since = sys.elapsedMillis(), .started_at = sys.monotonicMillis(), .mutex = sys.Mutex.init(), .notify_mutex = sys.Mutex.init(), .notify_cond = sys.Cond.init(), .state_mutex = sys.Mutex.init() };
         log("serving on {s} (pid {d})", .{ paths.socket, c.getpid() });
         _ = std.Thread.spawn(.{}, acceptLoop, .{ self, listener }) catch fail("thread");
         _ = std.Thread.spawn(.{}, notifyLoop, .{self}) catch fail("thread");
@@ -278,7 +278,7 @@ pub const Server = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.connections = @intCast(@as(isize, @intCast(self.connections)) + delta);
-        self.idle_since = sys.nowMillis();
+        self.idle_since = sys.elapsedMillis();
     }
 
     // MARK: Connections
@@ -447,7 +447,7 @@ pub const Server = struct {
         link.on_close_ctx = entry;
         link.on_close = &onLinkClose;
         self.connections += 1;
-        self.idle_since = sys.nowMillis();
+        self.idle_since = sys.elapsedMillis();
         self.links.appendAssumeCapacity(entry);
         return .{ .port = link.port, .secret = hex };
     }
@@ -926,7 +926,7 @@ pub const Server = struct {
     /// once at the final size. Other creators start the shell at once.
     fn startShell(pane: *Pane, cmd: wire.Command) !void {
         if (cmd.cellWidth != null) {
-            pane.deferExecution(sys.nowMillis() + attach_grace_ms);
+            pane.deferExecution(sys.elapsedMillis() + attach_grace_ms);
         } else {
             try pane.releaseExecution();
         }
@@ -987,7 +987,7 @@ pub const Server = struct {
         }
         self.unlinkPane(pane);
         pane.unlinked = true;
-        self.idle_since = sys.nowMillis();
+        self.idle_since = sys.elapsedMillis();
         log("pane {s} ended", .{&pane.id});
         self.mutex.unlock();
         self.scheduleNotify();
@@ -1306,7 +1306,7 @@ pub const Server = struct {
             self.reapPanes();
             self.reapLinks();
             self.mutex.lock();
-            const idle = self.panes.items.len == 0 and self.connections == 0 and sys.nowMillis() - self.idle_since > 5000;
+            const idle = self.panes.items.len == 0 and self.connections == 0 and sys.elapsedMillis() - self.idle_since > 5000;
             self.mutex.unlock();
             if (idle) {
                 log("idle, exiting", .{});
@@ -1488,6 +1488,7 @@ fn testPane(server: *Server, tab: *Tab, id: [8]u8) !*Pane {
         .master = -1,
         .terminal = terminal,
         .mutex = sys.Mutex.init(),
+        .input_mutex = sys.Mutex.init(),
         .size = .{ .cols = 80, .rows = 24, .cell_width = 8, .cell_height = 16 },
         .shell = shell,
         .home = home,
@@ -2280,15 +2281,15 @@ test "typed input waits for the program to take the terminal, or a bounded hold"
         child.input("hello\n");
         try child.releaseExecution();
         var shown_at: ?i64 = null;
-        const released = sys.nowMillis();
-        while (sys.nowMillis() - released < 2000) : (sys.sleepMillis(10)) {
+        const released = sys.elapsedMillis();
+        while (sys.elapsedMillis() - released < 2000) : (sys.sleepMillis(10)) {
             child.mutex.lock();
             const text = child.terminal.text();
             child.mutex.unlock();
             if (text) |t| {
                 defer @import("emulator.zig").Terminal.freeSnapshot(t);
                 if (std.mem.indexOf(u8, t, "hello") != null) {
-                    shown_at = sys.nowMillis() - released;
+                    shown_at = sys.elapsedMillis() - released;
                     break;
                 }
             }
@@ -2370,11 +2371,11 @@ test "a shell deferred for its client starts on attach, or by the deadline alone
         defer child.unpin();
         // macOS can coalesce a 20 ms sleep past a short expiry. Check the
         // closed gate with ample grace, then explicitly exercise expiration.
-        child.deferExecution(sys.nowMillis() + 60_000);
+        child.deferExecution(sys.elapsedMillis() + 60_000);
         sys.sleepMillis(20);
         try testing.expect(c.access(marker.path, c.F_OK) != 0);
         // What the open handler does once the client's size is applied.
-        if (attaches) try child.releaseExecution() else child.deferExecution(sys.nowMillis());
+        if (attaches) try child.releaseExecution() else child.deferExecution(sys.elapsedMillis());
         var executed = false;
         for (0..300) |_| {
             if (c.access(marker.path, c.F_OK) == 0) {

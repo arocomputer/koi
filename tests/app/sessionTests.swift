@@ -586,6 +586,150 @@ extension SessionTests {
         #expect(grouped.map(\.id) == Array(items[1...4]).map(\.id))
     }
 
+    /// Short commands never replace chrome, while commands and status consumers
+    /// see their authoritative metadata during the presentation delay.
+    @Test @MainActor func briefCommandsKeepTabAndHeaderPresentationStable() async throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        let workspace = fixture.workspace
+        workspace.apply(fixture.state(["a"]))
+        var pane = try #require(workspace.selectedPane)
+        let prompt = pane
+        var shown: [Wire.PaneInfo] = []
+        workspace.onShow = { tab in
+            if let tab { shown.append(contentsOf: tab.panes) }
+        }
+        pane.program = "git"
+        pane.title = "git status"
+        pane.cwd = "/tmp/command"
+        fixture.report(pane)
+        #expect(workspace.selectedPane == pane)
+        #expect(shown.isEmpty, "transient metadata alone must not refresh headers")
+        pane.status = .working
+        pane.fullscreen = true
+        fixture.report(pane)
+        #expect(workspace.selectedPane == pane)
+        let display = workspace.presentedPane(pane)
+        #expect(display.program.isEmpty && display.title == prompt.title && display.cwd == prompt.cwd)
+        #expect(display.status == .working && display.fullscreen)
+        #expect(shown.last == display, "headers receive live status with the same chrome as tabs")
+        try await Task.sleep(for: .milliseconds(30))
+        fixture.report(prompt)
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(workspace.presentedPane(prompt) == prompt)
+        #expect(shown.allSatisfy { $0.program.isEmpty && $0.title == prompt.title })
+        #expect(TabLabel.tab(display, Programs.style(for: display)).title == "zsh")
+        #expect(TabLabel.make(display, Programs.style(for: display)).title
+            == TabLabel.make(prompt, Programs.style(for: prompt)).title)
+    }
+
+    /// A sustained program commits its latest title even if it keeps reporting
+    /// titles faster than the debounce interval; later title updates are immediate.
+    @Test @MainActor func sustainedProgramPresentationSurvivesTitleChurn() async throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        let workspace = fixture.workspace
+        workspace.apply(fixture.state(["a"]))
+        var pane = try #require(workspace.selectedPane)
+        var shown: Wire.PaneInfo?
+        workspace.onShow = { shown = $0?.panes.first }
+        pane.program = "vim"
+        var committed = false
+        for index in 0..<20 {
+            pane.title = "Document \(index)"
+            fixture.report(pane)
+            try await Task.sleep(for: .milliseconds(30))
+            if workspace.presentedPane(pane).program == "vim" { committed = true; break }
+        }
+        #expect(committed, "title changes must not keep restarting program presentation")
+        let display = workspace.presentedPane(pane)
+        #expect(display.title == pane.title)
+        #expect(shown == display, "the timer commits headers without another server update")
+        #expect(TabLabel.tab(display, Programs.style(for: display)).title == pane.title)
+        #expect(TabLabel.make(display, Programs.style(for: display)).title == pane.title)
+        let previousTitle = pane.title
+        pane.title = "Temporary title"
+        fixture.report(pane)
+        #expect(workspace.presentedPane(pane).title == "Temporary title")
+        pane.title = previousTitle
+        fixture.report(pane)
+        #expect(workspace.presentedPane(pane).title == previousTitle)
+        pane.title = "Final title"
+        fixture.report(pane)
+        #expect(workspace.presentedPane(pane).title == "Final title")
+        #expect(shown?.title == "Final title")
+    }
+
+    /// Hidden panes settle independently, and tab/focus/zoom changes never flush
+    /// a transient command or wait for its display timer.
+    @Test @MainActor func presentationDebouncePreservesImmediateSelectionAndTopology() async throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        let workspace = fixture.workspace
+        workspace.apply(fixture.state(["a", "b"], splitFirst: true))
+        workspace.select("a")
+        var first = try #require(workspace.selectedPane)
+        var second = try #require(workspace.tab("b")?.tab.panes.first)
+        first.program = "git"
+        fixture.report(first)
+        second.program = "vim"
+        fixture.report(second)
+        var tree = workspace.state
+        var tab = try #require(tree.tabs.first)
+        tab.name = "Review"
+        tree.items[0] = .tab(tab)
+        tree.items.append(contentsOf: fixture.state(["c"]).items)
+        workspace.apply(tree)
+        #expect(workspace.presentedTab(tab).name == "Review")
+        let added = try #require(workspace.tab("c")?.tab.panes.first)
+        #expect(workspace.presentedPane(added) == added, "new panes do not wait for existing timers")
+        workspace.toggleZoom()
+        workspace.focus("a-second")
+        #expect(workspace.focusedPane == "a-second" && workspace.zoomedPane == nil)
+        workspace.select("b")
+        #expect(workspace.selectedPane == second)
+        #expect(workspace.presentedPane(second).program.isEmpty)
+        workspace.select("a")
+        for _ in 0..<100 {
+            if workspace.presentedPane(second).program == "vim" { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(workspace.presentedPane(first).program == "git")
+        #expect(workspace.presentedPane(second).program == "vim", "hidden tabs settle too")
+        workspace.apply(fixture.state(["b"]))
+        #expect(workspace.selectedTab == "b" && workspace.state.tabs.count == 1)
+    }
+
+    /// Replaced candidates, removed IDs and detached workspaces cannot publish
+    /// a stale program later, including when the same pane ID is reused.
+    @Test @MainActor func presentationDebounceCancelsReplacedAndRemovedPanes() async throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        let workspace = fixture.workspace
+        let initial = fixture.state(["a", "b"])
+        workspace.apply(initial)
+        var pane = try #require(workspace.selectedPane)
+        pane.program = "git"
+        fixture.report(pane)
+        try await Task.sleep(for: .milliseconds(150))
+        pane.program = "vim"
+        fixture.report(pane)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(workspace.presentedPane(pane).program.isEmpty, "a replacement gets its own settling interval")
+        workspace.apply(fixture.state(["b"]))
+        workspace.apply(initial)
+        try await Task.sleep(for: .milliseconds(350))
+        let restored = try #require(workspace.tab("a")?.tab.panes.first)
+        #expect(workspace.presentedPane(restored).program.isEmpty)
+        pane.program = "git"
+        fixture.report(pane)
+        workspace.detachAll()
+        var callbacks = 0
+        workspace.onShow = { _ in callbacks += 1 }
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(callbacks == 0)
+    }
+
     /// All focus entry points reveal the destination before the coordinator can
     /// install keyboard focus; it must never present a focused, hidden terminal.
     @Test @MainActor func movingFocusOutsideZoomPresentsOneVisibleDestination() throws {
@@ -732,6 +876,17 @@ extension SessionTests {
                 children: ids.map { .init(layout: .pane($0), weight: 1) }))
             return .tab(.init(id: id, panes: panes, layout: layout))
         })
+    }
+
+    /// Apply one pane's server metadata without changing the fixture topology.
+    func report(_ pane: Wire.PaneInfo) {
+        var state = workspace.state
+        state.items = state.items.map { item in
+            guard case .tab(var tab) = item else { return item }
+            tab.panes = tab.panes.map { $0.id == pane.id ? pane : $0 }
+            return .tab(tab)
+        }
+        workspace.apply(state)
     }
 
     /// Restore the process environment only after all fixture work has ended.

@@ -1,5 +1,7 @@
+import CryptoKit
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import Koi
 
@@ -73,5 +75,286 @@ import Testing
         let result = try Remote.runProcess(process, input: input, timeout: 5)
         #expect(result.output == input)
         #expect(result.errors.isEmpty)
+    }
+
+    /// Both output pipes fill before the child consumes a larger input stream.
+    @Test func drainsBothOutputsWhileFeedingInput() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = ["-e", """
+            print STDERR "e" x (256 * 1024);
+            print STDOUT "o" x (256 * 1024);
+            while (read(STDIN, $buf, 65536)) { print STDOUT $buf; }
+            """]
+        let input = Data(repeating: 105, count: 512 * 1024)
+        let result = try Remote.runProcess(process, input: input, timeout: 5)
+        #expect(result.output == Data(repeating: 111, count: 256 * 1024) + input)
+        #expect(result.errors == Data(repeating: 101, count: 256 * 1024))
+        #expect(process.terminationStatus == 0)
+    }
+
+    /// Early stdin closure rejects an incomplete upload without masking a failed child's stderr.
+    @Test(arguments: [0, 23]) func reportsEarlyInputClosure(status: Int) throws {
+        let process = command("exec 0<&-; printf rejected >&2; exit \(status)")
+        let input = Data(repeating: 1, count: 4 * 1024 * 1024)
+        if status == 0 {
+            #expect(throws: Remote.Failure.self) {
+                try Remote.runProcess(process, input: input, timeout: 3)
+            }
+        } else {
+            let result = try Remote.runProcess(process, input: input, timeout: 3)
+            #expect(result.errors == Data("rejected".utf8))
+        }
+        #expect(process.terminationStatus == Int32(status))
+        #expect(!process.isRunning)
+    }
+
+    /// A child exiting cannot bypass the deadline through pipes inherited by its descendant.
+    @Test func boundsLifetimeOfInheritedOutputPipes() throws {
+        let fixture = try RemoteFixture()
+        defer { fixture.remove() }
+        let pidFile = fixture.root.appendingPathComponent("child-pid")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = ["-e", """
+            $pid = fork(); die $! unless defined $pid; exit 0 if $pid;
+            open(my $file, '>', $ARGV[0]) or die $!; print $file $$; close $file;
+            sleep 60;
+            """, pidFile.path]
+        defer {
+            if let text = try? String(contentsOf: pidFile, encoding: .utf8), let pid = Int32(text) {
+                kill(pid, SIGKILL)
+            }
+        }
+        let start = ContinuousClock.now
+        #expect(throws: Remote.Failure.self) {
+            try Remote.runProcess(process, timeout: 0.5)
+        }
+        #expect(ContinuousClock.now - start < .seconds(3))
+        #expect(!process.isRunning)
+    }
+}
+
+/// Preparation scripts run locally in private homes, including paths containing spaces.
+extension RemoteTests {
+    /// A queued caller re-probes the finished install; a different host never waits for it.
+    @Test func remotePreparationSerializesOneHostWhileOtherHostsProceed() throws {
+        let fixture = try RemoteFixture()
+        let other = try RemoteFixture()
+        defer { fixture.remove(); other.remove() }
+        let host = UUID().uuidString
+        let uploading = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let secondStarted = DispatchSemaphore(value: 0)
+        let secondProbe = DispatchSemaphore(value: 0)
+        let done = DispatchGroup()
+        let failures = Mutex<[String]>([])
+        defer { release.signal(); _ = done.wait(timeout: .now() + 5) }
+        done.enter()
+        DispatchQueue.global().async {
+            defer { done.leave() }
+            do {
+                try fixture.prepare(host) { input in
+                    if input != nil {
+                        uploading.signal()
+                        #expect(release.wait(timeout: .now() + 5) == .success)
+                    }
+                }
+            } catch { failures.withLock { $0.append(String(describing: error)) } }
+        }
+        try #require(uploading.wait(timeout: .now() + 3) == .success)
+        done.enter()
+        DispatchQueue.global().async {
+            defer { done.leave() }
+            secondStarted.signal()
+            do {
+                try fixture.prepare(host) { input in
+                    if input == nil { secondProbe.signal() }
+                }
+            } catch { failures.withLock { $0.append(String(describing: error)) } }
+        }
+        try #require(secondStarted.wait(timeout: .now() + 3) == .success)
+        try other.prepare(UUID().uuidString)
+        #expect(secondProbe.wait(timeout: .now() + 0.1) == .timedOut)
+        release.signal()
+        try #require(done.wait(timeout: .now() + 5) == .success)
+        #expect(failures.withLock { $0.isEmpty })
+        #expect(fixture.counts.withLock { $0.probes } == 2)
+        #expect(fixture.counts.withLock { $0.uploads } == 1)
+        #expect(fixture.counts.withLock { $0.links } == 2)
+        #expect(try Data(contentsOf: fixture.installed) == Data(contentsOf: fixture.binary))
+        #expect(!FileManager.default.fileExists(atPath: fixture.hashFile.path))
+    }
+
+    /// Failed staging leaves the previous files intact, cleans up, and releases the host gate.
+    @Test func remotePreparationPreservesInstallationOnFailureAndCanRetry() throws {
+        let fixture = try RemoteFixture()
+        defer { fixture.remove() }
+        let host = UUID().uuidString
+        try Data("previous binary".utf8).write(to: fixture.installed)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.installed.path)
+        try Data("previous hash\n".utf8).write(to: fixture.hashFile)
+        #expect(throws: Remote.Failure.self) { try fixture.prepare(host, failUpload: true) }
+        #expect(fixture.counts.withLock { $0.links } == 0)
+        #expect(try String(contentsOf: fixture.installed, encoding: .utf8) == "previous binary")
+        #expect(try String(contentsOf: fixture.hashFile, encoding: .utf8) == "previous hash\n")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.installed.deletingLastPathComponent().path).sorted()
+            == ["koi", "koi.sha256"])
+        try fixture.prepare(host)
+        #expect(fixture.counts.withLock { $0.links } == 1)
+        #expect(try Data(contentsOf: fixture.installed) == Data(contentsOf: fixture.binary))
+        #expect(try String(contentsOf: fixture.hashFile, encoding: .utf8) == "previous hash\n")
+    }
+
+    /// Pause version A after its rename, publish B, then finish A. A later probe
+    /// must detect B's real bytes even if an old client left A's hash sidecar.
+    @Test func remotePreparationDetectsInterleavedVersionsAcrossProcesses() throws {
+        let fixture = try RemoteFixture()
+        defer { fixture.remove() }
+        let versionB = fixture.root.appendingPathComponent("version-b")
+        let bytesB = Data(repeating: 98, count: 128 * 1024)
+        try bytesB.write(to: versionB)
+        let done = DispatchGroup()
+        let failures = Mutex<[String]>([])
+        defer {
+            try? Data().write(to: fixture.root.appendingPathComponent("release"))
+            _ = done.wait(timeout: .now() + 6)
+        }
+        done.enter()
+        DispatchQueue.global().async {
+            defer { done.leave() }
+            do { try fixture.prepare(UUID().uuidString, environment: ["PAUSE_PUBLICATION": "after"]) }
+            catch { failures.withLock { $0.append(String(describing: error)) } }
+        }
+        try #require(fixture.waitForPublication())
+        try fixture.prepare(UUID().uuidString, source: versionB)
+        #expect(try Data(contentsOf: fixture.installed) == bytesB)
+        try Data().write(to: fixture.root.appendingPathComponent("release"))
+        try #require(done.wait(timeout: .now() + 6) == .success)
+        #expect(failures.withLock { $0.isEmpty })
+        try Data((fixture.hash + "\n").utf8).write(to: fixture.hashFile)
+        try fixture.prepare(UUID().uuidString)
+        #expect(try Data(contentsOf: fixture.installed) == Data(contentsOf: fixture.binary))
+        #expect(fixture.counts.withLock { $0.uploads } == 3)
+    }
+
+    /// SIGKILL on either side of the commit leaves no lock to recover. The next
+    /// probe ignores abandoned stages and recognizes a completed binary rename.
+    @Test(arguments: ["before", "after"]) func remotePreparationRecoversFromPublisherCrash(phase: String) throws {
+        let fixture = try RemoteFixture()
+        defer { fixture.remove() }
+        try Data("previous binary".utf8).write(to: fixture.installed)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fixture.installed.path)
+        try Data("stale sidecar\n".utf8).write(to: fixture.hashFile)
+        do {
+            try fixture.prepare(UUID().uuidString, environment: ["CRASH_PUBLICATION": phase])
+            Issue.record("Expected the publisher to be killed")
+        } catch let failure as Remote.Failure {
+            #expect(failure.description.isEmpty, "Expected a killed publisher, received: \(failure)")
+        }
+        if phase == "before" {
+            #expect(try String(contentsOf: fixture.installed, encoding: .utf8) == "previous binary")
+        } else {
+            #expect(try Data(contentsOf: fixture.installed) == Data(contentsOf: fixture.binary))
+        }
+        try fixture.prepare(UUID().uuidString)
+        #expect(try Data(contentsOf: fixture.installed) == Data(contentsOf: fixture.binary))
+        #expect(fixture.counts.withLock { $0.uploads } == (phase == "before" ? 2 : 1))
+    }
+
+    /// A truncated upload must never replace the current executable, even when
+    /// SSH and the byte-copying command themselves exit successfully.
+    @Test func remotePreparationRejectsCorruptedStagedBytes() throws {
+        let fixture = try RemoteFixture()
+        defer { fixture.remove() }
+        try Data("previous binary".utf8).write(to: fixture.installed)
+        #expect(throws: Remote.Failure.self) {
+            try fixture.prepare(UUID().uuidString, inputOverride: Data("truncated".utf8))
+        }
+        #expect(try String(contentsOf: fixture.installed, encoding: .utf8) == "previous binary")
+        #expect(fixture.counts.withLock { $0.links } == 0)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.installed.deletingLastPathComponent().path) == ["koi"])
+    }
+}
+
+/// Runs the actual probe/install scripts in a private HOME with a fake binary.
+/// Fake tools can fail staging or pause/crash a publisher around the binary rename.
+private final class RemoteFixture: Sendable {
+    let root: URL
+    let binary: URL
+    let installed: URL
+    let hashFile: URL
+    let hash: String
+    let counts = Mutex((probes: 0, uploads: 0, links: 0))
+
+    init() throws {
+        let temporaryRoot = ProcessInfo.processInfo.environment["KOI_TEST_ROOT"] ?? NSTemporaryDirectory()
+        root = URL(fileURLWithPath: temporaryRoot).appendingPathComponent("koi remote-\(UUID().uuidString)")
+        binary = root.appendingPathComponent("server")
+        installed = root.appendingPathComponent(".local/share/koi/koi")
+        hashFile = root.appendingPathComponent(".local/share/koi/koi.sha256")
+        let data = Data(repeating: 107, count: 128 * 1024)
+        hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        try FileManager.default.createDirectory(at: installed.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: binary)
+        let tools = root.appendingPathComponent("tools")
+        try FileManager.default.createDirectory(at: tools.appendingPathComponent("failing"), withIntermediateDirectories: true)
+        let chmod = tools.appendingPathComponent("failing/chmod")
+        try Data("#!/bin/sh\necho fixture-chmod-failed >&2\nexit 1\n".utf8).write(to: chmod)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: chmod.path)
+        let mv = tools.appendingPathComponent("mv")
+        try Data("""
+            #!/bin/sh
+            publication() {
+                if [ "${CRASH_PUBLICATION-}" = "$1" ]; then kill -KILL "$PPID"; exit 1; fi
+                if [ "${PAUSE_PUBLICATION-}" = "$1" ]; then
+                    : > "$HOME/publishing"
+                    while [ ! -f "$HOME/release" ]; do /bin/sleep 0.01; done
+                fi
+            }
+            if [ "$3" = "$HOME/.local/share/koi/koi" ]; then
+                publication before
+                /bin/mv "$@" || exit 1
+                publication after
+            else
+                /bin/mv "$@"
+            fi
+            """.utf8).write(to: mv)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: mv.path)
+    }
+
+    /// Remove only this fixture's private files after all its commands finish.
+    func remove() { try? FileManager.default.removeItem(at: root) }
+
+    /// Waits at most three seconds for the remote shell's publication barrier.
+    func waitForPublication() -> Bool {
+        for _ in 0..<300 {
+            if FileManager.default.fileExists(atPath: root.appendingPathComponent("publishing").path) { return true }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return false
+    }
+
+    /// Gates commands for concurrency checks; only the upload gets failing tools.
+    func prepare(_ host: String, failUpload: Bool = false, source: URL? = nil, inputOverride: Data? = nil,
+                 environment: [String: String] = [:], beforeCommand: (Data?) -> Void = { _ in }) throws {
+        try Remote.prepare(host, serverBinary: { _ in source ?? self.binary }, run: { _, command, input in
+            self.counts.withLock {
+                if input == nil { $0.probes += 1 } else { $0.uploads += 1 }
+            }
+            beforeCommand(input)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", command]
+            process.environment = ["HOME": self.root.path,
+                "PATH": (failUpload && input != nil ? self.root.appendingPathComponent("tools/failing").path + ":" : "")
+                    + self.root.appendingPathComponent("tools").path + ":/usr/bin:/bin"]
+                .merging(environment) { _, value in value }
+            let result = try Remote.runProcess(process, input: input == nil ? nil : inputOverride ?? input, timeout: 5)
+            guard process.terminationStatus == 0 else {
+                throw Remote.Failure(description: String(decoding: result.errors, as: UTF8.self))
+            }
+            return String(decoding: result.output, as: UTF8.self)
+        }, openLink: { _ in self.counts.withLock { $0.links += 1 } })
     }
 }

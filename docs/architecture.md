@@ -160,6 +160,9 @@ preexec, cleared by the OSC 133 prompt markers); that name is the program
 until the prompt returns, and discovery then only tracks the directory.
 Shell reports use the engine's streaming OSC callbacks, so command and prompt
 markers remain ordered even when split across PTY reads.
+The workspace accepts program changes immediately for input and activity.
+Tab and pane captions wait briefly before displaying a new program, so
+short commands do not flash; returning to the shell is immediate.
 Servers installed on remote machines carry no integration files, so there
 discovery alone names programs. The app reads its bundled server's version at launch and reports
 in Diagnostics and the machine picker when the running local server is
@@ -330,8 +333,9 @@ Guesses stay hidden until a completed redraw demonstrates echo; program names
 never bypass that check. Each pane's display link pauses once a tick
 finds nothing to draw, and wakes on output, input, a gesture or the window
 being uncovered, so idle panes cost no frames. A blank initial snapshot suppresses the
-cursor until the shell's first output or input, bounded at two seconds for a
-shell that never prints; this does not delay shell startup or terminal output. Scrolled-back output is drawn as-is: the
+cursor until visible output or input, bounded at two seconds. A shell-reported
+`clear` also holds the cursor while the cleared screen awaits its prompt, with
+the same limit. Neither hold delays terminal output. Scrolled-back output is drawn as-is: the
 renderer paints nothing over the top of the viewport, so the first visible
 row of history is never dimmed or shadowed.
 

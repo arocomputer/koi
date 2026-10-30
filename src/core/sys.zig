@@ -17,8 +17,7 @@ const Timespec = extern struct { sec: i64, nsec: i64 };
 extern "c" fn clock_gettime(clock: c_int, ts: *Timespec) c_int;
 
 /// Reads a clock the process cannot run without. Panics rather than leaving
-/// the timespec undefined: these values stamp link replay windows, so garbage
-/// here is worse than stopping.
+/// the timespec undefined: garbage would corrupt deadlines and RTT samples.
 fn clock(which: c_int) Timespec {
     var ts: Timespec = .{ .sec = 0, .nsec = 0 };
     if (clock_gettime(which, &ts) != 0) @panic("clock_gettime failed");
@@ -37,9 +36,14 @@ pub fn monotonicMillis() u64 {
     return @as(u64, @intCast(ts.sec)) * 1000 + @as(u64, @intCast(@divTrunc(ts.nsec, 1_000_000)));
 }
 
-/// Microseconds since the epoch, for the link's pings.
-pub fn nowMicros() u64 {
-    const ts = clock(c.CLOCK_REALTIME);
+/// Signed monotonic milliseconds for elapsed-time arithmetic.
+pub fn elapsedMillis() i64 {
+    return @intCast(monotonicMillis());
+}
+
+/// Monotonic microseconds for transport RTT and retransmission deadlines.
+pub fn monotonicMicros() u64 {
+    const ts = clock(c.CLOCK_MONOTONIC);
     return @as(u64, @intCast(ts.sec)) * 1_000_000 + @as(u64, @intCast(@divTrunc(ts.nsec, 1000)));
 }
 

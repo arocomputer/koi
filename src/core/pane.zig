@@ -24,7 +24,7 @@ pub const Pane = struct {
     /// exec until registration and reader preparation have both succeeded.
     execution_gate: c_int = -1,
     execution_ready: std.atomic.Value(bool) = .init(true),
-    /// With a deadline (ms), the reader opens the gate itself at that time
+    /// With a monotonic deadline (ms), the reader opens the gate at that time
     /// unless a client attaches first; see deferExecution. Guarded by `mutex`.
     release_deadline: ?i64 = null,
     terminal: Terminal,
@@ -64,13 +64,18 @@ pub const Pane = struct {
     /// its line editing or echo, as a shell's line editor does), so keys
     /// pressed while a shell starts are shown once, by the shell, instead of
     /// echoed raw by the terminal and then again by the shell. A program that
-    /// reads cooked input gets it after `input_hold_ms` anyway.
+    /// reads cooked input gets it after `input_hold_ms` anyway. The reader
+    /// retains unwritten bytes after the hold expires. Guarded by `mutex`;
+    /// a full queue applies backpressure to input callers.
     held_input: std.ArrayList(u8) = .empty,
     /// Up to 4096 contiguous input ranges, tagged only for negotiated clients;
     /// null is legacy or server input and survives another client's revocation.
     held_segments: std.ArrayList(HeldSegment) = .empty,
     input_hold_until: ?i64 = null,
     input_hold_ms: i64 = 2000,
+    /// Serializes whole input calls across queue waits and direct PTY writes.
+    /// The reader never takes this lock; callers take it before `mutex`.
+    input_mutex: sys.Mutex = undefined,
     /// Input/close wakes the reader without shortening its idle poll interval.
     wake_pipe: [2]c_int = .{ -1, -1 },
     /// Explicit close asks the reader to reap, even if the PTY stays open.
@@ -92,6 +97,8 @@ pub const Pane = struct {
     /// the pane mutex. `ended` becomes true only after cleanup completes.
     on_close: ?*const fn (ctx: *anyopaque, pane: *Pane) void = null,
     ctx: *anyopaque = undefined,
+
+    const max_held_input = 64 * 1024;
 
     /// Prepares a gated child in cwd (home if null), with extra KEY=value
     /// entries. Startup is intact shell source for -c; null uses a login shell.
@@ -148,6 +155,7 @@ pub const Pane = struct {
             .wake_pipe = wake_pipe,
             .terminal = terminal,
             .mutex = sys.Mutex.init(),
+            .input_mutex = sys.Mutex.init(),
             .size = size,
             .shell = shell_copy,
             .home = home_copy,
@@ -172,7 +180,7 @@ pub const Pane = struct {
         if (self.closing.load(.acquire) or self.ended.load(.acquire)) return error.PaneClosed;
         if (self.execution_gate < 0) return;
         if (self.thread == null) return error.ReaderNotStarted;
-        if (self.input_hold_until != null) self.input_hold_until = sys.nowMillis() + self.input_hold_ms;
+        if (self.input_hold_until != null) self.input_hold_until = sys.elapsedMillis() + self.input_hold_ms;
         const token = [_]u8{1};
         var n: isize = 0;
         while (true) {
@@ -187,7 +195,7 @@ pub const Pane = struct {
 
     /// Keeps a published pane gated until a client attaches, so the shell
     /// starts at the size that client asks for and draws its prompt once,
-    /// or until `deadline` (ms), after which the reader releases it anyway.
+    /// or until `deadline` (monotonic ms), when the reader releases it anyway.
     pub fn deferExecution(self: *Pane, deadline: i64) void {
         self.mutex.lock();
         self.release_deadline = deadline;
@@ -241,7 +249,7 @@ pub const Pane = struct {
         const self: *Pane = @ptrCast(@alignCast(userdata orelse return));
         // Runs inside `terminal.write` with `mutex` held: never wait here. A
         // reply the program is not reading for is dropped, not waited for.
-        self.writePtyNow(data[0..len]);
+        _ = self.writePtyNow(data[0..len]);
     }
 
     fn titleCallback(_: vt.GhosttyTerminal, userdata: ?*anyopaque) callconv(.c) void {
@@ -303,7 +311,7 @@ pub const Pane = struct {
     /// from parser callbacks. `changed` includes prior process metadata changes;
     /// the caller holds the mutex and only schedules notification here.
     fn refreshMetadataLocked(self: *Pane, changed: bool) void {
-        const now = sys.nowMillis();
+        const now = sys.elapsedMillis();
         var dirty = changed;
 
         const title = self.terminal.title();
@@ -382,7 +390,7 @@ pub const Pane = struct {
     /// sample invalidated by input/output, OSC cwd, close or a foreground switch.
     fn refresh(self: *Pane) void {
         self.mutex.lock();
-        const now = sys.nowMillis();
+        const now = sys.elapsedMillis();
         if (self.pollTimeoutLocked(now) != 0 or self.closing.load(.acquire)) {
             self.refreshMetadataLocked(false);
             self.mutex.unlock();
@@ -404,13 +412,13 @@ pub const Pane = struct {
                 if (self.beforeExec(fg, server_name)) {
                     // The child still carries the server's image: not a program
                     // yet. Look again as soon as it has become the shell.
-                    self.refresh_due = sys.nowMillis() + 20;
+                    self.refresh_due = sys.elapsedMillis() + 20;
                 } else {
                     self.applyForegroundLocked(version, fg);
                 }
             } else {
                 // A foreground switch during discovery is activity too.
-                _ = self.activityLocked(sys.nowMillis());
+                _ = self.activityLocked(sys.elapsedMillis());
             }
         }
         self.refreshMetadataLocked(false);
@@ -658,8 +666,8 @@ pub const Pane = struct {
         if (self.owner == transport.ptr) self.resizeLocked(size);
     }
 
-    /// Types `bytes` into the shell, waiting (without the mutex) for room
-    /// when a large paste fills the PTY; gives up once the pane ends.
+    /// Types `bytes` in call order, waiting without the pane mutex when the
+    /// startup queue or PTY fills. Close cancels blocked input callers.
     pub fn input(self: *Pane, bytes: []const u8) void {
         self.inputFromClient(null, bytes);
     }
@@ -669,44 +677,58 @@ pub const Pane = struct {
         self.inputFromClient(transport, bytes);
     }
 
+    /// Rechecks permission after every queue wait, retaining ownership tags
+    /// until bytes reach the PTY or their negotiated owner is revoked.
     fn inputFromClient(self: *Pane, transport: ?Transport, bytes: []const u8) void {
-        self.mutex.lock();
-        if (transport) |client| {
-            if (!self.canActLocked(client)) {
+        self.input_mutex.lock();
+        defer self.input_mutex.unlock();
+        var off: usize = 0;
+        while (off < bytes.len) {
+            self.mutex.lock();
+            if (self.closing.load(.acquire) or self.ended.load(.acquire)) {
                 self.mutex.unlock();
                 return;
             }
-        }
-        if (self.input_hold_until != null) {
+            if (transport) |client| {
+                if (!self.canActLocked(client)) {
+                    self.mutex.unlock();
+                    return;
+                }
+            }
+            if (self.input_hold_until == null and self.held_input.items.len == 0) {
+                self.mutex.unlock();
+                self.writeToPty(transport, bytes[off..]);
+                return;
+            }
             var source: ?*anyopaque = null;
             if (transport) |client| for (self.clients.items) |entry| {
                 if (entry.transport.ptr == client.ptr and entry.negotiated) source = client.ptr;
             };
-            if (bytes.len == 0) {
-                self.mutex.unlock();
-                return;
-            }
             const last = if (self.held_segments.items.len > 0) &self.held_segments.items[self.held_segments.items.len - 1] else null;
             const merge = if (last) |segment| segment.owner == source else false;
-            if (!merge and self.held_segments.items.len >= 4096) {
-                self.mutex.unlock();
-                return;
+            const count = @min(bytes.len - off, max_held_input - self.held_input.items.len);
+            if (count > 0 and (merge or self.held_segments.items.len < 4096)) {
+                if (!merge) self.held_segments.ensureUnusedCapacity(self.gpa, 1) catch {
+                    self.mutex.unlock();
+                    self.wake();
+                    sys.sleepMillis(10);
+                    continue;
+                };
+                self.held_input.appendSlice(self.gpa, bytes[off .. off + count]) catch {
+                    // Keep the caller's bytes alive until the queue drains or
+                    // startup ends and they can be written without allocation.
+                    self.mutex.unlock();
+                    self.wake();
+                    sys.sleepMillis(10);
+                    continue;
+                };
+                if (merge) last.?.len += count else self.held_segments.appendAssumeCapacity(.{ .len = count, .owner = source });
+                off += count;
             }
-            if (!merge) self.held_segments.ensureUnusedCapacity(self.gpa, 1) catch {
-                self.mutex.unlock();
-                return;
-            };
-            self.held_input.appendSlice(self.gpa, bytes) catch {
-                self.mutex.unlock();
-                return;
-            };
-            if (merge) last.?.len += bytes.len else self.held_segments.appendAssumeCapacity(.{ .len = bytes.len, .owner = source });
             self.mutex.unlock();
             self.wake();
-            return;
+            if (off < bytes.len) sys.sleepMillis(10);
         }
-        self.mutex.unlock();
-        self.writeToPty(transport, bytes);
     }
 
     /// Requests a close only if the attached client currently has permission.
@@ -725,17 +747,35 @@ pub const Pane = struct {
         return attributes.c_lflag & (c.ICANON | c.ECHO) != (c.ICANON | c.ECHO);
     }
 
-    /// Delivers held input once the program reads raw or the hold has run
-    /// out; the caller holds `mutex`.
+    /// Makes nonblocking progress after exec and startup readiness. Retains
+    /// unwritten bytes and ownership tags for POLLOUT; caller holds `mutex`.
     fn releaseHeldInputLocked(self: *Pane, now: i64) void {
-        const until = self.input_hold_until orelse return;
-        if (now < until and !self.programReadsRaw()) return;
-        self.input_hold_until = null;
+        if (!self.execution_ready.load(.acquire) or self.closing.load(.acquire) or self.ended.load(.acquire)) return;
+        if (self.input_hold_until) |until| {
+            if (now < until and !self.programReadsRaw()) return;
+            self.input_hold_until = null;
+        }
         if (self.held_input.items.len > 0) {
-            self.writePtyNow(self.held_input.items);
-            self.held_input.clearRetainingCapacity();
-            self.held_segments.clearRetainingCapacity();
-            _ = self.activityLocked(now);
+            const n = self.writePtyNow(self.held_input.items);
+            if (n > 0) {
+                const remaining = self.held_input.items.len - n;
+                std.mem.copyForwards(u8, self.held_input.items[0..remaining], self.held_input.items[n..]);
+                self.held_input.items.len = remaining;
+                var consumed = n;
+                var removed: usize = 0;
+                for (self.held_segments.items) |*segment| {
+                    if (consumed < segment.len) {
+                        segment.len -= consumed;
+                        break;
+                    }
+                    consumed -= segment.len;
+                    removed += 1;
+                }
+                const segments = self.held_segments.items;
+                std.mem.copyForwards(HeldSegment, segments[0 .. segments.len - removed], segments[removed..]);
+                self.held_segments.items.len -= removed;
+                _ = self.activityLocked(now);
+            }
         }
     }
 
@@ -873,7 +913,7 @@ pub const Pane = struct {
             self.mutex.lock();
             const deadline = self.release_deadline;
             self.mutex.unlock();
-            const timeout: c_int = if (deadline) |due| @intCast(@max(0, @min(due - sys.nowMillis(), std.math.maxInt(c_int)))) else -1;
+            const timeout: c_int = if (deadline) |due| @intCast(@max(0, @min(due - sys.elapsedMillis(), std.math.maxInt(c_int)))) else -1;
             var fds = [_]c.struct_pollfd{.{ .fd = self.wake_pipe[0], .events = c.POLLIN, .revents = 0 }};
             const ready = c.poll(&fds, 1, timeout);
             if (ready > 0) {
@@ -893,11 +933,12 @@ pub const Pane = struct {
                 return;
             }
             self.mutex.lock();
-            self.releaseHeldInputLocked(sys.nowMillis());
-            const timeout = self.pollTimeoutLocked(sys.nowMillis());
+            self.releaseHeldInputLocked(sys.elapsedMillis());
+            const timeout = self.pollTimeoutLocked(sys.elapsedMillis());
+            const pending_input = self.input_hold_until == null and self.held_input.items.len > 0;
             self.mutex.unlock();
             var fds = [_]c.struct_pollfd{
-                .{ .fd = self.master, .events = c.POLLIN, .revents = 0 },
+                .{ .fd = self.master, .events = @intCast(if (pending_input) c.POLLIN | c.POLLOUT else c.POLLIN), .revents = 0 },
                 .{ .fd = self.wake_pipe[0], .events = c.POLLIN, .revents = 0 },
             };
             const ready = c.poll(&fds, fds.len, timeout);
@@ -915,7 +956,7 @@ pub const Pane = struct {
                 const n = c.read(self.master, &buf, buf.len);
                 if (n > 0) {
                     const chunk = buf[0..@intCast(n)];
-                    self.last_output = sys.nowMillis();
+                    self.last_output = sys.elapsedMillis();
                     _ = self.activityLocked(self.last_output);
                     self.terminal.write(chunk);
                     self.releaseHeldInputLocked(self.last_output);
@@ -1014,8 +1055,9 @@ pub const Pane = struct {
         self.gpa.destroy(self);
     }
 
-    /// Writes what the PTY takes right now; the rest is dropped.
-    fn writePtyNow(self: *Pane, bytes: []const u8) void {
+    /// Returns the prefix accepted immediately. Held input retains the rest;
+    /// terminal replies discard it rather than stall parsing.
+    fn writePtyNow(self: *Pane, bytes: []const u8) usize {
         var off: usize = 0;
         while (off < bytes.len and !self.ended.load(.acquire) and !self.closing.load(.acquire)) {
             const n = c.write(self.master, bytes.ptr + off, bytes.len - off);
@@ -1023,8 +1065,9 @@ pub const Pane = struct {
                 off += @intCast(n);
             } else if (n < 0 and sys.errno() == c.EINTR) {
                 continue;
-            } else return;
+            } else break;
         }
+        return off;
     }
 
     /// Writes under the permission lock, waiting outside it for PTY room.
@@ -1040,7 +1083,7 @@ pub const Pane = struct {
             }
             const n = c.write(self.master, bytes.ptr + off, bytes.len - off);
             const err = if (n < 0) sys.errno() else 0;
-            const wake_reader = if (n > 0) self.activityLocked(sys.nowMillis()) else false;
+            const wake_reader = if (n > 0) self.activityLocked(sys.elapsedMillis()) else false;
             self.mutex.unlock();
             if (n > 0) {
                 off += @intCast(n);
@@ -1156,9 +1199,9 @@ test "a child that exits on its own is reaped without waiting out the hangup gra
     while (c.waitid(@intCast(c.P_PID), @intCast(pid), &info, c.WEXITED | c.WNOWAIT) < 0) {
         if (sys.errno() != c.EINTR) return error.Wait;
     }
-    const started = sys.nowMillis();
+    const started = sys.elapsedMillis();
     try std.testing.expectEqual(@as(c_int, 7 << 8), reapChild(pid));
-    try std.testing.expect(sys.nowMillis() - started < 150);
+    try std.testing.expect(sys.elapsedMillis() - started < 150);
     try std.testing.expect(!ownsChild(pid));
 }
 
@@ -1247,7 +1290,7 @@ fn testReapProcessGroup(already_exited: bool) !void {
     }
     var fds = [_]c.struct_pollfd{.{ .fd = alive[0], .events = c.POLLIN, .revents = 0 }};
     try std.testing.expectEqual(@as(c_int, 0), c.poll(&fds, 1, 0));
-    const started = sys.nowMillis();
+    const started = sys.elapsedMillis();
     const status = reapChild(leader);
     if (already_exited) {
         try std.testing.expectEqual(@as(c_int, 23 << 8), status);
@@ -1259,7 +1302,7 @@ fn testReapProcessGroup(already_exited: bool) !void {
     try std.testing.expect(c.poll(&fds, 1, 2000) > 0);
     var byte: [1]u8 = undefined;
     try std.testing.expectEqual(@as(isize, 0), c.read(alive[0], &byte, 1));
-    try std.testing.expect(sys.nowMillis() - started < 5000);
+    try std.testing.expect(sys.elapsedMillis() - started < 5000);
     try std.testing.expect(!ownsChild(leader));
 }
 
@@ -1286,12 +1329,13 @@ extern var environ: [*:null]?[*:0]u8;
 fn environment(arena: Allocator, extra: []const []const u8, inherited: [*:null]const ?[*:0]const u8, shell: []const u8, integration: ?[]const u8) ![*:null]?[*:0]const u8 {
     var list: std.ArrayList(?[*:0]const u8) = .empty;
     const overridden = [_][]const u8{
-        "TERM=",                 "COLORTERM=",            "TERM_PROGRAM=",         "KOI_TAB=",
-        "KOI_PANE=",             "KOI_BIN_DIR=",          "PATH=",                 "ZDOTDIR=",
-        "KOI_ZDOTDIR=",          "XDG_DATA_DIRS=",        "KOI_SHELL_INTEGRATION=",
+        "TERM=",               "COLORTERM=",                "TERM_PROGRAM=",           "KOI_TAB=",
+        "KOI_PANE=",           "KOI_BIN_DIR=",              "PATH=",                   "ZDOTDIR=",
+        "KOI_ZDOTDIR=",        "XDG_DATA_DIRS=",            "KOI_SHELL_INTEGRATION=",
         // What a running Claude Code session puts in its children's environment.
-        "CLAUDECODE=",           "CLAUDE_PID=",           "CLAUDE_EFFORT=",        "CLAUDE_CODE_ENTRYPOINT=",
-        "CLAUDE_CODE_EXECPATH=", "CLAUDE_CODE_SESSION",   "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_MESSAGING_",
+         "CLAUDECODE=",
+        "CLAUDE_PID=",         "CLAUDE_EFFORT=",            "CLAUDE_CODE_ENTRYPOINT=", "CLAUDE_CODE_EXECPATH=",
+        "CLAUDE_CODE_SESSION", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_MESSAGING_",
     };
     var path: []const u8 = "/usr/bin:/bin:/usr/sbin:/sbin";
     var has_lang = false;
@@ -1365,9 +1409,9 @@ test "shell environment drops Claude Code session markers but keeps its settings
     const markers = [_][]const u8{ "CLAUDE_CODE_CHILD_SESSION=1", "CLAUDECODE=1", "CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_SESSION_ID=s", "CLAUDE_CODE_MESSAGING_SOCKET=/s", "CLAUDE_PID=1" };
     const settings = [_][]const u8{ "CLAUDE_CONFIG_DIR=/cfg", "CLAUDE_CODE_USE_BEDROCK=1", "HOME=/tmp" };
     const inherited = [_:null]?[*:0]const u8{
-        "CLAUDE_CODE_CHILD_SESSION=1", "CLAUDECODE=1",            "CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_SESSION_ID=s",
-        "CLAUDE_CODE_MESSAGING_SOCKET=/s", "CLAUDE_PID=1",        "CLAUDE_CONFIG_DIR=/cfg",     "CLAUDE_CODE_USE_BEDROCK=1",
-        "HOME=/tmp",                   "PATH=/usr/bin:/bin",      "TERM=dumb",
+        "CLAUDE_CODE_CHILD_SESSION=1",     "CLAUDECODE=1",       "CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_SESSION_ID=s",
+        "CLAUDE_CODE_MESSAGING_SOCKET=/s", "CLAUDE_PID=1",       "CLAUDE_CONFIG_DIR=/cfg",     "CLAUDE_CODE_USE_BEDROCK=1",
+        "HOME=/tmp",                       "PATH=/usr/bin:/bin", "TERM=dumb",
     };
     const envp = try environment(arena, &.{}, &inherited, "zsh", null);
     var i: usize = 0;
@@ -1440,7 +1484,7 @@ test "a terminal reply to a PTY nobody reads is dropped, not waited for" {
     pane.closing = .init(false);
     const reply: [4096]u8 = @splat('x');
     // Far more than a pipe holds: a blocking write would never return.
-    for (0..100) |_| pane.writePtyNow(&reply);
+    for (0..100) |_| _ = pane.writePtyNow(&reply);
 }
 
 /// A terminal and metadata without a PTY or child. Callers install callbacks
@@ -1453,10 +1497,300 @@ fn testMetadataPane() !Pane {
         .master = -1,
         .terminal = try Terminal.init(80, 24),
         .mutex = sys.Mutex.init(),
+        .input_mutex = sys.Mutex.init(),
         .size = .{ .cols = 80, .rows = 24, .cell_width = 8, .cell_height = 16 },
         .shell = "zsh",
         .home = "/tmp",
     };
+}
+
+/// A private, nonblocking duplex PTY substitute with a deliberately small
+/// send buffer. Start the pane reader only after the fixture's final move.
+const StartupInputFixture = struct {
+    pane: Pane,
+    peer: c_int,
+
+    /// Holds startup input until the test expires the hold or starts closing.
+    fn init() !StartupInputFixture {
+        var pane = try testMetadataPane();
+        errdefer freeMetadataPane(&pane);
+        pane.wake_pipe = try wakePipe();
+        errdefer for (pane.wake_pipe) |fd| {
+            _ = c.close(fd);
+        };
+        var fds: [2]c_int = undefined;
+        if (c.socketpair(c.AF_UNIX, c.SOCK_STREAM, 0, &fds) != 0) return error.Socket;
+        errdefer for (fds) |fd| {
+            _ = c.close(fd);
+        };
+        for (fds) |fd| {
+            const flags = c.fcntl(fd, c.F_GETFL);
+            if (flags < 0 or c.fcntl(fd, c.F_SETFL, flags | c.O_NONBLOCK) < 0) return error.Socket;
+        }
+        const capacity: c_int = 4096;
+        if (c.setsockopt(fds[0], c.SOL_SOCKET, c.SO_SNDBUF, &capacity, @sizeOf(c_int)) != 0) return error.Socket;
+        pane.master = fds[0];
+        pane.pid = -1; // No child is owned or signalled by this fixture.
+        pane.input_hold_until = std.math.maxInt(i64);
+        return .{ .pane = pane, .peer = fds[1] };
+    }
+
+    /// Stops the reader before releasing its socket, wake pipe and terminal.
+    fn deinit(self: *StartupInputFixture) void {
+        self.pane.kill();
+        if (self.pane.thread) |thread| thread.join();
+        _ = c.close(self.peer);
+        _ = c.close(self.pane.master);
+        for (self.pane.wake_pipe) |fd| {
+            _ = c.close(fd);
+        }
+        freeMetadataPane(&self.pane);
+    }
+
+    /// Reads an exact ordered stream with a deadline, including no extra bytes.
+    fn expectInput(self: *StartupInputFixture, expected: []const u8) !void {
+        const deadline = sys.monotonicMillis() + 5000;
+        var off: usize = 0;
+        var buf: [8192]u8 = undefined;
+        while (off < expected.len and sys.monotonicMillis() < deadline) {
+            const n = c.read(self.peer, &buf, @min(buf.len, expected.len - off));
+            if (n > 0) {
+                const count: usize = @intCast(n);
+                try std.testing.expectEqualSlices(u8, expected[off .. off + count], buf[0..count]);
+                off += count;
+            } else {
+                if (n == 0 or (sys.errno() != c.EAGAIN and sys.errno() != c.EINTR)) return error.Read;
+                var fds = [_]c.struct_pollfd{.{ .fd = self.peer, .events = c.POLLIN, .revents = 0 }};
+                _ = c.poll(&fds, 1, 10);
+            }
+        }
+        try std.testing.expectEqual(expected.len, off);
+        try std.testing.expectEqual(@as(isize, -1), c.read(self.peer, &buf, buf.len));
+        try std.testing.expectEqual(@as(c_int, c.EAGAIN), sys.errno());
+    }
+
+    /// Waits for a producer to fill the startup queue, without draining it.
+    fn expectFullQueue(self: *StartupInputFixture) !void {
+        const deadline = sys.monotonicMillis() + 2000;
+        while (sys.monotonicMillis() < deadline) {
+            self.pane.mutex.lock();
+            const count = self.pane.held_input.items.len;
+            self.pane.mutex.unlock();
+            try std.testing.expect(count <= Pane.max_held_input);
+            if (count == Pane.max_held_input) return;
+            sys.sleepMillis(1);
+        }
+        return error.QueueNotFilled;
+    }
+};
+
+/// Owns a test input call until completion or fixture close releases it.
+const StartupInputWriter = struct {
+    pane: *Pane,
+    bytes: []const u8,
+    transport: ?Transport = null,
+    done: std.atomic.Value(bool) = .init(false),
+
+    /// Publishes completion only after the input call has released its locks.
+    fn run(self: *StartupInputWriter) void {
+        if (self.transport) |client| self.pane.inputFrom(client, self.bytes) else self.pane.input(self.bytes);
+        self.done.store(true, .release);
+    }
+};
+
+test "startup held input survives partial writes and drains before later input without output" {
+    var fixture = try StartupInputFixture.init();
+    defer fixture.deinit();
+    const pane = &fixture.pane;
+    var expected: [64 * 1024 + 4]u8 = undefined;
+    for (&expected, 0..) |*byte, i| byte.* = @intCast(i % 251);
+    @memcpy(expected[expected.len - 4 ..], "tail");
+    pane.input(expected[0 .. expected.len - 4]);
+    pane.input_hold_until = 0;
+    pane.releaseHeldInputLocked(sys.elapsedMillis());
+    const pending = pane.held_input.items.len;
+    try std.testing.expect(pending > 0 and pending < expected.len - 4);
+    try std.testing.expectEqualSlices(u8, expected[expected.len - 4 - pending .. expected.len - 4], pane.held_input.items);
+    pane.input("tail");
+    try pane.start();
+    try fixture.expectInput(&expected);
+}
+
+test "startup held input backpressure preserves a large paste before concurrent later input" {
+    var fixture = try StartupInputFixture.init();
+    defer fixture.deinit();
+    const pane = &fixture.pane;
+    var expected: [3 * Pane.max_held_input + 4]u8 = undefined;
+    for (&expected, 0..) |*byte, i| byte.* = @intCast(i % 251);
+    @memcpy(expected[expected.len - 4 ..], "tail");
+    var first = StartupInputWriter{ .pane = pane, .bytes = expected[0 .. expected.len - 4] };
+    const first_thread = try std.Thread.spawn(.{}, StartupInputWriter.run, .{&first});
+    defer {
+        pane.kill();
+        first_thread.join();
+    }
+    try fixture.expectFullQueue();
+    try std.testing.expect(!first.done.load(.acquire));
+    var later = StartupInputWriter{ .pane = pane, .bytes = "tail" };
+    const later_thread = try std.Thread.spawn(.{}, StartupInputWriter.run, .{&later});
+    defer {
+        pane.kill();
+        later_thread.join();
+    }
+    try pane.start();
+
+    // A blocked paste must leave the reader free to parse program output.
+    const output = "\x1b]2;reader responsive\x07";
+    try std.testing.expectEqual(@as(isize, output.len), c.write(fixture.peer, output.ptr, output.len));
+    const deadline = sys.monotonicMillis() + 2000;
+    var responsive = false;
+    while (sys.monotonicMillis() < deadline) {
+        pane.mutex.lock();
+        responsive = std.mem.eql(u8, pane.title.items, "reader responsive");
+        pane.mutex.unlock();
+        if (responsive) break;
+        sys.sleepMillis(1);
+    }
+    try std.testing.expect(responsive);
+    pane.mutex.lock();
+    pane.input_hold_until = 0;
+    pane.mutex.unlock();
+    pane.wake();
+    try fixture.expectInput(&expected);
+}
+
+test "startup held input close cancels a blocked writer and rejects input before and after reader exit" {
+    for ([_]bool{ false, true }) |draining| {
+        var fixture = try StartupInputFixture.init();
+        defer fixture.deinit();
+        const pane = &fixture.pane;
+        pane.execution_ready.store(draining, .release);
+        const bytes: [2 * Pane.max_held_input]u8 = @splat('x');
+        var writer = StartupInputWriter{ .pane = pane, .bytes = &bytes };
+        const thread = try std.Thread.spawn(.{}, StartupInputWriter.run, .{&writer});
+        defer {
+            pane.kill();
+            thread.join();
+        }
+        try fixture.expectFullQueue();
+        if (draining) {
+            // Let the live reader fill the socket before requesting close.
+            pane.mutex.lock();
+            pane.input_hold_until = 0;
+            pane.mutex.unlock();
+            try pane.start();
+            var fds = [_]c.struct_pollfd{.{ .fd = fixture.peer, .events = c.POLLIN, .revents = 0 }};
+            try std.testing.expect(c.poll(&fds, 1, 2000) > 0);
+        }
+        pane.kill();
+        const deadline = sys.monotonicMillis() + 2000;
+        while (!writer.done.load(.acquire) and sys.monotonicMillis() < deadline) sys.sleepMillis(1);
+        try std.testing.expect(writer.done.load(.acquire));
+        pane.mutex.lock();
+        const pending = pane.held_input.items.len;
+        pane.mutex.unlock();
+        try std.testing.expect(pending > 0);
+        pane.input("after close");
+        pane.mutex.lock();
+        pane.releaseHeldInputLocked(std.math.maxInt(i64));
+        const after_close = pane.held_input.items.len;
+        pane.mutex.unlock();
+        try std.testing.expectEqual(pending, after_close);
+        if (!draining) try pane.start();
+        while (!pane.ended.load(.acquire) and sys.monotonicMillis() < deadline) sys.sleepMillis(1);
+        try std.testing.expect(pane.ended.load(.acquire));
+        pane.input("after exit");
+        try std.testing.expectEqual(pending, pane.held_input.items.len);
+        if (!draining) try fixture.expectInput("");
+    }
+}
+
+test "startup held input waits through allocation failure then writes without losing bytes" {
+    var fixture = try StartupInputFixture.init();
+    defer fixture.deinit();
+    const pane = &fixture.pane;
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    pane.gpa = failing.allocator();
+    var writer = StartupInputWriter{ .pane = pane, .bytes = "preserved input" };
+    const thread = try std.Thread.spawn(.{}, StartupInputWriter.run, .{&writer});
+    defer {
+        pane.kill();
+        thread.join();
+    }
+    // Taking the pane mutex synchronizes with the failed queue allocation.
+    const deadline = sys.monotonicMillis() + 2000;
+    var failed = false;
+    while (sys.monotonicMillis() < deadline) {
+        pane.mutex.lock();
+        failed = failing.has_induced_failure;
+        pane.mutex.unlock();
+        if (failed) break;
+        sys.sleepMillis(1);
+    }
+    try std.testing.expect(failed);
+    try std.testing.expect(!writer.done.load(.acquire));
+    pane.mutex.lock();
+    pane.input_hold_until = 0;
+    pane.releaseHeldInputLocked(sys.elapsedMillis());
+    pane.mutex.unlock();
+    try fixture.expectInput(writer.bytes);
+}
+
+test "startup held input keeps ownership tags after a partial write crosses segments" {
+    var rec = Recorder{};
+    defer rec.sent.deinit(std.testing.allocator);
+    var fixture = try StartupInputFixture.init();
+    defer fixture.deinit();
+    const pane = &fixture.pane;
+    const client = Transport{ .ptr = &rec, .vtable = &Recorder.vtable };
+    try pane.clients.append(pane.gpa, .{ .transport = client, .negotiated = true });
+    pane.owner = client.ptr;
+    var expected: [Pane.max_held_input + 4]u8 = @splat('x');
+    expected[0] = 'a';
+    pane.input(expected[0..1]);
+    pane.inputFrom(client, expected[1..Pane.max_held_input]);
+    pane.input_hold_until = 0;
+    pane.releaseHeldInputLocked(sys.elapsedMillis());
+    const pending = pane.held_input.items.len;
+    const written = Pane.max_held_input - pending;
+    try std.testing.expect(written > 1 and pending > 0);
+    try std.testing.expectEqual(@as(usize, 1), pane.held_segments.items.len);
+    try std.testing.expectEqual(pending, pane.held_segments.items[0].len);
+    try std.testing.expect(pane.held_segments.items[0].owner == client.ptr);
+    pane.input("tail");
+    pane.control(client, false);
+    try std.testing.expectEqualStrings("tail", pane.held_input.items);
+    @memcpy(expected[written..][0..4], "tail");
+    try pane.start();
+    try fixture.expectInput(expected[0 .. written + 4]);
+}
+
+test "startup held input revocation cancels a backpressured owner" {
+    var rec = Recorder{};
+    defer rec.sent.deinit(std.testing.allocator);
+    var fixture = try StartupInputFixture.init();
+    defer fixture.deinit();
+    const pane = &fixture.pane;
+    const client = Transport{ .ptr = &rec, .vtable = &Recorder.vtable };
+    try pane.clients.append(pane.gpa, .{ .transport = client, .negotiated = true });
+    pane.owner = client.ptr;
+    const bytes: [2 * Pane.max_held_input]u8 = @splat('x');
+    var writer = StartupInputWriter{ .pane = pane, .bytes = &bytes, .transport = client };
+    const thread = try std.Thread.spawn(.{}, StartupInputWriter.run, .{&writer});
+    defer {
+        pane.kill();
+        thread.join();
+    }
+    try fixture.expectFullQueue();
+    pane.control(client, false);
+    const deadline = sys.monotonicMillis() + 2000;
+    while (!writer.done.load(.acquire) and sys.monotonicMillis() < deadline) sys.sleepMillis(1);
+    try std.testing.expect(writer.done.load(.acquire));
+    pane.mutex.lock();
+    const pending = pane.held_input.items.len;
+    pane.mutex.unlock();
+    try std.testing.expectEqual(@as(usize, 0), pending);
+    try fixture.expectInput("");
 }
 
 test "metadata input wakes once per pending sample and keeps the idle fallback" {
@@ -1472,7 +1806,7 @@ test "metadata input wakes once per pending sample and keeps the idle fallback" 
         _ = c.close(fd);
     };
     pane.master = input_pipe[1];
-    const now = sys.nowMillis();
+    const now = sys.elapsedMillis();
     pane.last_refresh = now;
     try std.testing.expectEqual(@as(c_int, 500), pane.pollTimeoutLocked(now));
     pane.input("x"); // No PTY output is needed to interrupt the reader's poll.
@@ -1655,8 +1989,8 @@ fn testReaderClose(eof: bool) !void {
         pane.kill();
         pane.kill();
     }
-    const deadline = sys.nowMillis() + 5000;
-    while (!pane.ended.load(.acquire) and sys.nowMillis() < deadline) sys.sleepMillis(10);
+    const deadline = sys.elapsedMillis() + 5000;
+    while (!pane.ended.load(.acquire) and sys.elapsedMillis() < deadline) sys.sleepMillis(10);
     try std.testing.expect(pane.ended.load(.acquire));
     try std.testing.expect(removed_before_reaping.load(.acquire));
     try std.testing.expectEqual(@as(i32, 128 + c.SIGKILL), pane.exit_code);
@@ -1718,7 +2052,7 @@ test "foreground discovery retains reports for cwd changes and clears them for a
     try std.testing.expectEqual(wire.Status.blocked, pane.status);
     try std.testing.expectEqual(@as(?wire.Status, .blocked), pane.reported);
 
-    pane.last_output = sys.nowMillis();
+    pane.last_output = sys.elapsedMillis();
     const replaced = pane.updateForegroundLocked(.{ .pid = 300, .program = "other", .cwd = "" });
     pane.refreshMetadataLocked(replaced);
     try std.testing.expect(pane.reported == null);

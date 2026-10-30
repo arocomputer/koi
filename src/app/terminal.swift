@@ -24,12 +24,15 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var metrics: FontMetrics
     /// What `metrics` was built from, so unchanged inputs reuse it.
     private var metricsKey: (size: CGFloat, scale: CGFloat)
-    /// The first snapshot showed an empty screen: the cursor is held back
-    /// until the shell's first output or input, so it does not sit alone
-    /// before the prompt however slowly the shell starts; `cursorGrace` only
-    /// bounds a shell that never prints.
+    /// Presentation-only grace for an empty startup screen or a shell-reported
+    /// clear. Output and the terminal's own cursor visibility remain untouched.
     private(set) var cursorSuppressed = false
     private var suppression: Task<Void, Never>?
+    private var awaitingClear = false
+    private var acceptsClearReport = false
+    /// Engine callbacks are synchronous. Scope their owner to a main-actor
+    /// write, preserving VTTerminal's shared userdata for its clipboard handler.
+    private static weak var writingView: TerminalView?
     private var hasRestored = false
     static let cursorGrace: UInt64 = 2_000_000_000
     private(set) var terminal: VTTerminal?
@@ -396,12 +399,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                 setFocused(window?.isKeyWindow == true && window?.firstResponder === self)
                 if !observing, !holdsResizes { requestResize() }
             case .output(let bytes):
-                showCursor()
                 if Self.perf, let sent = inputSentAt {
                     inputSentAt = nil
                     perfLog("echo after \(Int(Date().timeIntervalSince(sent) * 1000)) ms (\(bytes.count) bytes)")
                 }
-                bytes.withUnsafeBytes { terminal?.write($0) }
+                writeOutput(bytes)
             case .resized(let size):
                 if Self.perf { perfLog("resized \(size.cols)x\(size.rows)") }
                 terminal?.resize(size)
@@ -432,6 +434,75 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         needsRender = true
     }
 
+    /// Parse every byte immediately; only a reported clear may start another
+    /// cursor grace after startup. Engine callbacks preserve split OSC framing.
+    func writeOutput(_ bytes: ArraySlice<UInt8>) {
+        let previous = Self.writingView
+        Self.writingView = self
+        defer { Self.writingView = previous }
+        bytes.withUnsafeBytes { terminal?.write($0) }
+        guard cursorSuppressed || awaitingClear, let terminal else { return }
+        if terminal.isAlternateScreen || terminal.mode(1000) || terminal.mode(1002) || terminal.mode(1003) {
+            showCursor()
+        } else if Self.isBlank(terminal) {
+            if awaitingClear { hideCursor() }
+        } else if cursorSuppressed {
+            var atPrompt = false
+            ghostty_terminal_get(terminal.raw, GHOSTTY_TERMINAL_DATA_CURSOR_AT_PROMPT, &atPrompt)
+            // zsh's transient end-of-line marker may be printed and erased
+            // across deliveries before precmd. Keep the original deadline.
+            showCursor(endingGrace: !awaitingClear || atPrompt)
+        }
+    }
+
+    /// Observe only the bundled shell's exact clear report and prompt/input
+    /// boundaries. Never infer shell ownership from an erase or blank screen.
+    private func installCursorObservers(_ terminal: VTTerminal) {
+        var limit = 1024
+        ghostty_terminal_set(terminal.raw, GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES, &limit)
+        let command: GhosttyTerminalUnknownSequenceFn = { raw, _, sequence in
+            MainActor.assumeIsolated {
+                guard let view = TerminalView.writingView, view.terminal?.raw == raw,
+                      let sequence, sequence.pointee.tag == GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE_OSC else { return }
+                let osc = sequence.pointee.value.osc
+                guard !osc.truncated, let ptr = osc.content.ptr else { return }
+                let bytes = UnsafeBufferPointer(start: ptr, count: osc.content.len)
+                guard bytes.starts(with: "7502;cmd=".utf8) else { return }
+                if bytes.elementsEqual("7502;cmd=clear".utf8) {
+                    if view.acceptsClearReport {
+                        view.showCursor()
+                        view.suppressCursorBriefly(afterClear: true)
+                    }
+                } else { view.showCursor() }
+                view.acceptsClearReport = false
+            }
+        }
+        ghostty_terminal_set(terminal.raw, GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE,
+                             unsafeBitCast(command, to: UnsafeRawPointer.self))
+        let prompt: GhosttyTerminalSemanticPromptFn = { raw, _, event in
+            MainActor.assumeIsolated {
+                guard let view = TerminalView.writingView, view.terminal?.raw == raw, let event else { return }
+                if event.pointee.kind == GHOSTTY_SEMANTIC_PROMPT_INPUT_START
+                    || event.pointee.kind == GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START {
+                    view.showCursor()
+                    view.acceptsClearReport = event.pointee.kind == GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START
+                } else if event.pointee.kind == GHOSTTY_SEMANTIC_PROMPT_PROMPT_START {
+                    view.acceptsClearReport = false
+                }
+            }
+        }
+        ghostty_terminal_set(terminal.raw, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT,
+                             unsafeBitCast(prompt, to: UnsafeRawPointer.self))
+        let reset: GhosttyTerminalResetFn = { raw, _ in
+            MainActor.assumeIsolated {
+                guard let view = TerminalView.writingView, view.terminal?.raw == raw else { return }
+                view.showCursor()
+            }
+        }
+        ghostty_terminal_set(terminal.raw, GHOSTTY_TERMINAL_OPT_RESET,
+                             unsafeBitCast(reset, to: UnsafeRawPointer.self))
+    }
+
     /// Installs one complete server snapshot and resets references into the
     /// old grid. Invalid snapshots leave the current mirror untouched.
     @discardableResult func restoreTerminal(from bytes: [UInt8]) -> Bool {
@@ -439,6 +510,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         if let terminal { _ = keyboard.releaseAll(terminal: terminal) }
         selection = nil
         terminal = restored
+        installCursorObservers(restored)
         renderer?.bind(to: restored)
         restored.onClipboardWrite = { [weak self] text in
             MainActor.assumeIsolated {
@@ -464,8 +536,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         return true
     }
 
-    /// A blank viewport at home is a possible shell-startup screen. It is only
-    /// a hint, so cursor suppression always has a short independent deadline.
+    /// A blank viewport at home can await startup or the prompt after clear;
+    /// it is only a hint and never establishes shell ownership on its own.
     private static func isBlank(_ terminal: VTTerminal) -> Bool {
         let cursor = terminal.cursor
         guard cursor.x == 0, cursor.y == 0 else { return false }
@@ -474,11 +546,20 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    /// Hides the initial cursor until output/input or a deadline measured from
-    /// this call, including when the task first runs after a busy main turn.
-    private func suppressCursorBriefly() {
+    /// Hide only the renderer's cursor; the engine still owns DECTCEM and shape.
+    private func hideCursor() {
+        guard !cursorSuppressed else { return }
         cursorSuppressed = true
         renderer?.hidesCursor = true
+        forceRender = true
+        needsRender = true
+    }
+
+    /// Startup hides immediately; a reported clear waits for a blank home grid.
+    /// The deadline starts here, and control-only output never extends it.
+    private func suppressCursorBriefly(afterClear: Bool = false) {
+        awaitingClear = afterClear
+        if !afterClear { hideCursor() }
         let deadline = ContinuousClock.now + .nanoseconds(Int64(Self.cursorGrace))
         suppression = Task { [weak self] in
             try? await Task.sleep(until: deadline, clock: .continuous)
@@ -487,9 +568,15 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func showCursor() {
-        suppression?.cancel()
-        suppression = nil
+    /// Reveal presentation without changing the engine's cursor mode. A
+    /// transient clear marker may reveal while retaining the original deadline.
+    private func showCursor(endingGrace: Bool = true) {
+        if endingGrace {
+            suppression?.cancel()
+            suppression = nil
+            awaitingClear = false
+            acceptsClearReport = false
+        }
         guard cursorSuppressed else { return }
         cursorSuppressed = false
         renderer?.hidesCursor = false

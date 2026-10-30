@@ -39,8 +39,8 @@ final class Workspace {
     @ObservationIgnored private var groupRenameIDs: [String: UUID] = [:]
     @ObservationIgnored private var confirmedGroupRenames: [String: UUID] = [:]
 
-    /// Called when the selected tab, its layout or its focused pane
-    /// changes, to show it.
+    /// Presents selection, layout and live pane status immediately, with chrome
+    /// metadata from the shared presentation snapshot. Commands use `state`.
     @ObservationIgnored var onShow: ((Wire.TabInfo?) -> Void)?
     @ObservationIgnored var onViewsChanged: (() -> Void)?
     /// Every rejected command, including attempts while offline, reaches the owner.
@@ -72,6 +72,39 @@ final class Workspace {
     /// When each working tab started working.
     @ObservationIgnored private var workingSince: [String: Date] = [:]
 
+    /// Only chrome metadata is delayed; state, terminal behavior and pane status
+    /// always use the latest server tree. New panes are presented immediately.
+    private var presentations: [String: PanePresentation] = [:]
+    @ObservationIgnored private var pendingPresentations: [String: (program: String, task: Task<Void, Never>)] = [:]
+
+    /// The fields consumed by tab captions, program tiles and pane headers.
+    private struct PanePresentation: Equatable {
+        let program: String
+        let title: String
+        let cwd: String
+        let home: String?
+        let shell: String
+
+        init(_ pane: Wire.PaneInfo) {
+            program = pane.program
+            title = pane.title
+            cwd = pane.cwd
+            home = pane.home
+            shell = pane.shell
+        }
+
+        /// Overlay display metadata without delaying status or terminal flags.
+        func applying(to pane: Wire.PaneInfo) -> Wire.PaneInfo {
+            var result = pane
+            result.program = program
+            result.title = title
+            result.cwd = cwd
+            result.home = home
+            result.shell = shell
+            return result
+        }
+    }
+
     init(_ endpoint: Endpoint, control: Control? = nil, controlTransport: Transport? = nil) {
         self.endpoint = endpoint
         self.control = control
@@ -82,6 +115,7 @@ final class Workspace {
         reconnectTask?.cancel()
         connectionDeadline?.cancel()
         connecting?.cancel()
+        pendingPresentations.values.forEach { $0.task.cancel() }
         control?.close()
         views.values.forEach { $0.detach() }
     }
@@ -200,6 +234,10 @@ final class Workspace {
     /// Detaches every pane, leaving their shells running.
     func detachAll() {
         running = false
+        pendingPresentations.values.forEach { $0.task.cancel() }
+        pendingPresentations.removeAll()
+        presentations.removeAll()
+        shown = nil
         stopAwaitingServer()
         reconnectTask?.cancel()
         connectionDeadline?.cancel()
@@ -230,6 +268,53 @@ final class Workspace {
     /// The pane a tab's row and title stand for: the one focused there.
     func focusedPane(in t: Wire.TabInfo) -> Wire.PaneInfo? {
         t.pane(focusByTab[t.id]) ?? t.pane(t.layout.panes.first) ?? t.panes.first
+    }
+
+    /// Display-only metadata for chrome. Commands must keep using `state`.
+    func presentedPane(_ pane: Wire.PaneInfo) -> Wire.PaneInfo {
+        presentations[pane.id]?.applying(to: pane) ?? pane
+    }
+
+    /// Preserve live topology, names and status while sharing one display
+    /// snapshot between tab tiles and every pane header, including hidden tabs.
+    func presentedTab(_ tab: Wire.TabInfo) -> Wire.TabInfo {
+        var result = tab
+        result.panes = tab.panes.map(presentedPane)
+        return result
+    }
+
+    /// A new program must settle for 250 ms before replacing chrome. Updates
+    /// to the displayed program and a return to the shell appear immediately.
+    private func updatePresentations() {
+        let panes = state.tabs.flatMap(\.panes)
+        let live = Set(panes.map(\.id))
+        for id in presentations.keys where !live.contains(id) {
+            presentations[id] = nil
+            pendingPresentations.removeValue(forKey: id)?.task.cancel()
+        }
+        for pane in panes {
+            let next = PanePresentation(pane)
+            guard let current = presentations[pane.id] else {
+                presentations[pane.id] = next
+                continue
+            }
+            if current.program == pane.program || pane.program.isEmpty {
+                pendingPresentations.removeValue(forKey: pane.id)?.task.cancel()
+                if current != next { presentations[pane.id] = next }
+            } else if pendingPresentations[pane.id]?.program != pane.program {
+                pendingPresentations.removeValue(forKey: pane.id)?.task.cancel()
+                let id = pane.id
+                let task = Task { [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                    guard let self, !Task.isCancelled,
+                          let pane = self.state.tabs.lazy.flatMap(\.panes).first(where: { $0.id == id }) else { return }
+                    self.pendingPresentations[id] = nil
+                    self.presentations[id] = PanePresentation(pane)
+                    self.show()
+                }
+                pendingPresentations[id] = (pane.program, task)
+            }
+        }
     }
 
     /// The tab and the group it is in, if any.
@@ -263,6 +348,7 @@ final class Workspace {
             }
         }
         state = new
+        updatePresentations()
         let names = Dictionary(uniqueKeysWithValues: new.tabs.map { ($0.id, $0.name ?? "") })
         for (id, name) in pendingTabNames where names[id] == nil || names[id] == name {
             pendingTabNames[id] = nil
@@ -324,19 +410,19 @@ final class Workspace {
         }
     }
 
-    /// Shows the selected tab if what it shows has changed: a pane came or
-    /// went, a split moved, the focus or zoom changed.
+    /// Presents changes to selection, topology, live status or committed chrome.
     private func show() {
         guard let t = tab(selectedTab)?.tab else { return }
         if t.pane(focusedPane) == nil { focusedPane = focusedPane(in: t)?.id }
         if let z = zoomedPane, t.pane(z) == nil || z != focusedPane { zoomedPane = nil }
         if let f = focusedPane { focusByTab[t.id] = f }
-        // The panes themselves are part of what is shown: a program starting
-        // or a title changing refreshes the headers, not only layout or focus.
-        let now = (t.id, t.layout, focusedPane, zoomedPane, t.panes)
+        // Chrome commits refresh headers together; raw metadata alone does not.
+        // Layout, focus, status and terminal flags still present immediately.
+        let presented = presentedTab(t)
+        let now = (t.id, t.layout, focusedPane, zoomedPane, presented.panes)
         if let s = shown, s.tab == now.0, s.layout == now.1, s.focus == now.2, s.zoom == now.3, s.panes == now.4 { return }
         shown = now
-        onShow?(t)
+        onShow?(presented)
     }
 
     func select(_ tabID: String?) {

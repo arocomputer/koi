@@ -11,6 +11,7 @@ enum Remote {
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var links: [String: RemoteLinkState<LinkClient>] = [:] // guarded by lock
+    nonisolated(unsafe) private static var preparations: [String: NSLock] = [:] // guarded by lock
 
     struct Failure: Error, CustomStringConvertible {
         var description: String
@@ -19,22 +20,59 @@ enum Remote {
     /// Makes sure `host` runs this Koi's server: installs or replaces its
     /// copy when it differs, by hash. Blocks; run it off the main thread.
     static func prepare(_ host: String) throws {
-        let probe = try run(host, "uname -sm; test -x \(remoteDir)/koi && cat \(remoteDir)/koi.sha256 2>/dev/null || true")
+        try prepare(host, serverBinary: serverBinary, run: { try run($0, $1, input: $2) }, openLink: openLink)
+    }
+
+    /// Serializes the entire probe/install/link sequence per SSH host. Injected
+    /// operations let tests exercise preparation without SSH or real servers.
+    static func prepare(_ host: String, serverBinary: (String) throws -> URL,
+                        run: (String, String, Data?) throws -> String, openLink: (String) -> Void) throws {
+        let preparation = lock.withLock {
+            if let current = preparations[host] { return current }
+            let current = NSLock()
+            preparations[host] = current
+            return current
+        }
+        preparation.lock()
+        defer { preparation.unlock() }
+        let probe = try run(host, """
+            \(hashCommand)
+            uname -sm
+            if test -x "\(remoteDir)/koi"; then koi_hash "\(remoteDir)/koi"; fi
+            """, nil)
         let lines = probe.split(separator: "\n").map(String.init)
         guard let system = lines.first else { throw Failure(description: "\(host) did not answer") }
-        let url = try serverBinary(for: system)
+        let url = try serverBinary(system)
         let hash = try binaryHash(url)
         if lines.dropFirst().first != hash {
             guard let binary = try? Data(contentsOf: url) else {
                 throw Failure(description: "cannot read the server binary for \(system)")
             }
             _ = try run(host, """
-                mkdir -p \(remoteDir) && cat > \(remoteDir)/koi.new && chmod 755 \(remoteDir)/koi.new \
-                && mv -f \(remoteDir)/koi.new \(remoteDir)/koi && echo \(hash) > \(remoteDir)/koi.sha256
-                """, input: binary)
+                \(hashCommand)
+                mkdir -p "\(remoteDir)" && stage=$(mktemp -d "\(remoteDir)/.install.XXXXXXXX") || exit 1
+                trap 'rm -rf "$stage"' 0
+                trap 'exit 1' 1 2 15
+                cat > "$stage/koi" && actual=$(koi_hash "$stage/koi") || exit 1
+                test "$actual" = \(hash) || { echo 'Koi upload checksum mismatch' >&2; exit 1; }
+                chmod 755 "$stage/koi" && mv -f "$stage/koi" "\(remoteDir)/koi"
+                """, binary)
         }
         openLink(host)
     }
+
+    /// Hash the actual bytes on Linux or macOS. A single binary rename is the
+    /// commit point: legacy sidecars and stages left by a crash are never trusted.
+    private static let hashCommand = """
+        koi_hash() {
+            if command -v sha256sum >/dev/null 2>&1; then
+                digest=$(sha256sum "$1") || return 1
+            else
+                digest=$(shasum -a 256 "$1") || return 1
+            fi
+            printf '%s\\n' "${digest%% *}"
+        }
+        """
 
     /// The hash a server binary is installed under, computed once per file
     /// version: hashing eight megabytes on every connection is wasted work.
@@ -230,7 +268,8 @@ enum Remote {
     }
 
     /// Runs a disposable command on the caller's background thread. Multiplexed,
-    /// nonblocking I/O bounds both streams and input lifetime; every exit reaps the child.
+    /// nonblocking I/O bounds each stream and input lifetime; every exit reaps the child.
+    /// Successful commands must accept all input; failed commands retain their stderr.
     static func runProcess(_ process: Process, input: Data? = nil,
                            outputLimit: Int = 1024 * 1024, timeout: TimeInterval = 60) throws
         -> (output: Data, errors: Data) {
@@ -305,6 +344,9 @@ enum Remote {
                        events: Int16(index < 2 ? POLLIN : POLLOUT), revents: 0)
             }
             _ = poll(&waiting, nfds_t(waiting.count), 10)
+        }
+        if sent < input.count, process.terminationStatus == 0 {
+            throw Failure(description: "Remote command closed input before upload completed")
         }
         return (streams[0], streams[1])
     }

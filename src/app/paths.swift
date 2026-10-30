@@ -87,7 +87,13 @@ enum Paths {
             ?? env["XDG_RUNTIME_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).appendingPathComponent("koi") }
             ?? env["TMPDIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).appendingPathComponent("koi") }
             ?? privateTmp
-        return dir.appendingPathComponent(socketName).path.utf8.count < 100 ? dir : privateTmp
+        return runtimeDirectory(dir)
+    }
+
+    /// Move the socket and lock together when the socket path reaches 100 UTF-8 bytes.
+    static func runtimeDirectory(_ candidate: URL) -> URL {
+        candidate.appendingPathComponent(socketName).path.utf8.count < 100
+            ? candidate : URL(fileURLWithPath: "/tmp/koi-\(getuid())")
     }
 
     private static var socketName: String { "server-\(Wire.version).sock" }
