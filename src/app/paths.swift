@@ -9,7 +9,9 @@ import Foundation
 /// - `state`: `~/.local/state/koi`, what Koi remembers (`layout.json`) and
 ///   the server's log.
 /// - `runtime`: the server's socket and lock, in the per-user temporary
-///   directory (`$XDG_RUNTIME_DIR/koi` on Linux).
+///   directory (`/run/user/<uid>/koi` on Linux). It never depends on
+///   `TMPDIR` or `XDG_RUNTIME_DIR`, so every way of starting Koi finds the
+///   same server.
 /// - `~/.local/share/koi/koi` is the binary on a machine without the app
 ///   (see `Remote`).
 ///
@@ -75,19 +77,21 @@ enum Paths {
     static var config: URL { (override ?? xdg("XDG_CONFIG_HOME", default: ".config")).appendingPathComponent("config") }
     static var state: URL { override ?? xdg("XDG_STATE_HOME", default: ".local/state") }
 
-    /// The same choice as the server (paths.zig). With TMPDIR unset,
-    /// NSTemporaryDirectory would pick a per-user directory the server does
-    /// not know about, and the app would never find its socket. A directory
-    /// too long for a socket path moves, lock and all, to a per-user one in
-    /// /tmp, never to a bare name in shared /tmp.
-    static var runtime: URL {
-        let env = ProcessInfo.processInfo.environment
-        let privateTmp = URL(fileURLWithPath: "/tmp/koi-\(getuid())")
-        let dir = override
-            ?? env["XDG_RUNTIME_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).appendingPathComponent("koi") }
-            ?? env["TMPDIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).appendingPathComponent("koi") }
-            ?? privateTmp
-        return runtimeDirectory(dir)
+    /// The same choice as the server (paths.zig): the per-user directory the
+    /// system names, whatever the environment. Reading TMPDIR instead would
+    /// let an SSH-started server and an app-started one disagree on where
+    /// the lock is, and run side by side. A directory too long for a socket
+    /// path moves, lock and all, to a per-user one in /tmp, never to a bare
+    /// name in shared /tmp.
+    static var runtime: URL { runtimeDirectory(override ?? userRuntime) }
+
+    /// macOS's per-user temporary directory, `/koi` inside it: the value a GUI
+    /// session's TMPDIR holds, available to a process that has no TMPDIR.
+    static var userRuntime: URL {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let length = confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, buffer.count)
+        guard length > 1, length <= buffer.count else { return URL(fileURLWithPath: "/tmp/koi-\(getuid())") }
+        return URL(fileURLWithPath: String(cString: buffer)).appendingPathComponent("koi")
     }
 
     /// Move the socket and lock together when the socket path reaches 100 UTF-8 bytes.
