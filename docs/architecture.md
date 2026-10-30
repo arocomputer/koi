@@ -412,8 +412,10 @@ Construction does not query or request notification authorization; a user
 permission action requests it. Notification clicks resolve stable endpoint,
 tab and pane IDs across existing windows, retrying for up to two seconds
 during initial attachment. Stale targets never create connections or shells.
-Optional agent skills are advisory single-file guidance, not lifecycle-hook
-installation or guaranteed status delivery.
+Optional agent skills are advisory single-file guidance and deliver no status.
+Optional status hooks (`hooks.swift`) make Claude Code and Codex run
+`koi status` on their lifecycle events; they are marked so that install is
+idempotent and removal touches nothing else in the agent's settings.
 
 ## Ownership and memory limits
 

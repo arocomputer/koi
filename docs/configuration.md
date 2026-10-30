@@ -198,11 +198,23 @@ Advanced offers optional agent guidance. Only clicking Install writes files:
 - Codex installs `.agents/skills/koi-terminal/SKILL.md`; Claude Code installs
   `.claude/skills/koi-terminal/SKILL.md`, under Home or the chosen project.
   These are single-file guidance skills for stock CLI use and explicit
-  status reporting. They install no agent lifecycle hooks and do not
-  guarantee automatic blocked/done/error reports.
+  status reporting. They install no hooks and cannot make an agent report.
+- **Agent Status Hooks** make Claude Code and Codex report for themselves.
+  Install adds a few entries to the agent's own settings file: Claude Code's
+  `~/.claude/settings.json` (`.claude/settings.local.json` for a chosen
+  project, which Git ignores) and Codex's `.codex/hooks.json`. Each runs
+  `koi status` on a lifecycle event: `working` when a prompt is submitted or a
+  tool finishes, `blocked` on a permission request, `done` when the agent
+  stops, `error` when Claude Code's turn fails, and `idle` when a session ends
+  or Codex is interrupted. Outside a Koi pane they do nothing and always exit 0.
 
 Installers preserve foreign or edited files; removal deletes only unchanged
-Koi guidance.
+Koi guidance. Hooks are recognized by a `# koi-status` mark at the end of
+their command: Install replaces older Koi entries instead of adding more,
+Remove takes out only those, and every other key and hook in the file stays.
+The first change keeps a `.koi-backup` copy. A settings file that is not valid
+JSON, or whose hooks Koi does not recognize, is left untouched with an error.
+Settings files are rewritten as indented JSON with sorted keys.
 
 ## Server, diagnostics and updates
 

@@ -78,7 +78,8 @@ Koi sets `KOI_TAB` and `KOI_PANE` in its shells. Preserve their server context,
 including `KOI_DIR`, when reporting status from tools. Explicit status reports
 reach the server directly and do not depend on tool stdout reaching the PTY.
 Reports describe the foreground program; they are cleared when its identity
-changes. Advisory agent skills do not guarantee lifecycle reporting.
+changes. Advisory agent skills do not guarantee lifecycle reporting; the optional
+status hooks in Settings report Claude Code's and Codex's lifecycle events for them.
 
 Closing one pane removes the whole tab only when it was the last pane.
 To close every pane in a tab, use **Close Tab** in the app or palette
