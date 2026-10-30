@@ -266,11 +266,7 @@ pub const Server = struct {
                 sys.sleepMillis(100);
                 continue;
             }
-            if (!sys.sameUserPeer(fd)) {
-                _ = c.close(fd);
-                continue;
-            }
-            if (self.connectionsFull()) {
+            if (!self.admit(fd, c.getuid())) {
                 _ = c.close(fd);
                 continue;
             }
@@ -309,6 +305,12 @@ pub const Server = struct {
         stream.release();
         // Last: the link may be destroyed as soon as this reaches zero.
         _ = entry.readers.fetchSub(1, .release);
+    }
+
+    /// Whether to serve the connection on `fd`: only a peer running as `uid`,
+    /// the server's own user, and only below the connection ceiling.
+    fn admit(self: *Server, fd: c_int, uid: c.uid_t) bool {
+        return sys.peerIsUser(fd, uid) and !self.connectionsFull();
     }
 
     /// Whether `max_connections` are open. Logs the first refusal of each
@@ -1376,16 +1378,25 @@ pub const Server = struct {
         if (fd > 2) _ = c.close(fd);
     }
 
+    /// How long the server must have had no panes and no connections to exit.
+    const idle_exit_ms = 5000;
+
+    /// Whether nothing needs the server: no panes, no connections, and none
+    /// for `idle_exit_ms`. A server that never reports idle never exits.
+    fn isIdle(self: *Server) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.panes.items.len == 0 and self.connections == 0 and
+            sys.elapsedMillis() - self.idle_since > idle_exit_ms;
+    }
+
     fn idleLoop(self: *Server) noreturn {
         while (true) {
             sys.sleepMillis(5000);
             self.rotateLog();
             self.reapPanes();
             self.reapLinks();
-            self.mutex.lock();
-            const idle = self.panes.items.len == 0 and self.connections == 0 and sys.elapsedMillis() - self.idle_since > 5000;
-            self.mutex.unlock();
-            if (idle) {
+            if (self.isIdle()) {
                 log("idle, exiting", .{});
                 _ = c.unlink(cstr(self.paths.socket));
                 std.process.exit(0);
@@ -1551,6 +1562,38 @@ test "log rolls aside at the limit" {
     defer _ = c.close(fd);
     const n: usize = @intCast(c.read(fd, &read, read.len));
     try testing.expectEqualStrings("0123456789abcdefXYZ", read[0..n]);
+}
+
+test "only the server's own user is admitted, and no one once it is full" {
+    var fds: [2]c_int = undefined;
+    try testing.expectEqual(0, c.socketpair(c.AF_UNIX, c.SOCK_STREAM, 0, &fds));
+    defer _ = c.close(fds[0]);
+    defer _ = c.close(fds[1]);
+    var server = testServer(testing.allocator);
+    const me = c.getuid();
+    try testing.expect(server.admit(fds[0], me));
+    try testing.expect(!server.admit(fds[0], me +% 1));
+    server.connections = max_connections;
+    try testing.expect(!server.admit(fds[0], me));
+    server.connections = max_connections - 1;
+    try testing.expect(server.admit(fds[0], me));
+}
+
+test "a server exits only when it has had no panes and no connections for a while" {
+    var server = testServer(testing.allocator);
+    defer server.panes.deinit(testing.allocator);
+    server.idle_since = sys.elapsedMillis() - 2 * Server.idle_exit_ms;
+    try testing.expect(server.isIdle());
+    server.idle_since = sys.elapsedMillis();
+    try testing.expect(!server.isIdle());
+    server.idle_since = sys.elapsedMillis() - 2 * Server.idle_exit_ms;
+    server.connections = 1;
+    try testing.expect(!server.isIdle());
+    server.connections = 0;
+    // A placeholder; nothing dereferences a pane here.
+    try server.panes.append(testing.allocator, @ptrFromInt(@alignOf(Pane)));
+    defer server.panes.clearRetainingCapacity();
+    try testing.expect(!server.isIdle());
 }
 
 fn testServer(gpa: Allocator) Server {
