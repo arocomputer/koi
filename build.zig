@@ -22,6 +22,8 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     c.addIncludePath(ghostty.path("include"));
+    const lua = b.dependency("lua", .{});
+    c.addIncludePath(lua.path("src"));
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/core/main.zig"),
@@ -37,6 +39,9 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("build_options", build_options);
     mod.addImport("c", c.createModule());
     mod.linkLibrary(engine);
+    // Lua, for `koi do` and `koi run` (src/core/script.zig): the interpreter without
+    // its standalone programs. POSIX only; no C-module loading, so no dlopen.
+    mod.addCSourceFiles(.{ .root = lua.path("src"), .files = &lua_sources, .flags = &.{ "-std=gnu99", "-DLUA_USE_POSIX" } });
 
     if (optimize != .debug) mod.strip = true;
     const exe = b.addExecutable(.{ .name = "koi", .root_module = mod });
@@ -61,3 +66,10 @@ pub fn build(b: *std.Build) void {
     b.step("test", "Run the core's tests").dependOn(&run_tests.step);
 }
 
+/// Lua 5.4's library sources: the core, then the standard libraries.
+const lua_sources = [_][]const u8{
+    "lapi.c",     "lcode.c",   "lctype.c",   "ldebug.c",  "ldo.c",      "ldump.c",    "lfunc.c",  "lgc.c",
+    "llex.c",     "lmem.c",    "lobject.c",  "lopcodes.c", "lparser.c", "lstate.c",   "lstring.c", "ltable.c",
+    "ltm.c",      "lundump.c", "lvm.c",      "lzio.c",    "lauxlib.c",  "lbaselib.c", "lcorolib.c", "ldblib.c",
+    "liolib.c",   "lmathlib.c", "loadlib.c", "loslib.c",  "lstrlib.c",  "ltablib.c",  "lutf8lib.c", "linit.c",
+};

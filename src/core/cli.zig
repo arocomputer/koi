@@ -13,6 +13,7 @@ const Socket = @import("transport.zig").Socket;
 const Terminal = @import("emulator.zig").Terminal;
 const Allocator = std.mem.Allocator;
 const api_doc = @import("api.zig");
+const script = @import("script.zig");
 
 const usage =
     \\koi: the multiplexer for the shell. Commands:
@@ -27,6 +28,8 @@ const usage =
     \\                        PANE defaults to KOI_PANE; accepts an exact pane id
     \\  info [--json]          running server version, pid, uptime and capabilities
     \\  api [OP]              the commands the server accepts, as JSON; needs no server
+    \\  do SOURCE             run Lua source that drives koi; see docs/cli.md
+    \\  run FILE [ARG...]     run a Lua script file with ARG... as `arg`
     \\  version               this binary's version
     \\  clear [TARGET]        erase scrollback; preserve visible screen and modes
     \\  reset [TARGET]        reset engine screen, history, modes and parser
@@ -53,6 +56,8 @@ pub fn run(gpa: Allocator, args: []const [:0]const u8) u8 {
     if (std.mem.eql(u8, cmd, "status")) return reportStatus(gpa, rest);
     if (std.mem.eql(u8, cmd, "info")) return info(gpa, rest);
     if (std.mem.eql(u8, cmd, "api")) return api(gpa, rest);
+    if (std.mem.eql(u8, cmd, "do")) return if (rest.len == 1) script.run(gpa, .{ .source = rest[0] }, &.{}) else 2;
+    if (std.mem.eql(u8, cmd, "run")) return if (rest.len >= 1) script.run(gpa, .{ .file = rest[0] }, rest[1..]) else 2;
     if (std.mem.eql(u8, cmd, "version")) {
         _ = sys.writeAll(1, binary_version);
         _ = sys.writeAll(1, "\n");

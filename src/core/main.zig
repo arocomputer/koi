@@ -17,6 +17,7 @@ test {
     _ = @import("remote.zig");
     _ = @import("cli.zig");
     _ = @import("api.zig");
+    _ = @import("script.zig");
 }
 
 pub fn main(init: std.process.Init) !void {
