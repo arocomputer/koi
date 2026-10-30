@@ -78,8 +78,23 @@ class ReleaseTests(unittest.TestCase):
         for name in ('APPLE_CERTIFICATE_PASSWORD', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER'):
             self.env[name] = 'fixture'
         self.env['APPLE_SIGNING_IDENTITY'] = 'Developer ID Application: Fixture'
+        self.env['SPARKLE_ED_PRIVATE_KEY'] = 'Zml4dHVyZQ=='
+        # A stand-in for Sparkle's signer: prints what it would for an archive, and
+        # embeds a mark in a feed, recording every call.
+        sparkle = self.base / 'sparkle-bin'
+        sparkle.mkdir()
+        self.sign_log = self.base / 'sign-calls'
+        signer = sparkle / 'sign_update'
+        signer.write_text('#!/bin/sh\necho "$@" >> "$SIGN_LOG"\nfor last; do :; done\n'
+                          'case "$last" in *appcast.xml) echo "<!-- sparkle-signatures: fixture -->" >> "$last";;\n'
+                          '*) echo \'sparkle:edSignature="c2lnbmF0dXJl" length="1234"\';; esac\n')
+        signer.chmod(0o755)
+        self.env.update(SPARKLE_BIN=str(sparkle), SIGN_LOG=str(self.sign_log))
         self.app = self.base / 'Koi.app'
-        for name in ('MacOS/koi', 'Resources/koi', 'Resources/koi-linux-x86_64'):
+        for name in ('MacOS/koi', 'Resources/koi', 'Resources/koi-linux-x86_64',
+                     'Frameworks/Sparkle.framework/Versions/B/Sparkle',
+                     'Frameworks/Sparkle.framework/Versions/B/Autoupdate',
+                     'Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater'):
             path = self.app / 'Contents' / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
@@ -140,6 +155,13 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotEqual(self.run_release('sign').returncode, 0)
         self.assertEqual(self.calls(), [])
 
+    def test_a_release_without_the_update_signing_key_is_refused_before_any_tool_runs(self):
+        del self.env['SPARKLE_ED_PRIVATE_KEY']
+        result = self.run_release('sign')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Sparkle', result.stderr)
+        self.assertEqual(self.calls(), [])
+
     def test_notary_rejection_and_tool_failure_clean_keychain(self):
         for key, value in [('NOTARY_STATUS', 'Invalid'), ('FAIL', 'codesign'), ('FAIL', 'xcrun')]:
             with self.subTest(value=value):
@@ -159,6 +181,13 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(signs[-1][-1].endswith('/Koi.app'))
         self.assertTrue(any(c[-1].endswith('/Resources/koi') for c in signs))
         self.assertFalse(any('linux' in c[-1] for c in signs))
+        # Sparkle's nested bundles are sealed apart from their files: each is signed,
+        # the updater inside the framework first, and all before the app.
+        order = [c[-1].split('/Koi.app/')[-1] for c in signs]
+        updater = order.index('Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app')
+        framework = order.index('Contents/Frameworks/Sparkle.framework')
+        self.assertLess(updater, framework)
+        self.assertLess(framework, len(order) - 1)
         # Only the app executable and the bundle carry the resource-access
         # entitlements; the bundled server and everything else do not.
         with_entitlements = {c[-1].split('/Koi.app')[-1] for c in signs if '--entitlements' in c}
@@ -170,6 +199,19 @@ class ReleaseTests(unittest.TestCase):
         self.assertLess(commands.index(('xcrun', 'notarytool')), commands.index(('xcrun', 'stapler')))
         self.assertTrue(any(c[0] == 'spctl' and '/install/Koi.app' in c[-1] for c in calls))
         self.assertTrue((self.base / 'dist/SHA256SUMS').is_file())
+        # The appcast names this release's archive with the signer's length and
+        # signature, is itself signed, and ships beside the archive.
+        appcast = (self.base / 'dist/appcast.xml').read_text()
+        self.assertIn('url="https://github.com/fixture/koi/releases/download/v0.1.0/Koi-v0.1.0-macos-arm64.zip"', appcast)
+        self.assertIn('sparkle:edSignature="c2lnbmF0dXJl" length="1234"', appcast)
+        self.assertIn('<sparkle:version>0.1.0</sparkle:version>', appcast)
+        self.assertTrue(appcast.rstrip().endswith('<!-- sparkle-signatures: fixture -->'))
+        signed = self.sign_log.read_text().splitlines()
+        self.assertEqual(len(signed), 2)
+        self.assertTrue(signed[0].endswith('Koi-v0.1.0-macos-arm64.zip'))
+        self.assertTrue(signed[1].endswith('appcast.xml'))
+        self.assertNotIn('c2lnbmF0dXJl', (self.base / 'dist/SHA256SUMS').read_text())
+        self.assertIn('appcast.xml', (self.base / 'dist/SHA256SUMS').read_text())
         self.assertFalse(list(self.base.glob('koi-release.*')))
         self.assertFalse(any(c[0] in ('swift', 'zig', 'open') for c in calls))
 

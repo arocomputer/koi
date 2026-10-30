@@ -173,9 +173,11 @@ summaries and retained renderer errors, excluding raw logs and terminal text.
 **Clear History** keeps log files; **Open Local Server Log…** opens the local log
 explicitly.
 
-Koi is not published yet. **Check for Updates…** requires a user-configured
-HTTPS release URL and a manual check. It opens release pages and does not
-automatically download or install binaries. Advanced also offers logs,
+Koi updates itself. About once a day it asks GitHub for a newer signed release
+and, if there is one, shows a small toast in the corner of the window: **Update**
+downloads it in the background and **Restart** installs it, with your terminals
+still running. **Check for Updates…** asks right away, and Advanced turns the
+daily check off. Advanced also offers logs,
 copying and save-panel export of redacted diagnostics, and an opt-in CLI
 wrapper installer.
 

@@ -68,8 +68,8 @@ signals only registered fixture processes whose live executable or command
 matches the run's private binary; stale PID markers are ignored.
 AppKit fixtures host windows/views offscreen;
 installation tests use private fixture homes and fake binaries, notification
-tests inject delivery, and update tests inject fetching. Keep new checks
-isolated the same way: no real notification authorization, update requests,
+tests inject delivery, and update tests drive the toast's driver directly. Keep
+new checks isolated the same way: no real notification authorization, update requests,
 agent installs, home-config reads or writes to existing sessions.
 
 The commands above cover development build/run/test and the ordinary release
@@ -216,7 +216,7 @@ After dependencies are available, focused checks for the newer behavior can
 be selected without running Koid's app or attaching to its sessions:
 
 ```sh
-./x test 'ProjectTests|ActivityTests|UpdatesTests|IntegrationsTests|InstallationTests'
+./x test 'ProjectTests|ActivityTests|UpdaterTests|IntegrationsTests|InstallationTests'
 ./x test closingOneWindowPreservesAnotherWindowsSelectionAndServer
 ./x test 'settings|accessibility'
 ./x test-core serverInfo
@@ -372,9 +372,9 @@ limit alone is not a hard-memory or cross-client history guarantee.
 Optional shell/agent installs and the CLI wrapper must remain user-click
 operations. Skills are single-file guidance, with no guaranteed lifecycle
 hooks. Notification initialization must not ask authorization; explicit
-notification UI actions own that prompt. Updates require a manually
-configured source and user check while the app is unpublished, and open
-release pages without automatic binary installation. See
+notification UI actions own that prompt. Updates come from the signed
+appcast in the app's `Info.plist`, shown as a toast; only a build with that
+feed and key updates, never Koid or a test. See
 [Configuration](docs/configuration.md) for the implemented controls.
 
 When updating Ghostty, change `GHOSTTY_COMMIT` in

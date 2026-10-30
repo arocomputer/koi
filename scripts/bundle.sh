@@ -81,6 +81,13 @@ swift build "$@"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$(swift build "$@" --show-bin-path)/Koi" "$app/Contents/MacOS/koi"
+# Sparkle installs updates (src/app/updater.swift). Its XPC services exist only for
+# sandboxed apps, so the framework goes in without them.
+sparkle="$root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+[ -d "$sparkle" ] || { echo "bundle: Sparkle.framework is missing; run swift package resolve" >&2; exit 1; }
+mkdir -p "$app/Contents/Frameworks"
+cp -R "$sparkle" "$app/Contents/Frameworks/Sparkle.framework"
+rm -rf "$app/Contents/Frameworks/Sparkle.framework/XPCServices" "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices"
 cp -R "$root/src/app/resources/programs" "$app/Contents/Resources/programs"
 cp -R "$root/src/app/resources/shell" "$app/Contents/Resources/shell"
 cp "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.md" "$app/Contents/Resources/"
@@ -94,6 +101,16 @@ done
 xcrun actool "$root/src/app/resources/$icon.icon" --compile "$app/Contents/Resources" --platform macosx \
   --minimum-deployment-target 26.0 --app-icon "$icon" --output-partial-info-plist /dev/null \
   --output-format human-readable-text >/dev/null
+# Koi updates itself from its GitHub releases, which scripts/release.sh signs with
+# the private half of this key. Koid and local checks never update.
+updates=
+if [ "$dev" = 0 ]; then
+  updates="  <key>SUFeedURL</key><string>https://github.com/arocomputer/koi/releases/latest/download/appcast.xml</string>
+  <key>SUPublicEDKey</key><string>XJ1dLvWkSpRctYL6dpJUhZcIE7cBrPgDq8WOcfQosIs=</string>
+  <key>SURequireSignedFeed</key><true/>
+  <key>SUVerifyUpdateBeforeExtraction</key><true/>
+  <key>SUScheduledCheckInterval</key><integer>86400</integer>"
+fi
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -107,6 +124,7 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>$version</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
+$updates
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
@@ -135,6 +153,10 @@ cat > "$app/Contents/Info.plist" <<EOF
 EOF
 identity=-
 security find-identity -v -p codesigning 2>/dev/null | grep -q '"Koi Dev"' && identity="Koi Dev"
+# Taking the XPC services out changed the framework's sealed contents, so sign
+# Sparkle again, inside out, the way release.sh does for distribution.
+fw="$app/Contents/Frameworks/Sparkle.framework"
+codesign --force --sign "$identity" "$fw/Versions/B/Autoupdate" "$fw/Versions/B/Updater.app" "$fw" >/dev/null
 codesign --force --sign "$identity" --entitlements "$root/src/app/resources/Koi.entitlements" "$app" >/dev/null
 echo "built $app"
 
