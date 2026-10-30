@@ -78,6 +78,26 @@ import Testing
     }
 
     /// Both output pipes fill before the child consumes a larger input stream.
+    /// A command that reads its input to the end must see the end every time, even
+    /// when many run at once. Shutting down our write side alone left one in about
+    /// five hundred blocked in `cat` until the deadline, so this runs a few hundred.
+    /// The workers are dispatch threads: they block, and blocking tasks would take
+    /// every thread the other tests need to resume.
+    @Test func concurrentCommandsAlwaysSeeTheEndOfTheirInput() {
+        let input = Data(repeating: 107, count: 128 * 1024)
+        let stalled = Mutex(0)
+        DispatchQueue.concurrentPerform(iterations: 12) { _ in
+            for _ in 0..<30 {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", "cat > /dev/null"]
+                do { _ = try Remote.runProcess(process, input: input, timeout: 4) }
+                catch { stalled.withLock { $0 += 1 } }
+            }
+        }
+        #expect(stalled.withLock { $0 } == 0)
+    }
+
     @Test func drainsBothOutputsWhileFeedingInput() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
@@ -149,7 +169,7 @@ extension RemoteTests {
         let secondProbe = DispatchSemaphore(value: 0)
         let done = DispatchGroup()
         let failures = Mutex<[String]>([])
-        defer { release.signal(); _ = done.wait(timeout: .now() + 5) }
+        defer { release.signal(); _ = done.wait(timeout: .now() + RemoteFixture.hangLimit) }
         done.enter()
         DispatchQueue.global().async {
             defer { done.leave() }
@@ -157,12 +177,12 @@ extension RemoteTests {
                 try fixture.prepare(host) { input in
                     if input != nil {
                         uploading.signal()
-                        #expect(release.wait(timeout: .now() + 5) == .success)
+                        #expect(release.wait(timeout: .now() + RemoteFixture.hangLimit) == .success)
                     }
                 }
             } catch { failures.withLock { $0.append(String(describing: error)) } }
         }
-        try #require(uploading.wait(timeout: .now() + 3) == .success)
+        try #require(uploading.wait(timeout: .now() + RemoteFixture.hangLimit) == .success)
         done.enter()
         DispatchQueue.global().async {
             defer { done.leave() }
@@ -173,11 +193,11 @@ extension RemoteTests {
                 }
             } catch { failures.withLock { $0.append(String(describing: error)) } }
         }
-        try #require(secondStarted.wait(timeout: .now() + 3) == .success)
+        try #require(secondStarted.wait(timeout: .now() + RemoteFixture.hangLimit) == .success)
         try other.prepare(UUID().uuidString)
         #expect(secondProbe.wait(timeout: .now() + 0.1) == .timedOut)
         release.signal()
-        try #require(done.wait(timeout: .now() + 5) == .success)
+        try #require(done.wait(timeout: .now() + RemoteFixture.hangLimit) == .success)
         #expect(failures.withLock { $0.isEmpty })
         #expect(fixture.counts.withLock { $0.probes } == 2)
         #expect(fixture.counts.withLock { $0.uploads } == 1)
@@ -218,7 +238,7 @@ extension RemoteTests {
         let failures = Mutex<[String]>([])
         defer {
             try? Data().write(to: fixture.root.appendingPathComponent("release"))
-            _ = done.wait(timeout: .now() + 6)
+            _ = done.wait(timeout: .now() + RemoteFixture.hangLimit)
         }
         done.enter()
         DispatchQueue.global().async {
@@ -230,7 +250,7 @@ extension RemoteTests {
         try fixture.prepare(UUID().uuidString, source: versionB)
         #expect(try Data(contentsOf: fixture.installed) == bytesB)
         try Data().write(to: fixture.root.appendingPathComponent("release"))
-        try #require(done.wait(timeout: .now() + 6) == .success)
+        try #require(done.wait(timeout: .now() + RemoteFixture.hangLimit) == .success)
         #expect(failures.withLock { $0.isEmpty })
         try Data((fixture.hash + "\n").utf8).write(to: fixture.hashFile)
         try fixture.prepare(UUID().uuidString)
@@ -286,6 +306,11 @@ private final class RemoteFixture: Sendable {
     let hashFile: URL
     let hash: String
     let counts = Mutex((probes: 0, uploads: 0, links: 0))
+    /// How long a fixture command or a wait on another thread may take before the
+    /// test calls it hung. A paused publisher legitimately lives as long as the
+    /// rest of its test, and a loaded CI Mac can take seconds to run the others,
+    /// so this only has to catch something that never returns.
+    static let hangLimit: TimeInterval = 30
 
     init() throws {
         let temporaryRoot = ProcessInfo.processInfo.environment["KOI_TEST_ROOT"] ?? NSTemporaryDirectory()
@@ -326,9 +351,9 @@ private final class RemoteFixture: Sendable {
     /// Remove only this fixture's private files after all its commands finish.
     func remove() { try? FileManager.default.removeItem(at: root) }
 
-    /// Waits at most three seconds for the remote shell's publication barrier.
+    /// Waits for the remote shell's publication barrier, up to the hang limit.
     func waitForPublication() -> Bool {
-        for _ in 0..<300 {
+        for _ in 0..<Int(Self.hangLimit * 100) {
             if FileManager.default.fileExists(atPath: root.appendingPathComponent("publishing").path) { return true }
             Thread.sleep(forTimeInterval: 0.01)
         }
@@ -350,7 +375,7 @@ private final class RemoteFixture: Sendable {
                 "PATH": (failUpload && input != nil ? self.root.appendingPathComponent("tools/failing").path + ":" : "")
                     + self.root.appendingPathComponent("tools").path + ":/usr/bin:/bin"]
                 .merging(environment) { _, value in value }
-            let result = try Remote.runProcess(process, input: input == nil ? nil : inputOverride ?? input, timeout: 5)
+            let result = try Remote.runProcess(process, input: input == nil ? nil : inputOverride ?? input, timeout: Self.hangLimit)
             guard process.terminationStatus == 0 else {
                 throw Remote.Failure(description: String(decoding: result.errors, as: UTF8.self))
             }
