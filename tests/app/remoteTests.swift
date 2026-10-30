@@ -218,7 +218,7 @@ extension RemoteTests {
         let failures = Mutex<[String]>([])
         defer {
             try? Data().write(to: fixture.root.appendingPathComponent("release"))
-            _ = done.wait(timeout: .now() + 6)
+            _ = done.wait(timeout: .now() + RemoteFixture.hangLimit)
         }
         done.enter()
         DispatchQueue.global().async {
@@ -230,7 +230,7 @@ extension RemoteTests {
         try fixture.prepare(UUID().uuidString, source: versionB)
         #expect(try Data(contentsOf: fixture.installed) == bytesB)
         try Data().write(to: fixture.root.appendingPathComponent("release"))
-        try #require(done.wait(timeout: .now() + 6) == .success)
+        try #require(done.wait(timeout: .now() + RemoteFixture.hangLimit) == .success)
         #expect(failures.withLock { $0.isEmpty })
         try Data((fixture.hash + "\n").utf8).write(to: fixture.hashFile)
         try fixture.prepare(UUID().uuidString)
@@ -286,6 +286,11 @@ private final class RemoteFixture: Sendable {
     let hashFile: URL
     let hash: String
     let counts = Mutex((probes: 0, uploads: 0, links: 0))
+    /// How long a fixture command may run before the test calls it hung. A
+    /// paused publisher legitimately lives as long as the rest of its test, and
+    /// a loaded CI Mac can take several seconds to run the others, so this only
+    /// has to catch a command that never returns.
+    static let hangLimit: TimeInterval = 30
 
     init() throws {
         let temporaryRoot = ProcessInfo.processInfo.environment["KOI_TEST_ROOT"] ?? NSTemporaryDirectory()
@@ -350,7 +355,7 @@ private final class RemoteFixture: Sendable {
                 "PATH": (failUpload && input != nil ? self.root.appendingPathComponent("tools/failing").path + ":" : "")
                     + self.root.appendingPathComponent("tools").path + ":/usr/bin:/bin"]
                 .merging(environment) { _, value in value }
-            let result = try Remote.runProcess(process, input: input == nil ? nil : inputOverride ?? input, timeout: 5)
+            let result = try Remote.runProcess(process, input: input == nil ? nil : inputOverride ?? input, timeout: Self.hangLimit)
             guard process.terminationStatus == 0 else {
                 throw Remote.Failure(description: String(decoding: result.errors, as: UTF8.self))
             }
