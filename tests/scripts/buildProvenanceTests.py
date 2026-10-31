@@ -202,7 +202,7 @@ exec ''' + shlex.quote(git) + ' "$@"')
         self.assertIn('<key>CFBundleShortVersionString</key><string>0.1.0</string>', plist)
         self.assertFalse((self.root / 'build/Koi.app').exists())
 
-    def test_bundle_declares_what_a_pane_may_ask_macos_for(self):
+    def test_bundle_privacy_strings(self):
         output = self.root / 'release/Test.app'
         result = self.run_script('bundle.sh', KOI_BUNDLE_OUTPUT=str(output))
         self.assertEqual(result.returncode, 0, result.stderr)
