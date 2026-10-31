@@ -23,6 +23,7 @@ existing foreign or edited wrapper. Moving the app can invalidate its wrapper.
 | `koi capture [TARGET]` | Print the first pane's screen and scrollback |
 | `koi split [TARGET] [--down \| --right] [--cwd DIR] [--command SOURCE]` | Split right by default, or down; print the new pane ID |
 | `koi status [PANE] STATE` | Report `working`, `blocked`, `done`, `error` or `idle` for an exact pane ID |
+| `koi api [OP]` | Print the commands the server accepts as JSON: every operation with a summary and the capability to probe for, and every command field with its type and values. With `OP`, only that operation. Reads the binary, so it works without a running server |
 | `koi info [--json]` | Report the running server's version, PID, protocol, uptime, transports and capabilities |
 | `koi version` | Print this binary's own version, without contacting a server |
 | `koi clear [TARGET]` | Erase retained scrollback, preserving the visible screen and modes |
@@ -60,6 +61,22 @@ metadata reports, but does not repair the PTY's termios settings or restart
 the shell. The server broadcasts the resulting snapshot to attached clients.
 There is no CLI `configure` subcommand: theme defaults and scrollback
 configuration use JSON `configurePane` through the control protocol.
+
+## Describing the commands
+
+`koi api` is for scripts and agents that need the command vocabulary without
+reading the source:
+
+```sh
+koi api reportStatus     # one operation, with the full field list
+koi api | jq '.operations[].op'
+```
+
+The fields come from the same type the server decodes, so they cannot drift
+from what it accepts. They are shared by all operations; the field list does
+not say which operations read which, and an operation ignores fields it does not
+use. Probe an operation's `capability` with `koi info --json` before sending it
+to a server that may be older.
 
 ## Targets and pane selection
 

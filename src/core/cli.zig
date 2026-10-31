@@ -12,6 +12,7 @@ const binary_version = @import("server.zig").binary_version;
 const Socket = @import("transport.zig").Socket;
 const Terminal = @import("emulator.zig").Terminal;
 const Allocator = std.mem.Allocator;
+const api_doc = @import("api.zig");
 
 const usage =
     \\koi: the multiplexer for the shell. Commands:
@@ -25,6 +26,7 @@ const usage =
     \\  status [PANE] STATE   report working|blocked|done|error|idle
     \\                        PANE defaults to KOI_PANE; accepts an exact pane id
     \\  info [--json]          running server version, pid, uptime and capabilities
+    \\  api [OP]              the commands the server accepts, as JSON; needs no server
     \\  version               this binary's version
     \\  clear [TARGET]        erase scrollback; preserve visible screen and modes
     \\  reset [TARGET]        reset engine screen, history, modes and parser
@@ -50,6 +52,7 @@ pub fn run(gpa: Allocator, args: []const [:0]const u8) u8 {
     const rest = args[1..];
     if (std.mem.eql(u8, cmd, "status")) return reportStatus(gpa, rest);
     if (std.mem.eql(u8, cmd, "info")) return info(gpa, rest);
+    if (std.mem.eql(u8, cmd, "api")) return api(gpa, rest);
     if (std.mem.eql(u8, cmd, "version")) {
         _ = sys.writeAll(1, binary_version);
         _ = sys.writeAll(1, "\n");
@@ -398,6 +401,17 @@ fn paneTarget(client: *Client, target: ?[]const u8) ?[]u8 {
         return null;
     };
     return client.gpa.dupe(u8, found.pane.id) catch null;
+}
+
+/// `koi api [OP]`: the command vocabulary as JSON, from the binary alone.
+fn api(gpa: Allocator, args: []const [:0]const u8) u8 {
+    if (args.len > 1) return 2;
+    const text = (api_doc.describe(gpa, if (args.len == 1) args[0] else null, &@import("server.zig").capabilities) catch return 1) orelse {
+        std.debug.print("koi: no such operation: {s}\n", .{args[0]});
+        return 2;
+    };
+    defer gpa.free(text);
+    return if (sys.writeAll(1, text) and sys.writeAll(1, "\n")) 0 else 1;
 }
 
 /// Reports the answering server, even when its on-disk binary was replaced.
