@@ -3,6 +3,13 @@
 //! the per-user runtime directory. `KOI_DIR` puts everything under one
 //! directory instead, which the tests use.
 //!
+//! The runtime directory depends on the user and the platform, never on the
+//! caller's environment: the server lock inside it is what keeps one server
+//! per user, so a client started from a login shell, a GUI or SSH must all
+//! compute the same path. Moving it strands any server still running at the
+//! old path and the next client starts a second one beside it, so a move is
+//! a migration: stop the old servers or say so in the release notes.
+//!
 //! The socket's directory is the only thing authenticating a client, so
 //! `ensureDirs` refuses to serve from a directory this user does not solely
 //! control, and never places the socket in shared `/tmp`.
@@ -12,10 +19,30 @@ const sys = @import("sys.zig");
 const c = sys.c;
 const wire = @import("wire.zig");
 
+const Getenv = *const fn ([*:0]const u8) ?[]const u8;
+
 /// Match Swift's treatment of unset and empty directory overrides.
-fn nonemptyEnv(name: [:0]const u8) ?[]const u8 {
-    const value = sys.getenv(name.ptr) orelse return null;
+fn nonemptyEnv(getenv: Getenv, name: [:0]const u8) ?[]const u8 {
+    const value = getenv(name.ptr) orelse return null;
     return if (value.len == 0) null else value;
+}
+
+/// The per-user runtime directory: macOS's own per-user temporary directory
+/// (what a GUI session's `TMPDIR` holds), `/run/user/<uid>` on Linux, and
+/// `/tmp/koi-<uid>` where neither exists. Private to the user in every case;
+/// a bare `/tmp/koi` would belong to whichever user started first.
+fn userRuntime(gpa: std.mem.Allocator) ![]u8 {
+    const uid = c.getuid();
+    if (builtin.os.tag == .macos) {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = c.confstr(c._CS_DARWIN_USER_TEMP_DIR, &buf, buf.len);
+        if (n > 1 and n <= buf.len) return std.fs.path.join(gpa, &.{ std.mem.trimEnd(u8, buf[0 .. n - 1], "/"), "koi" });
+    } else if (builtin.os.tag == .linux) {
+        var run_buf: [64]u8 = undefined;
+        const run = try std.fmt.bufPrintSentinel(&run_buf, "/run/user/{d}", .{uid}, 0);
+        if (c.access(run.ptr, c.F_OK) == 0) return std.fs.path.join(gpa, &.{ run, "koi" });
+    }
+    return std.fmt.allocPrint(gpa, "/tmp/koi-{d}", .{uid});
 }
 
 pub const Paths = struct {
@@ -26,26 +53,23 @@ pub const Paths = struct {
     log: []const u8,
 
     pub fn init(gpa: std.mem.Allocator) !Paths {
-        const home = sys.getenv("HOME") orelse "/";
-        const override = nonemptyEnv("KOI_DIR");
-        const state = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv("XDG_STATE_HOME")) |x|
+        return initWith(gpa, sys.getenv);
+    }
+
+    /// `init` reading its environment through `getenv`, so a test can vary it.
+    fn initWith(gpa: std.mem.Allocator, getenv: Getenv) !Paths {
+        const home = getenv("HOME") orelse "/";
+        const override = nonemptyEnv(getenv, "KOI_DIR");
+        const state = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv(getenv, "XDG_STATE_HOME")) |x|
             try std.fs.path.join(gpa, &.{ x, "koi" })
         else
             try std.fs.path.join(gpa, &.{ home, ".local/state/koi" });
         errdefer gpa.free(state);
-        // Without a per-user runtime or temporary directory, the fallback in
-        // shared /tmp is per user too: a single /tmp/koi would belong to
-        // whichever user started first, and `ensureDirs` refuses everyone else.
-        var runtime = if (override) |dir| try gpa.dupe(u8, dir) else if (nonemptyEnv("XDG_RUNTIME_DIR")) |x|
-            try std.fs.path.join(gpa, &.{ x, "koi" })
-        else if (nonemptyEnv("TMPDIR")) |t|
-            try std.fs.path.join(gpa, &.{ t, "koi" })
-        else
-            try std.fmt.allocPrint(gpa, "/tmp/koi-{d}", .{c.getuid()});
+        var runtime = if (override) |dir| try gpa.dupe(u8, dir) else try userRuntime(gpa);
         errdefer gpa.free(runtime);
         const name = try std.fmt.allocPrint(gpa, "server-{d}.sock", .{wire.version});
         defer gpa.free(name);
-        // `sun_path` is 104 bytes. A long TMPDIR moves the whole runtime
+        // `sun_path` is 104 bytes. A long runtime path moves the whole
         // directory to a per-user one, rather than dropping the socket alone
         // into shared /tmp where another local user could pre-empt the path.
         if (runtime.len + name.len + 1 >= 100) {
@@ -79,6 +103,27 @@ pub const Paths = struct {
         try ensurePrivateDir(self.runtime);
     }
 };
+
+test "runtime directory ignores TMPDIR" {
+    const Env = struct {
+        fn bare(_: [*:0]const u8) ?[]const u8 {
+            return null;
+        }
+        fn crowded(name: [*:0]const u8) ?[]const u8 {
+            const key = std.mem.span(name);
+            if (std.mem.eql(u8, key, "TMPDIR")) return "/tmp/koi-elsewhere";
+            if (std.mem.eql(u8, key, "XDG_RUNTIME_DIR")) return "/tmp/koi-also-elsewhere";
+            return null;
+        }
+    };
+    const gpa = std.testing.allocator;
+    const without = try Paths.initWith(gpa, Env.bare);
+    defer without.deinit(gpa);
+    const with = try Paths.initWith(gpa, Env.crowded);
+    defer with.deinit(gpa);
+    try std.testing.expectEqualStrings(without.socket, with.socket);
+    try std.testing.expectEqualStrings(without.lock, with.lock);
+}
 
 test "path allocation failures release every owned string" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
