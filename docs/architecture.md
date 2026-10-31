@@ -50,7 +50,7 @@ rather than adding a layer for each helper. Useful boundaries are:
 | Connection lifecycle and routing | [`connections.swift`](../src/app/connections.swift), [`transport.swift`](../src/app/transport.swift), [`endpoint.swift`](../src/app/endpoint.swift), [`remote.swift`](../src/app/remote.swift) |
 | Configuration, Settings and fixed palette | [`config.swift`](../src/app/config.swift), [`settings.swift`](../src/app/settings.swift), [`theme.swift`](../src/app/theme.swift) |
 | Project recipes and current activity | [`projects.swift`](../src/app/projects.swift), [`activity.swift`](../src/app/activity.swift) |
-| Running-server facts and support | [`server.swift`](../src/app/server.swift), [`updates.swift`](../src/app/updates.swift), [`diagnostics.swift`](../src/app/diagnostics.swift), [`diagnosticswindow.swift`](../src/app/diagnosticswindow.swift) |
+| Running-server facts and support | [`server.swift`](../src/app/server.swift), [`updater.swift`](../src/app/updater.swift), [`diagnostics.swift`](../src/app/diagnostics.swift), [`diagnosticswindow.swift`](../src/app/diagnosticswindow.swift) |
 | Terminal text accessibility and opt-in installation | [`accessibility.swift`](../src/app/accessibility.swift), [`install.swift`](../src/app/install.swift), [`integrations.swift`](../src/app/integrations.swift) |
 | Storage and development previews | [`layout.swift`](../src/app/layout.swift), [`paths.swift`](../src/app/paths.swift), [`koid.swift`](../src/app/koid.swift) |
 
@@ -498,7 +498,7 @@ termination flushes the latest values after earlier writes.
 | Named project recipes | `~/.local/state/koi/projects.json` |
 | Server log | `~/.local/state/koi/server.log`, rolled to `server.log.1` at 8 MiB |
 | Socket and server lock | macOS's per-user temporary directory + `/koi`, `/run/user/<uid>/koi` on Linux, or `/tmp/koi-<uid>` |
-| macOS window preferences, palette recents and manual update source | The app's UserDefaults domain |
+| macOS window preferences, palette recents and Sparkle's update schedule | The app's UserDefaults domain |
 
 `XDG_CONFIG_HOME` and `XDG_STATE_HOME` override their respective
 directories. The runtime directory depends on the user and platform, never on
@@ -541,8 +541,9 @@ first new tab only after success. Failure stops further work, preserves
 existing jobs and leaves newly created tabs/helpers for inspection. The app
 requires `splitCwd` and `resizeSplitWeights` before restoring a layout.
 
-Support actions stay with their feature owners: updates have no default feed
-or startup fetch and open release pages only after manual checks;
+Support actions stay with their feature owners: updates (`updater.swift`)
+check GitHub's signed appcast daily and show their steps as one toast, with
+Sparkle doing the download, signature check and install;
 diagnostics format allowlisted facts without reading logs, terminal contents
 or raw config values. Copy and save-panel export use the same redacted
 report. CLI and Codex/Claude skill installation

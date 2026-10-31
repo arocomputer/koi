@@ -4,6 +4,10 @@ set -euo pipefail
 set +x
 cd "$(dirname "$0")/.."
 
+# The Sparkle release whose signing tool signs updates. Pinned by checksum.
+SPARKLE_VERSION=2.10.1
+SPARKLE_SHA256=1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27
+
 case "${1:-}" in
   gate|resolve-tag)
     RELEASE_MODE=$1 python3 - <<'PY'
@@ -64,6 +68,7 @@ PY
     : "${APPLE_API_KEY_BASE64:?Missing notarization API key}"
     : "${APPLE_API_KEY_ID:?Missing notarization key ID}"
     : "${APPLE_API_ISSUER:?Missing notarization issuer}"
+    : "${SPARKLE_ED_PRIVATE_KEY:?Missing Sparkle update signing key}"
     : "${RELEASE_TAG:?Missing tag}"
     [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
     [[ "$APPLE_SIGNING_IDENTITY" == 'Developer ID Application: '* ]] || {
@@ -111,6 +116,11 @@ PY
         codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" --options runtime --timestamp ${extra[@]+"${extra[@]}"} "$binary"
       fi
     done < <(find "$app" -depth -type f -print0)
+    # A nested bundle (Sparkle's updater and framework) is sealed apart from the files
+    # in it, so sign each, deepest first, before the app that contains them.
+    while IFS= read -r -d '' nested; do
+      codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" --options runtime --timestamp "$nested"
+    done < <(find "$app/Contents/Frameworks" -depth -type d \( -name '*.app' -o -name '*.framework' \) -print0 2>/dev/null)
     codesign --force --sign "$APPLE_SIGNING_IDENTITY" --keychain "$keychain" --options runtime --timestamp --entitlements "$entitlements" "$app"
     codesign --verify --deep --strict --verbose=2 "$app"
     ditto -c -k --sequesterRsrc --keepParent "$app" "$private/submit.zip"
@@ -141,9 +151,48 @@ assert info['CFBundleVersion'] == sys.argv[2][1:]
 for name in ('MacOS/koi', 'Resources/koi', 'Resources/koi-linux-x86_64'):
     assert (app / 'Contents' / name).is_file(), name
 PY
+    # The appcast tells installed apps about this release: the archive's length and
+    # EdDSA signature, and the feed itself signed, since the app reads only a signed one.
+    sparkle_bin=${SPARKLE_BIN:-}
+    if [[ -z "$sparkle_bin" ]]; then
+      curl -fsSL -o "$private/sparkle.tar.xz" "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+      echo "$SPARKLE_SHA256  $private/sparkle.tar.xz" | shasum -a 256 -c - >/dev/null
+      mkdir "$private/sparkle"
+      tar -xJf "$private/sparkle.tar.xz" -C "$private/sparkle"
+      sparkle_bin="$private/sparkle/bin"
+    fi
+    printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$private/sparkle.key"
+    signature=$("$sparkle_bin/sign_update" --ed-key-file "$private/sparkle.key" "$private/$archive")
+    python3 - "$RELEASE_TAG" "$archive" "$signature" "${GITHUB_REPOSITORY:?Missing repository}" > "$private/appcast.xml" <<'APPCAST'
+import datetime, email.utils, re, sys
+from xml.sax.saxutils import escape, quoteattr
+tag, archive, signature, repository = sys.argv[1:]
+match = re.fullmatch(r'sparkle:edSignature="([A-Za-z0-9+/=]+)" length="([0-9]+)"', signature.strip())
+if not match:
+    raise SystemExit('sign_update printed an unexpected signature line')
+version = tag[1:]
+base = f'https://github.com/{repository}/releases'
+print(f'''<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Koi</title>
+    <item>
+      <title>Koi {escape(version)}</title>
+      <pubDate>{email.utils.format_datetime(datetime.datetime.now(datetime.timezone.utc))}</pubDate>
+      <link>{escape(f'{base}/tag/{tag}')}</link>
+      <sparkle:version>{escape(version)}</sparkle:version>
+      <sparkle:shortVersionString>{escape(version)}</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <enclosure url={quoteattr(f'{base}/download/{tag}/{archive}')} sparkle:edSignature="{match.group(1)}" length="{match.group(2)}" type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>''')
+APPCAST
+    "$sparkle_bin/sign_update" --ed-key-file "$private/sparkle.key" "$private/appcast.xml" >/dev/null
     mkdir "$3"
-    cp "$private/$archive" "$3/"
-    (cd "$3"; shasum -a 256 "$archive" > SHA256SUMS)
+    cp "$private/$archive" "$private/appcast.xml" "$3/"
+    (cd "$3"; shasum -a 256 "$archive" appcast.xml > SHA256SUMS)
     ;;
   *) echo 'Usage: release.sh gate | resolve-tag | sign BUNDLE NEW_OUTPUT_DIRECTORY' >&2; exit 1 ;;
 esac
