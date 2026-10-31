@@ -295,7 +295,7 @@ enum Remote {
         var sockets: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else { throw POSIXError(.EIO) }
         let childInput = FileHandle(fileDescriptor: sockets[1], closeOnDealloc: true)
-        defer { try? childInput.close(); Darwin.close(sockets[0]) }
+        defer { try? childInput.close(); if sockets[0] >= 0 { Darwin.close(sockets[0]) } }
         defer { try? out.fileHandleForReading.close(); try? err.fileHandleForReading.close() }
         var noSignal: Int32 = 1
         guard setsockopt(sockets[0], SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
@@ -321,6 +321,18 @@ enum Remote {
         var sent = 0
         let input = input ?? Data()
         var inputClosed = false
+        // Ends the child's input. Shutting down the write side is not enough: on
+        // macOS a child blocked reading the other end of a socketpair was seen,
+        // about once in 500 commands run at the same time, never to wake for it
+        // and to wait for an end of file that had already been sent. Closing our
+        // end as well always did, so a command that reads its input to the end
+        // (the upload's `cat`) cannot hang until the deadline.
+        func closeInput() {
+            shutdown(sockets[0], SHUT_WR)
+            Darwin.close(sockets[0])
+            sockets[0] = -1
+            inputClosed = true
+        }
         var buffer = [UInt8](repeating: 0, count: 16 * 1024)
         while true {
             if Task<Never, Never>.isCancelled { throw CancellationError() }
@@ -344,13 +356,9 @@ enum Remote {
                         Darwin.write(sockets[0], $0.baseAddress! + sent, min(16 * 1024, input.count - sent))
                     }
                     if count > 0 { sent += count }
-                    else if count < 0 && errno != EAGAIN && errno != EINTR {
-                        shutdown(sockets[0], SHUT_WR)
-                        inputClosed = true
-                    }
+                    else if count < 0 && errno != EAGAIN && errno != EINTR { closeInput() }
                 } else {
-                    shutdown(sockets[0], SHUT_WR)
-                    inputClosed = true
+                    closeInput()
                 }
             }
             if ended.allSatisfy({ $0 }) && !process.isRunning { break }

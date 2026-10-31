@@ -432,6 +432,13 @@ no tracing garbage collector. Each terminal owns its engine state, each
 renderer frees its render-state helpers, and each selection gesture retains
 its terminal until its tracked references have been freed.
 
+The server bounds what a runaway or vanished client can cost. It refuses a
+new tab or split once 128 panes exist, answering "too many panes: close some
+first", and drops new connections once 1024 are open, logging the first
+refusal each second. Both ceilings are soft: two requests arriving at the
+limit may both pass. The log rolls to `server.log.1` when the server starts and
+every few seconds while it runs, so it never holds more than 16 MiB.
+
 The embedded native library leaves alternate signal-stack ownership with
 the host application, including when the host runs under a sanitizer.
 
@@ -487,14 +494,20 @@ termination flushes the latest values after earlier writes.
 | Configuration | `~/.config/koi/config` |
 | Layout and machine metadata | `~/.local/state/koi/layout.json` |
 | Named project recipes | `~/.local/state/koi/projects.json` |
-| Server log | `~/.local/state/koi/server.log` |
-| Socket and server lock | `$TMPDIR/koi`, or `/tmp/koi-<uid>` when unset |
+| Server log | `~/.local/state/koi/server.log`, rolled to `server.log.1` at 8 MiB |
+| Socket and server lock | macOS's per-user temporary directory + `/koi`, `/run/user/<uid>/koi` on Linux, or `/tmp/koi-<uid>` |
 | macOS window preferences, palette recents and manual update source | The app's UserDefaults domain |
 
-`XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` override their
-respective directories. `KOI_DIR` puts configuration, state and runtime
-files together in one directory; it does not relocate UserDefaults.
-Long socket paths move the runtime directory to `/tmp/koi-<uid>`.
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME` override their respective
+directories. The runtime directory depends on the user and platform, never on
+`TMPDIR` or `XDG_RUNTIME_DIR`: the server lock inside it is what keeps one
+server per user, so a client started from a GUI, a login shell or SSH must
+compute the same path. Changing it strands any server still running at the
+old path, and the next client starts a second one beside it, so a change is a
+migration. `KOI_DIR` puts configuration,
+state and runtime files together in one directory; it does not relocate
+UserDefaults. Long socket paths move the runtime directory to
+`/tmp/koi-<uid>`.
 
 The socket is what authorizes a client to read and drive panes, so its
 directory is the security boundary. The app and server create the state and
