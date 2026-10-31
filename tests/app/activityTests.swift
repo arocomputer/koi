@@ -156,6 +156,26 @@ import UserNotifications
         #expect(recorder.sent.isEmpty && next.completions.isEmpty)
     }
 
+    @Test(arguments: [false, true]) func idlePreservesPendingCompletionButViewingCancelsIt(viewed: Bool) async {
+        let recorder = ActivityRecorder()
+        var feed = AgentFeed()
+        var pending: ActivityCenter?
+        var delivery = recorder.delivery
+        delivery.authorization = {
+            feed.report(.idle)
+            await pending?.consume(snapshot: [.local: feed.state], config: self.enabled,
+                                   viewedPanes: viewed ? [.init(endpoint: .local, pane: "pane")] : [])
+            return .authorized
+        }
+        let center = ActivityCenter(delivery: delivery, isAppFocused: { false })
+        pending = center
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.count == (viewed ? 0 : 1))
+        #expect(center.completions.isEmpty == viewed)
+    }
+
     @Test func deliveryFailureIsVisibleAndDoesNotReplay() async {
         let recorder = ActivityRecorder()
         var delivery = recorder.delivery

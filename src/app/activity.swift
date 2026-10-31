@@ -151,7 +151,12 @@ struct ActivityItem: Identifiable, Equatable {
                             cursors[id] = Cursor(epoch: epoch, sequence: sequence)
                         }
                     }
-                    let revision = sameRun && events.isEmpty && old == pane.status ? (revisions[id] ?? UUID()) : UUID()
+                    // Idle is not a new task and must not cancel an accepted completion
+                    // while notification authorization is in flight. Reads, new runs
+                    // and actionable/resumed work do invalidate pending delivery.
+                    let revision = sameRun && !events.contains(where: { $0.status != .idle })
+                        && !(pane.status == .working && old != .working) && !viewedPanes.contains(id)
+                        ? (revisions[id] ?? UUID()) : UUID()
                     nextRevisions[id] = revision
                     let item = ActivityItem(id: id, tab: tab.id,
                                             title: tab.name.flatMap { $0.isEmpty ? nil : $0 } ?? pane.title,
@@ -160,6 +165,7 @@ struct ActivityItem: Identifiable, Equatable {
                     if pane.status != .idle { items.append(item) }
                     if let event = events.last(where: { $0.status != .idle }),
                        event.status != .working, !viewedPanes.contains(id) {
+                        if event.status != .done { completions[id] = nil }
                         var eventItem = item
                         eventItem.program = pane.agent?.name ?? pane.program
                         eventItem.status = event.status
