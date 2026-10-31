@@ -498,8 +498,10 @@ fn reportAgent(gpa: Allocator, args: []const [:0]const u8) u8 {
         };
         cmd.name = report.name;
         cmd.adapter = report.adapter;
-        cmd.agentSession = report.session;
-        cmd.agentRun = report.run;
+        // The stdin buffer is released at this block's end. JSON strings may
+        // borrow it, so keep only the validated identity in the command arena.
+        cmd.agentSession = arena.allocator().dupe(u8, report.session) catch return 1;
+        cmd.agentRun = if (report.run) |turn| arena.allocator().dupe(u8, turn) catch return 1 else null;
         cmd.agentNewRun = report.new_run;
         cmd.status = report.status;
     } else {
