@@ -1,6 +1,6 @@
 //! What runs in the front of a terminal: the process group the TTY belongs
-//! to, read from the kernel, so Koi knows `nvim` or `claude` is running
-//! without the program telling it.
+//! to, read from the kernel. The resulting argv name is a display hint only;
+//! explicit agent registration owns lifecycle identity.
 const std = @import("std");
 const builtin = @import("builtin");
 const sys = @import("sys.zig");
@@ -34,6 +34,17 @@ pub const Foreground = struct {
 
 const interpreters = [_][]const u8{ "node", "bun", "deno", "python", "python3", "ruby", "perl" };
 const script_suffixes = [_][]const u8{ ".js", ".mjs", ".cjs", ".py", ".rb", ".ts" };
+
+/// The flags of `exe` whose value is the next argument, so it is not the script.
+fn operandFlags(exe: []const u8) []const []const u8 {
+    const js: []const []const u8 = &.{ "--require", "-r", "--import", "--loader", "--experimental-loader", "--conditions", "-C" };
+    const python: []const []const u8 = &.{ "-W", "-X" };
+    const ruby: []const []const u8 = &.{ "-I", "-r", "-C" };
+    if (std.mem.eql(u8, exe, "node") or std.mem.eql(u8, exe, "bun") or std.mem.eql(u8, exe, "deno")) return js;
+    if (std.mem.startsWith(u8, exe, "python")) return python;
+    if (std.mem.eql(u8, exe, "ruby")) return ruby;
+    return &.{};
+}
 
 /// The program name in a path or argv[0]; login shells run as "-zsh".
 fn base(path: []const u8) []const u8 {
@@ -84,7 +95,17 @@ fn nameFrom(args: *Args, buf: []u8, used: *usize) []const u8 {
                 std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "-p") or
                 std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "--print") or
                 std.mem.startsWith(u8, arg, "--eval=") or std.mem.startsWith(u8, arg, "--print=")) break;
-            if (arg.len == 0 or arg[0] == '-') continue;
+            if (arg.len == 0) continue;
+            if (arg[0] == '-') {
+                // A preload or option value is not the entry point: skip the
+                // separate operand of this interpreter's operand-taking flags.
+                // Every other switch is skipped alone.
+                for (operandFlags(exe)) |flag| if (std.mem.eql(u8, arg, flag)) {
+                    _ = args.next();
+                    break;
+                };
+                continue;
+            }
             var script = base(arg);
             const is_path = std.mem.indexOfScalar(u8, arg, '/') != null;
             var has_suffix = false;
@@ -243,4 +264,15 @@ fn cwd(pid: c.pid_t, buf: []u8) []const u8 {
     const n = c.readlink(p.ptr, buf.ptr, buf.len);
     if (n <= 0) return "";
     return buf[0..@intCast(n)];
+}
+
+test "foreground hints skip preload operands but not the script after plain switches" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("agent", testName(&buf, "node\x00--require\x00./preload.js\x00./agent.js\x00", 4));
+    try std.testing.expectEqualStrings("agent", testName(&buf, "node\x00--import=./preload.js\x00./agent.js\x00", 3));
+    try std.testing.expectEqualStrings("cli", testName(&buf, "node\x00--enable-source-maps\x00./cli.js\x00", 3));
+    try std.testing.expectEqualStrings("agent", testName(&buf, "python3\x00-I\x00./agent.py\x00", 3));
+    try std.testing.expectEqualStrings("agent", testName(&buf, "python3\x00-W\x00ignore\x00./agent.py\x00", 4));
+    try std.testing.expectEqualStrings("agent", testName(&buf, "ruby\x00-W\x00./agent.rb\x00", 3));
+    try std.testing.expectEqualStrings("uv", testName(&buf, "uv\x00run\x00./agent.py\x00", 3));
 }

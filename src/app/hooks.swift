@@ -1,14 +1,8 @@
 import Foundation
 
-/// Status hooks for the coding agents that can run a command on lifecycle
-/// events: Claude Code and Codex. Each event runs `koi status STATE`, so a pane
-/// shows working, blocked, done or idle without the agent having to remember to
-/// report. The skills in integrations.swift only ask the agent to; hooks do it.
-///
-/// Both agents read the same shape: `hooks` maps an event to matcher groups, each
-/// holding command handlers. Koi adds one group per event and recognizes its own
-/// handlers by a marker comment at the end of the command, so installing is
-/// idempotent and removing leaves every other hook, key and group as it was.
+/// Versioned provider adapters validate actual hook payloads in the CLI. File
+/// inspection reports configuration only; live reporting health comes from the
+/// server's accepted agent session and last-report timestamp in Activity settings.
 enum AgentHooks {
     /// Ends every command Koi installs; how removal and updates find them.
     static let marker = "# koi-status"
@@ -23,22 +17,24 @@ enum AgentHooks {
         }
     }
 
-    enum State: Equatable { case absent, installed, outdated }
+    enum State: Equatable { case absent, configured, outdated }
 
-    /// The events Koi reports on, and the status each means.
-    static func events(for agent: AgentIntegration) -> [(event: String, status: String)] {
-        let shared = [("UserPromptSubmit", "working"), ("PostToolUse", "working"),
-                      ("PermissionRequest", "blocked"), ("Stop", "done"), ("SessionEnd", "idle")]
+    /// Provider event subscriptions. Status interpretation belongs to the CLI adapter.
+    static func events(for agent: AgentIntegration) -> [String] {
+        // Keep provider event contracts separate. Codex's public command-input
+        // schemas include turn_id; Claude's session hooks have no public turn ID.
         switch agent {
-        case .claude: return shared + [("StopFailure", "error")]
-        case .codex: return shared + [("Interrupt", "idle")]
+        case .claude:
+            return ["SessionStart", "UserPromptSubmit", "PostToolUse", "PermissionRequest", "Stop", "StopFailure", "SessionEnd"]
+        case .codex:
+            return ["SessionStart", "UserPromptSubmit", "PostToolUse", "PermissionRequest", "Stop", "Interrupt", "SessionEnd"]
         }
     }
 
-    /// Reports only from inside a Koi pane with `koi` reachable, and always
-    /// exits 0 so a missing server never interrupts the agent.
-    static func command(status: String) -> String {
-        "command -v koi >/dev/null 2>&1 && [ -n \"$KOI_PANE\" ] && koi status \(status) >/dev/null 2>&1 || true \(marker)"
+    /// Missing/unsupported providers never block a turn. The adapter consumes
+    /// stdin and rejects mismatched schemas before sending any lifecycle report.
+    static func command(for agent: AgentIntegration, event: String) -> String {
+        "command -v koi >/dev/null 2>&1 && [ -n \"$KOI_PANE\" ] && koi agent hook \(agent.rawValue) \(event) >/dev/null 2>&1 || true \(marker)"
     }
 
     /// Adds Koi's hooks to `existing` (nil for a new file), replacing any older
@@ -51,10 +47,10 @@ enum AgentHooks {
             let groups = removingKoi(from: try groupList(hooks[event]))
             hooks[event] = groups.isEmpty ? nil : groups
         }
-        for (event, status) in events(for: agent) {
+        for event in events(for: agent) {
             var groups = try groupList(hooks[event])
             groups = removingKoi(from: groups)
-            groups.append(["hooks": [["type": "command", "command": command(status: status), "timeout": 5] as [String: Any]]])
+            groups.append(["hooks": [["type": "command", "command": command(for: agent, event: event), "timeout": 5] as [String: Any]]])
             hooks[event] = groups
         }
         root["hooks"] = hooks
@@ -81,14 +77,22 @@ enum AgentHooks {
             .flatMap { ($0["hooks"] as? [[String: Any]]) ?? [] }
             .filter { ($0["command"] as? String)?.hasSuffix(marker) == true }.count
         var current = 0
-        for (event, status) in events(for: agent) {
-            let handlers = try groupList(hooks[event]).flatMap { ($0["hooks"] as? [[String: Any]]) ?? [] }
-            let ours = handlers.compactMap { $0["command"] as? String }.filter { $0.hasSuffix(marker) }
-            current += ours == [command(status: status)] ? 1 : 0
+        for event in events(for: agent) {
+            let groups = try groupList(hooks[event])
+            let currentGroups = groups.filter { group in
+                guard group["matcher"] == nil,
+                      let handlers = group["hooks"] as? [[String: Any]], handlers.count == 1,
+                      let handler = handlers.first else { return false }
+                return handler["type"] as? String == "command"
+                    && handler["command"] as? String == command(for: agent, event: event)
+                    && (handler["timeout"] as? NSNumber)?.intValue == 5
+                    && (handler["async"] as? Bool) != true
+            }
+            current += currentGroups.count == 1 ? 1 : 0
         }
         let total = events(for: agent).count
         if marked == 0 { return .absent }
-        return current == total && marked == total ? .installed : .outdated
+        return current == total && marked == total ? .configured : .outdated
     }
 
     // MARK: JSON

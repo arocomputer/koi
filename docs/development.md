@@ -421,9 +421,8 @@ an existing SVG logo, an SF Symbol or a short text glyph:
 }
 ```
 
-`runs` lists executable names; keep new aliases lowercase. Optional `agent: true`
-marks coding agents eligible for completion dots, toasts and system notifications;
-leave it out for ordinary commands and general AI/model utilities. Choose one of
+`runs` lists executable names; keep new names lowercase. The catalog controls
+artwork only; [explicit registration](agents.md) controls agent lifecycle notices. Choose one of
 `logo`, `symbol` or `text`. `colors` contains two six-digit hex colors
 without `#`; optional `ink` sets the glyph color, defaulting to white.
 Optional `mark` provides a separate pane-header `symbol` or `text` glyph.
