@@ -231,11 +231,7 @@ private struct TabItem: View {
             }
             .overlay(alignment: .topTrailing) {
                 if workspace.hasAgentCompletion(in: self.tab) {
-                    Circle().fill(.green)
-                        .frame(width: 7, height: 7)
-                        .overlay { Circle().stroke(Theme.current.backgroundColor, lineWidth: 1.5) }
-                        .offset(x: 2, y: -2)
-                        .accessibilityHidden(true)
+                    AgentCompletionDot().offset(x: 2, y: -2)
                 }
             }
             HStack(spacing: 0) {

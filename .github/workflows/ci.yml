@@ -91,7 +91,7 @@ jobs:
       - name: Run isolated core tests
         id: core
         if: needs.checks.outputs.core == 'true'
-        run: ./x test-core
+        run: ./x testc
       - name: Restore macOS core outputs
         id: mac
         if: needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
@@ -140,7 +140,7 @@ jobs:
       - name: Run hosted Swift tests with isolated fixtures
         id: app
         if: needs.checks.outputs.app == 'true'
-        run: ./x test-app
+        run: ./x testa
       - name: Build release bundle and verify signature
         id: bundle
         if: needs.checks.outputs.bundle == 'true'
@@ -163,7 +163,7 @@ jobs:
           version: 0.17.0
           cache-key: linux-core-v1
       - name: Run isolated core tests (Linux, musl)
-        run: ./x test-core
+        run: ./x testc
 
   required:
     name: All checks passed

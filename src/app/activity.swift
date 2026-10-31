@@ -197,3 +197,13 @@ struct ActivitySettingsView: View {
         }
     }
 }
+
+/// Shared completion mark for tab tiles and individual split-pane icons.
+struct AgentCompletionDot: View {
+    var body: some View {
+        Circle().fill(.yellow)
+            .frame(width: 5, height: 5)
+            .overlay { Circle().stroke(Theme.current.backgroundColor, lineWidth: 1) }
+            .accessibilityHidden(true)
+    }
+}

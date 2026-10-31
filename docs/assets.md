@@ -4,7 +4,7 @@ The Koi and Koid Icon Composer projects and their SVG/PNG layers are original
 Koi project artwork, covered by the project's GPL-3.0-only license. Both app
 icons are retained. The standalone wordmark has been removed.
 
-Program logos retain their CC0-1.0 license. Their
+Simple Icons program logos retain their CC0-1.0 license. Their
 [source manifest](../src/app/resources/programs/logos/sources.json) records
 the Simple Icons repository revision and each local file's SHA-256. Source
 paths are `icons/<filename>` at that revision, with per-file revision
@@ -30,3 +30,9 @@ are no runtime icon downloads. Unknown applications use Koi's `>_` mark on
 a neutral tile; an unavailable catalog logo also uses `>_`.
 See [Program icons](development.md#program-icons) for the catalog format,
 asset requirements and the Python-only contribution check.
+
+Pi uses the block-shaped mark from [pi.dev](https://pi.dev/favicon.svg) on a
+black tile. It is recorded separately from Simple Icons, with upstream content
+digests, retrieval date and local template-fill changes. The manifest's Pi
+`revisionType` is `source-content-sha1`, identifying the original downloaded
+asset rather than a Git commit. See the third-party notices for its attribution.

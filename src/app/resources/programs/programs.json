@@ -1098,13 +1098,13 @@
       "pi-coding-agent"
     ],
     "name": "Pi",
-    "symbol": "pi",
     "colors": [
-      "6366F1",
-      "4348C7"
+      "000000",
+      "000000"
     ],
     "ink": "FFFFFF",
-    "agent": true
+    "agent": true,
+    "logo": "pi"
   },
   {
     "runs": [

@@ -118,7 +118,7 @@ checks pending. See GitHub's
 
 ## Development checks
 
-Use `./x test FILTER` or `./x test-core FILTER` while editing. They retain the
+Use `./x test FILTER` or `./x testc FILTER` while editing. They retain the
 checkout lock, private paths, server snapshot and process-verified cleanup;
 direct compiler/test commands do not provide the same isolation. Swift tests
 prepare only the macOS server/library. Core-only tests fetch the pinned

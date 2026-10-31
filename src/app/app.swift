@@ -664,6 +664,7 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
                 source.completedAgentPanes = Set(activityCenter.completions.keys
                     .filter { $0.endpoint == source.endpoint }.map(\.pane))
             }
+            controller.card?.updateAgentCompletions(controller.workspace.completedAgentPanes)
         }
     }
 

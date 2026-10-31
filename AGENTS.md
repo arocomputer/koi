@@ -23,7 +23,7 @@ Start here before editing anything:
 Match the validation to the change:
 
 - `./x test FILTER` for app behavior
-- `./x test-core FILTER` for core behavior
+- `./x testc FILTER` for core behavior
 - `./x scripts` for script and CI regressions
 - `./x programs` for icon/catalog changes
 - `./x check` for cross-cutting changes

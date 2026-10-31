@@ -29,12 +29,14 @@ From the repo root:
 ./x help
 ./x check
 ./x test PaletteSearchTests
-./x test-core watcher
+./x testc watcher
 scripts/koid build
 scripts/koid run
 ```
 
-`./x` is the project entry point. `./x help` lists available commands. `./x test` delegates to the Koid-backed test runner, while `./x bundle` covers packaging and release validation.
+`./x` is the project entry point. `./x testc [FILTER]` runs core tests;
+`./x testa` runs the hosted app subset. `test-core` and `test-app` remain
+compatible aliases. `./x help` lists available commands. `./x test` delegates to the Koid-backed test runner, while `./x bundle` covers packaging and release validation.
 
 Useful commands:
 
@@ -62,7 +64,7 @@ Do not run broad suites when a focused check will answer the question. Match val
 Use the smallest relevant check:
 
 - app behavior: `./x test FILTER`
-- core behavior: `./x test-core FILTER`
+- core behavior: `./x testc FILTER`
 - script/CI changes: `./x scripts`
 - catalog or artwork changes: `./x programs`
 - broad correctness pass: `./x check`
@@ -96,6 +98,6 @@ The [development reference](docs/development.md) retains fixture isolation,
 preview commands, protocol and rendering rules, and dependency/release guidance.
 Use `./x mutate` (core) or `./x mutate --app` after changing security boundaries,
 limits or lifecycle rules. App tests require macOS; Linux can run `./x scripts`,
-`./x programs` and `./x test-core` with the pinned Zig toolchain.
+`./x programs` and `./x testc` with the pinned Zig toolchain.
 
 For catalog changes, see [Program icons](docs/development.md#program-icons).

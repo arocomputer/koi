@@ -118,5 +118,45 @@ class CITests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ci.check_results(needs)
 
+class CommandDispatchTests(unittest.TestCase):
+    """Exercise the real command wrapper without launching a build or a server."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / 'scripts').mkdir()
+        (self.root / 'x').write_bytes((ROOT / 'x').read_bytes())
+        koid = self.root / 'scripts/koid'
+        koid.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+        koid.chmod(0o755)
+
+    def run_x(self, *args):
+        return subprocess.run(['sh', str(self.root / 'x'), *args], capture_output=True, text=True)
+
+    def test_core_short_and_legacy_names_share_filter_dispatch(self):
+        for command in ['testc', 'test-core']:
+            for rest in [[], ['pane watcher']]:
+                with self.subTest(command=command, rest=rest):
+                    result = self.run_x(command, *rest)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(), ['test', '--core', *rest])
+
+    def test_app_short_and_legacy_names_run_the_hosted_subset(self):
+        for command in ['testa', 'test-app']:
+            result = self.run_x(command)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ['test', '--headless'])
+
+    def test_invalid_arguments_never_reach_the_runner(self):
+        for args in [('testc', '--bad'), ('testc', 'one', 'two'), ('testa', 'filter'),
+                     ('test-core', '--bad'), ('test-app', 'filter')]:
+            with self.subTest(args=args):
+                result = self.run_x(*args)
+                self.assertEqual(result.returncode, 2)
+                self.assertNotIn('--core', result.stdout)
+                self.assertNotIn('--headless', result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

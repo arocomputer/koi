@@ -274,7 +274,7 @@ final class PaneConnection: @unchecked Sendable {
 
 /// The app's control connection: it watches the server's tree and sends it
 /// commands. `onState` and command completions run on the main thread.
-final class Control: @unchecked Sendable {
+final class ControlConnection: @unchecked Sendable {
     private let socket: Transport
     var receivedBytes: UInt64 { socket.receivedBytes }
     /// The actual selected stream, rather than the server's advertised transports.

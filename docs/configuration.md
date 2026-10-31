@@ -176,8 +176,10 @@ Completion cues are for agent applications identified in Koi's program catalog:
 
 - While viewing another machine, a completed agent shows a toast with **Open Pane**.
   It switches to that machine, tab and pane without creating a new shell.
-- On the same machine, an unread completion appears as a small green circle at
+- On the same machine, an unread completion appears as a small yellow circle at
   the upper-right of the tab's program icon, in both top and side tab bars.
+  In split tabs, each completed pane also gets a circle at the upper-right of
+  its own header icon. Circles overlap their icon's edge slightly.
 - Visiting the completed pane clears its circle across windows. Work starting
   again, removal of the pane or another program taking over also clears it.
   An already focused pane needs no unread indicator.

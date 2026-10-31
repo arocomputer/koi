@@ -59,7 +59,7 @@ final class Workspace {
     /// Called once the last tab is gone.
     @ObservationIgnored var onEmpty: (() -> Void)?
 
-    @ObservationIgnored private var control: Control?
+    @ObservationIgnored private var control: ControlConnection?
     @ObservationIgnored private var controlTransport: Transport?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var reconnectSignal: UUID?
@@ -106,7 +106,7 @@ final class Workspace {
         }
     }
 
-    init(_ endpoint: Endpoint, control: Control? = nil, controlTransport: Transport? = nil) {
+    init(_ endpoint: Endpoint, control: ControlConnection? = nil, controlTransport: Transport? = nil) {
         self.endpoint = endpoint
         self.control = control
         self.controlTransport = controlTransport
@@ -145,7 +145,7 @@ final class Workspace {
                 self.reconnectControl()
                 return
             }
-            let c = Control(socket: socket)
+            let c = ControlConnection(socket: socket)
             var initialized = false
             let tabsAwaitingReconnect = self.confirmedTabRenames
             let groupsAwaitingReconnect = self.confirmedGroupRenames
@@ -480,7 +480,7 @@ final class Workspace {
 
     // MARK: Commands
 
-    /// Async workflows retain Control's FIFO while bounding a stalled server.
+    /// Async workflows retain ControlConnection's FIFO while bounding a stalled server.
     /// Reply ownership is single-use so disconnect and timeout cannot resume twice.
     func perform(_ command: Wire.Command, reportingErrors: Bool = true) async throws -> Wire.Result {
         guard let control else { throw WorkspaceCommandError("Machine is offline") }
@@ -520,7 +520,7 @@ final class Workspace {
         }
     }
 
-    /// Keep Control's FIFO and completion semantics while reporting all errors.
+    /// Keep ControlConnection's FIFO and completion semantics while reporting all errors.
     /// Offline commands complete too, so gesture owners can release their state.
     private func send(_ command: Wire.Command, done: @escaping @MainActor (Wire.Result) -> Void = { _ in }) {
         let completion: @MainActor (Wire.Result) -> Void = { [weak self] result in

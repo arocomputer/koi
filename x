@@ -12,19 +12,26 @@ usage: ./x [command]
   programs     Application catalog and artwork checks (Python 3)
   deps         Discover stable Ghostty updates without editing (Python 3, gh)
   test [FILTER] Full correctness suite or focused Swift tests (Mac)
-  test-core [FILTER] Isolated core tests; optional Zig test-name filter
+  testc [FILTER] Isolated core tests; optional Zig test-name filter
   bench        Isolated Swift benchmarks (Mac with Metal)
   mutate [--app] [NAME] Plant known bugs in a copy of the core (or the app); tests must catch each
-  test-app     Hosted Swift subset with isolated fixtures (Mac)
+  testa        Hosted app test subset with isolated fixtures (Mac)
   bundle       Release bundle and signature verification; never installs
   help         Show this help
+
+Aliases: test-core = testc; test-app = testa
 EOF
 }
 
 task=${1:-check}
 if [ "$#" -gt 0 ]; then shift; fi
+# Preserve existing scripts and muscle memory while presenting short command names.
 case "$task" in
-  test|test-core)
+  test-core) task=testc ;;
+  test-app) task=testa ;;
+esac
+case "$task" in
+  test|testc)
     [ "$#" -le 1 ] || { usage >&2; exit 2; }
     if [ "$#" -eq 1 ]; then
       case "$1" in ''|-*) usage >&2; exit 2 ;; esac
@@ -53,7 +60,7 @@ case "$task" in
     ;;
   deps) exec python3 scripts/update-dependencies.py plan ;;
   bench) exec scripts/koid test --bench ;;
-  test-app) exec scripts/koid test --headless ;;
+  testa) exec scripts/koid test --headless ;;
   bundle)
     scripts/bundle.sh
     codesign --verify --deep --strict "${KOI_BUNDLE_OUTPUT:-$PWD/build/Koi.app}"

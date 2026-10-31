@@ -203,6 +203,17 @@
       "sha256": "cd1beaa0dde7e765b5d2cbae786c1f6db967f72073eb7b9f9bbc63da55b9d0f6"
     },
     {
+      "file": "pi.svg",
+      "sha256": "356a8aa40b74c00bb3764c1cc3df02c666f11e554e5662e977c4862d32608d41",
+      "source": "https://pi.dev/favicon.svg",
+      "license": "Upstream Pi brand asset; no standalone artwork license declared",
+      "revision": "656f2048286e0f66ee77b418ac999163a77de962",
+      "revisionType": "source-content-sha1",
+      "sourceSha256": "d266b2c1d2c7bf169ca30d438963b176fba16fea6263b9ac30c8302f34ad7ce7",
+      "retrieved": "2026-10-31",
+      "localChanges": "Official path geometry unchanged. Removed theme CSS and used an opaque white template fill; added an accessible title. The revision is a source-content digest, not a Git commit."
+    },
+    {
       "file": "pnpm.svg",
       "sha256": "c6285a2d1fa28b8d6c42cd7f7edf360434371ff6f15744425c4444e41fed812b"
     },

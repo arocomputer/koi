@@ -26,7 +26,7 @@ From the repository root:
 ```sh
 ./x check                  # scripts, catalog and correctness tests
 ./x test PaletteSearchTests # focused, isolated Swift tests
-./x test-core watcher      # focused, isolated core tests
+./x testc watcher      # focused, isolated core tests
 ./x scripts                # portable regressions, no native toolchain
 ./x programs               # catalog and artwork validation
 scripts/koid build
@@ -48,8 +48,8 @@ is `com.fschrhunt.koid`; its config, layout, server log and socket live under
 
 `./x test` runs native and Swift correctness checks with macOS dependencies;
 benchmarks and Linux cross-compilation are separate. `./x test FILTER` runs
-only matching Swift tests, and `./x test-core FILTER` runs matching native
-tests after fetching the pinned engine source. `./x test-app` runs the hosted
+only matching Swift tests, and `./x testc FILTER` runs matching native
+tests after fetching the pinned engine source. `./x testa` runs the hosted
 Swift subset in debug mode, including selected real-server/session checks.
 All use the same private roots, checkout lock and cleanup. `./x bundle`
 validates both server targets and assembles the production release app.
@@ -81,7 +81,7 @@ Use focused checks while developing:
 
 ```sh
 ./x test PaletteSearchTests
-./x test-core watcher
+./x testc watcher
 ```
 
 Match validation to the changed behavior. Script/CI changes need `./x scripts`;
@@ -236,8 +236,8 @@ be selected without running Koid's app or attaching to its sessions:
 ./x test 'ProjectTests|ActivityTests|UpdaterTests|IntegrationsTests|InstallationTests'
 ./x test closingOneWindowPreservesAnotherWindowsSelectionAndServer
 ./x test 'settings|accessibility'
-./x test-core serverInfo
-./x test-core reportStatus
+./x testc serverInfo
+./x testc reportStatus
 ```
 
 Private-server tests still launch their own test server. Offscreen checks

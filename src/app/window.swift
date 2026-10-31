@@ -484,7 +484,8 @@ extension AppDelegate {
                 dragEnded: { [weak self] id, t in self?.card.paneDragEnded(id, t) }
             )
         }
-        card.show(tab.map(ws.presentedTab), focused: ws.focusedPane, zoomed: ws.zoomedPane) { id in
+        card.show(tab.map(ws.presentedTab), focused: ws.focusedPane, zoomed: ws.zoomedPane,
+                  completedAgentPanes: ws.completedAgentPanes) { id in
             let v = ws.view(for: id)
             if v.fontSize != fontSize { v.fontSize = fontSize }
             return v
