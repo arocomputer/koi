@@ -1502,7 +1502,7 @@ const CommandTransport = struct {
     fn close(_: *anyopaque) void {}
 };
 
-test "a server at its pane ceiling refuses another pane and says why" {
+test "pane limit refuses a new pane" {
     var server = testServer(testing.allocator);
     defer server.panes.deinit(testing.allocator);
     // Placeholders only; nothing dereferences a pane on the refusal path.
@@ -1518,7 +1518,7 @@ test "a server at its pane ceiling refuses another pane and says why" {
     try testing.expect(server.hasPaneRoom());
 }
 
-test "the log rolls aside only once it reaches the limit and replaces the earlier roll" {
+test "log rolls aside at the limit" {
     var template = "/tmp/koi-log-XXXXXXXX".*;
     const dir = std.mem.span(c.mkdtemp(&template) orelse return error.CreateDirectory);
     defer {
