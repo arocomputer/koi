@@ -51,6 +51,7 @@ pub const Pane = struct {
     status: wire.Status = .idle,
     /// The status last reported by the program (OSC 7501 or reportStatus).
     reported: ?wire.Status = null,
+    agent: @import("agent.zig").Agent = .{},
     /// Last accepted process-group identity; a same-name replacement is a
     /// foreground switch too. Program name also detects exec within a group.
     foreground_pid: c.pid_t = 0,
@@ -146,6 +147,7 @@ pub const Pane = struct {
         const spawned = try pty.spawn(shell_path, argv, envp, dir, size.cols, size.rows);
 
         self.* = .{
+            .agent = @import("agent.zig").Agent.init(),
             .gpa = gpa,
             .id = id,
             .pid = spawned.pid,
@@ -300,10 +302,15 @@ pub const Pane = struct {
             .title = try arena.dupe(u8, self.title.items),
             .cwd = try arena.dupe(u8, self.cwd.items),
             .home = try arena.dupe(u8, self.home),
-            .program = try arena.dupe(u8, self.program.items),
+            .program = try arena.dupe(u8, if (self.agent.active) self.agent.name.get() else self.program.items),
             .shell = try arena.dupe(u8, self.shell),
             .fullscreen = self.fullscreen,
             .status = self.status,
+            .statusSource = if (self.agent.active) "agent" else if (self.reported != null) "reported" else null,
+            .agent = try self.agent.session(arena),
+            .agentEpoch = if (self.agent.epoch) |epoch| try arena.dupe(u8, &epoch) else null,
+            .agentSequence = self.agent.sequence,
+            .agentEvents = try self.agent.history(arena),
         };
     }
 
@@ -325,10 +332,11 @@ pub const Pane = struct {
             self.fullscreen = fullscreen;
             dirty = true;
         }
-        const status: wire.Status = if (self.reported) |r| r else blk: {
-            // A command printing within the last couple of seconds is
-            // working. Full-screen programs redraw all the time, so only
-            // what they report counts for them.
+        // A registered agent or a report owns the status; silence never ends
+        // it. Otherwise a command printing within the last couple of seconds
+        // is working. Full-screen programs redraw all the time, so only what
+        // they report counts for them.
+        const status: wire.Status = if (self.agent.active) self.agent.status else if (self.reported) |r| r else blk: {
             const printing = now - self.last_output < 2000;
             break :blk if (self.program.items.len > 0 and !self.fullscreen and printing) .working else .idle;
         };
@@ -348,6 +356,7 @@ pub const Pane = struct {
         // A failed name query in the same process group is not a switch.
         const switched = self.foreground_pid != fg.pid or
             (fg.program.len > 0 and !std.mem.eql(u8, program, self.program.items));
+        if (self.foreground_pid != fg.pid or at_prompt) self.agent.invalidate();
         self.foreground_pid = fg.pid;
         if (switched and self.shell_command.items.len == 0) {
             self.program.clearRetainingCapacity();
@@ -450,6 +459,7 @@ pub const Pane = struct {
         if (name.len > 64 or !std.unicode.utf8ValidateSlice(name)) return;
         const clean = name;
         for (clean) |b| if (b < 0x20 or b == 0x7f) return;
+        if (clean.len == 0) self.agent.invalidate();
         if (std.mem.eql(u8, clean, self.shell_command.items)) return;
         self.shell_command.clearRetainingCapacity();
         self.shell_command.appendSlice(self.gpa, clean) catch return;
@@ -819,6 +829,29 @@ pub const Pane = struct {
             const accepted = self.reportStatusSampleLocked(version, status, sample);
             self.mutex.unlock();
             if (try accepted) return;
+        }
+        return error.ForegroundChanged;
+    }
+
+    /// Explicit role declaration, bound to a fresh foreground process, never an argv guess.
+    pub fn reportAgent(self: *Pane, name: []const u8, adapter: ?[]const u8, session: ?[]const u8, turn: ?[]const u8, new_run: bool, status: wire.Status) !void {
+        // Output bumps the metadata version many times a second while an agent
+        // streams, so identity is rechecked directly: the sample stands if its
+        // process group still owns the terminal once the lock is held.
+        for (0..3) |_| {
+            var buffer: [foreground.Foreground.buffer_size]u8 = undefined;
+            const sample = foreground.Foreground.of(self.master, &buffer) orelse return error.ForegroundUnavailable;
+            if (sample.pid != c.tcgetpgrp(self.master)) continue;
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            if (self.closing.load(.acquire) or self.ended.load(.acquire)) return error.PaneClosed;
+            if (sample.pid != c.tcgetpgrp(self.master)) continue;
+            if (sample.pid == self.pid and std.mem.eql(u8, sample.program, self.shell) and self.shell_command.items.len == 0) return error.NoForegroundAgent;
+            _ = self.updateForegroundLocked(sample);
+            try self.agent.report(sample.pid, name, adapter, session, turn, new_run, status);
+            self.metadata_version +%= 1;
+            self.refreshMetadataLocked(true);
+            return;
         }
         return error.ForegroundChanged;
     }
@@ -2574,4 +2607,29 @@ test "control status binds uncached foreground and survives discovery until a re
     try std.testing.expectEqual(@as(?wire.Status, .done), pane.reported);
     pane.applyForegroundLocked(pane.metadata_version, .{ .pid = pane.pid, .program = pane.shell, .cwd = "/tmp" });
     try std.testing.expect(pane.reported == null);
+}
+
+test "registered agent identity survives display hints and completion survives returning to prompt" {
+    var pane = try testMetadataPane();
+    defer pane.terminal.deinit();
+    defer pane.title.deinit(pane.gpa);
+    defer pane.cwd.deinit(pane.gpa);
+    defer pane.program.deinit(pane.gpa);
+    _ = pane.updateForegroundLocked(.{ .pid = 200, .program = "node", .cwd = "/tmp" });
+    try pane.agent.report(200, "new-agent", null, "session", null, false, .working);
+    _ = pane.updateForegroundLocked(.{ .pid = 200, .program = "helper", .cwd = "/tmp" });
+    pane.last_output = 1;
+    pane.refreshMetadataLocked(false);
+    try std.testing.expect(pane.agent.active);
+    try std.testing.expectEqual(wire.Status.working, pane.status);
+    try pane.agent.report(200, "new-agent", null, "session", null, false, .done);
+    _ = pane.updateForegroundLocked(.{ .pid = pane.pid, .program = "zsh", .cwd = "/tmp" });
+    pane.refreshMetadataLocked(true);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const info = try pane.infoLocked(arena.allocator());
+    try std.testing.expectEqual(wire.Status.idle, info.status);
+    try std.testing.expect(!info.agent.?.active);
+    try std.testing.expectEqualStrings("new-agent", info.agent.?.name);
+    try std.testing.expectEqual(wire.Status.done, info.agentEvents[1].status);
 }

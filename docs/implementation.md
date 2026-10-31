@@ -427,24 +427,30 @@ IME marked text remains a separate `NSTextInputClient` document and AX queries
 cannot commit or replace terminal input.
 
 Activity merges connected workspace snapshots by endpoint and pane identity.
-Explicit `reportStatus` and legacy OSC 7501 reports coexist with output/process
-inference; explicit reports are tied to foreground identity rather than a
-permanent pane label. The catalog's optional `agent` flag identifies applications
-eligible for notices. Agent done transitions create pane-scoped unread records
-shared across windows: the tab icon carries a circle until the pane is visited.
-A completion on another machine shows an actionable in-app toast. Baselines,
-repeated statuses and ordinary command completions stay silent. System
-notification delivery is injected, opt-in for blocked,
-done and error transitions, and quiet while focused by default. Initial
-observations and suppressed/repeated statuses produce no catch-up alerts.
-Construction does not query or request notification authorization; a user
-permission action requests it. Notification clicks resolve stable endpoint,
-tab and pane IDs across existing windows, retrying for up to two seconds
-during initial attachment. Stale targets never create connections or shells.
-Optional agent skills are advisory single-file guidance and deliver no status.
-Optional status hooks (`hooks.swift`) make Claude Code and Codex run
-`koi status` on their lifecycle events; they are marked so that install is
-idempotent and removal touches nothing else in the agent's settings.
+Explicit `agentReport` registration binds an opaque server session and numbered
+runs to a freshly sampled foreground process group. Process names are display
+hints only. Each pane retains 64 sequenced lifecycle events and a random epoch;
+these survive watcher and main-thread state coalescing. Consumers baseline first
+observations and new epochs, deduplicate sequence numbers, and silently baseline
+journal gaps with a visible Activity warning. They never infer completion from
+status snapshots. A completed process's last session/history remains available
+after returning to the prompt, so a short-lived agent cannot erase its completion.
+
+`status` comes from a registered agent, then a report, and otherwise from
+output: a non-full-screen command that printed in the last two seconds is
+`working`. `statusSource` is `agent`, `reported` or null for inferred status.
+Silence never changes an agent's or a reported task state. Generic `reportStatus` and legacy OSC 7501 remain supported
+but do not declare agent identity. The program catalog controls artwork only.
+Agent completion records remain pane-scoped across windows, with small yellow
+icon circles and actionable toasts for other machines. Notification delivery is
+injected, opt-in and quiet while focused by default; permission is requested
+only by explicit user action. Notification clicks resolve existing endpoints,
+tabs and panes, never creating shells for stale targets.
+
+Optional status hooks (`hooks.swift`, `agenthooks.zig`) use separate versioned
+provider contracts. Installation proves configuration only; the runtime adapter
+validates session/turn fields before reporting. Activity shows the server's last
+accepted report. See [agent contracts and environment boundaries](agents.md).
 
 ## Ownership and memory limits
 

@@ -74,7 +74,7 @@ import Testing
         let installed = try Data(contentsOf: url)
         try integrations.installHooksFromUserAction(agent)
         #expect(try Data(contentsOf: url) == installed, "installing twice must change nothing")
-        #expect(try integrations.hooksState(for: agent) == .installed)
+        #expect(try integrations.hooksState(for: agent) == .configured)
 
         let after = try json(installed)
         #expect(after["model"] as? String == "x")
@@ -82,9 +82,9 @@ import Testing
         let stop = handlers(after, event: "Stop").compactMap { $0["command"] as? String }
         #expect(stop.contains("say done"), "the user's own Stop hook stays")
         #expect(stop.filter { $0.hasSuffix(AgentHooks.marker) }.count == 1)
-        for (event, status) in AgentHooks.events(for: agent) {
+        for event in AgentHooks.events(for: agent) {
             let ours = handlers(after, event: event).compactMap { $0["command"] as? String }.filter { $0.hasSuffix(AgentHooks.marker) }
-            #expect(ours == [AgentHooks.command(status: status)], "\(event)")
+            #expect(ours == [AgentHooks.command(for: agent, event: event)], "\(event)")
         }
 
         try integrations.uninstallHooksFromUserAction(agent)
@@ -102,21 +102,21 @@ import Testing
         let fake = bin.appendingPathComponent("koi")
         try Data("#!/bin/sh\necho \"$*\" >> '\(log.path)'\n".utf8).write(to: fake)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
-        func run(_ status: String, environment: [String: String]) throws -> Int32 {
+        func run(_ event: String, environment: [String: String]) throws -> Int32 {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            p.arguments = ["-c", AgentHooks.command(status: status)]
+            p.arguments = ["-c", AgentHooks.command(for: .claude, event: event)]
             p.environment = environment
             try p.run(); p.waitUntilExit()
             return p.terminationStatus
         }
         let path = bin.path + ":/usr/bin:/bin"
-        #expect(try run("working", environment: ["PATH": path, "KOI_PANE": "abc"]) == 0)
-        #expect(try String(contentsOf: log, encoding: .utf8) == "status working\n")
+        #expect(try run("UserPromptSubmit", environment: ["PATH": path, "KOI_PANE": "abc"]) == 0)
+        #expect(try String(contentsOf: log, encoding: .utf8) == "agent hook claude UserPromptSubmit\n")
         try FileManager.default.removeItem(at: log)
-        #expect(try run("done", environment: ["PATH": path]) == 0, "outside a pane it is a successful no-op")
+        #expect(try run("Stop", environment: ["PATH": path]) == 0, "outside a pane it is a successful no-op")
         #expect(!FileManager.default.fileExists(atPath: log.path))
-        #expect(try run("done", environment: ["PATH": "/usr/bin:/bin", "KOI_PANE": "abc"]) == 0, "no koi on PATH must not fail the agent")
+        #expect(try run("Stop", environment: ["PATH": "/usr/bin:/bin", "KOI_PANE": "abc"]) == 0, "no koi on PATH must not fail the agent")
     }
 
     @Test func hooksRefuseOddSettings() throws {
@@ -140,12 +140,12 @@ import Testing
         let url = integrations.hooksURL(for: .codex)
         try integrations.installHooksFromUserAction(.codex)
         let stale = try String(contentsOf: url, encoding: .utf8)
-            .replacingOccurrences(of: "koi status working", with: "koi status busy")
+            .replacingOccurrences(of: "koi agent hook codex UserPromptSubmit", with: "koi agent hook codex Unsupported")
         try Data(stale.utf8).write(to: url)
         #expect(try integrations.hooksState(for: .codex) == .outdated)
         try integrations.installHooksFromUserAction(.codex)
-        #expect(try integrations.hooksState(for: .codex) == .installed)
-        for (event, _) in AgentHooks.events(for: .codex) {
+        #expect(try integrations.hooksState(for: .codex) == .configured)
+        for event in AgentHooks.events(for: .codex) {
             let ours = try handlers(json(Data(contentsOf: url)), event: event).filter {
                 ($0["command"] as? String)?.hasSuffix(AgentHooks.marker) == true
             }
@@ -153,11 +153,33 @@ import Testing
         }
     }
 
+    @Test func configurationHealthRejectsHandlersThatWillNotRunTheAdapter() throws {
+        let data = try AgentHooks.installing(into: nil, for: .codex)
+        for field in ["matcher", "type", "timeout", "async"] {
+            var root = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            var hooks = try #require(root["hooks"] as? [String: [[String: Any]]])
+            var groups = try #require(hooks["Stop"])
+            if field == "matcher" { groups[0]["matcher"] = "OnlyOneTool" }
+            else {
+                var handlers = try #require(groups[0]["hooks"] as? [[String: Any]])
+                switch field {
+                case "type": handlers[0][field] = "prompt"
+                case "timeout": handlers[0][field] = 999
+                default: handlers[0][field] = true
+                }
+                groups[0]["hooks"] = handlers
+            }
+            hooks["Stop"] = groups; root["hooks"] = hooks
+            let edited = try JSONSerialization.data(withJSONObject: root)
+            #expect(try AgentHooks.state(of: edited, for: .codex) == .outdated)
+        }
+    }
+
     @Test func obsoleteHookEventsAreUpdatedAndRemoved() throws {
         let old = Data(#"{"hooks":{"OldEvent":[{"hooks":[{"type":"command","command":"koi status done # koi-status"},{"type":"command","command":"foreign"}]}]}}"#.utf8)
         #expect(try AgentHooks.state(of: old, for: .codex) == .outdated)
         let updated = try AgentHooks.installing(into: old, for: .codex)
-        #expect(try AgentHooks.state(of: updated, for: .codex) == .installed)
+        #expect(try AgentHooks.state(of: updated, for: .codex) == .configured)
         #expect(handlers(try json(updated), event: "OldEvent").compactMap { $0["command"] as? String } == ["foreign"])
         let removed = try AgentHooks.removing(from: old)
         #expect(handlers(try json(removed), event: "OldEvent").compactMap { $0["command"] as? String } == ["foreign"])

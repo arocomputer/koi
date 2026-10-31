@@ -171,6 +171,7 @@ with os.fdopen(fd, 'r+') as guard:
               'ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|'
               'IntegrationsTests|UpdaterTests|DiagnosticsTests|DiagnosticIssuesTests|'
               'TabDragTests|ProjectTests|ActivityTests|PaletteSearchTests|RendererDiagnosticsTests|'
+              'fullSplitWeightsAndStatusReportsReachWatchers|'
               'paneHeaderCloseProtectsTheLastPaneInEachTab|paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
               'stdioRelayCarriesTheProtocol|offerFromTheServerOpensALinkForItsSecretOnly|'
               'streamKeepsItsLinkAlive|'
