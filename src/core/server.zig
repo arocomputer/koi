@@ -493,6 +493,9 @@ pub const Server = struct {
         errdefer self.gpa.destroy(entry);
         self.mutex.lock();
         defer self.mutex.unlock();
+        // A single admitted socket can request many offers; count each link
+        // against the same budget before creating its receiver thread.
+        if (self.connections >= max_connections) return error.TooManyConnections;
         // Everything that can fail comes before the link exists, so none of
         // it has to be undone; `idleLoop` reclaims the link when it closes.
         try self.links.ensureUnusedCapacity(self.gpa, 1);
@@ -1518,6 +1521,16 @@ const CommandTransport = struct {
 
     fn close(_: *anyopaque) void {}
 };
+
+test "a UDP offer cannot bypass the connection ceiling" {
+    var server = testServer(testing.allocator);
+    server.connections = max_connections;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectError(error.TooManyConnections, server.offer(arena.allocator()));
+    try testing.expectEqual(max_connections, server.connections);
+    try testing.expectEqual(0, server.links.items.len);
+}
 
 test "pane limit refuses a new pane" {
     var server = testServer(testing.allocator);
