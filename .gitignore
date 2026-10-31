@@ -22,8 +22,6 @@ xcuserdata/
 *~
 
 # Local environment files and signing credentials.
-.env
-.env.*
 !.env.example
 *.key
 *.pem
@@ -31,3 +29,5 @@ xcuserdata/
 *.p12
 *.pfx
 *.mobileprovision
+config.bat
+node_modules
