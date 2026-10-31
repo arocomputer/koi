@@ -190,7 +190,17 @@ left unanswered is not repeated for ten minutes: each costs an SSH round
 trip and a blocked port rarely opens within minutes. Bundled server
 builds support Apple silicon macOS and x86_64 Linux. Setup commands have a
 60-second deadline and retain at most 1 MiB each of stdout and stderr;
-cancellation stops and reaps the local SSH process. See
+cancellation stops and reaps the local SSH process.
+
+An SSH channel cannot tell its far end has vanished: a laptop that sleeps or
+drops off the network leaves `koi --stdio` and its server connection running
+on the remote machine, because SSH there may never report the loss. So the app
+sends an empty `keepalive` frame every 20 seconds on each relay connection. The
+relay swallows these, so the server never sees the kind, which an older one
+would reject, and once it has seen one it exits after 75 seconds of silence
+(three lost keepalives and slack). A peer that never sends one is never timed
+out, so an older app behaves as before. The app only sends them through a relay
+it installed itself, which the hash check in `prepare` guarantees. See
 [`remote.swift`](../src/app/remote.swift) and
 [`link.zig`](../src/core/link.zig) for the connection implementation.
 
@@ -413,8 +423,10 @@ Construction does not query or request notification authorization; a user
 permission action requests it. Notification clicks resolve stable endpoint,
 tab and pane IDs across existing windows, retrying for up to two seconds
 during initial attachment. Stale targets never create connections or shells.
-Optional agent skills are advisory single-file guidance, not lifecycle-hook
-installation or guaranteed status delivery.
+Optional agent skills are advisory single-file guidance and deliver no status.
+Optional status hooks (`hooks.swift`) make Claude Code and Codex run
+`koi status` on their lifecycle events; they are marked so that install is
+idempotent and removal touches nothing else in the agent's settings.
 
 ## Ownership and memory limits
 
@@ -422,6 +434,13 @@ Swift uses ARC; Zig and the engine handles have explicit owners. There is
 no tracing garbage collector. Each terminal owns its engine state, each
 renderer frees its render-state helpers, and each selection gesture retains
 its terminal until its tracked references have been freed.
+
+The server bounds what a runaway or vanished client can cost. It refuses a
+new tab or split once 128 panes exist, answering "too many panes: close some
+first", and drops new connections once 1024 are open, logging the first
+refusal each second. Both ceilings are soft: two requests arriving at the
+limit may both pass. The log rolls to `server.log.1` when the server starts and
+every few seconds while it runs, so it never holds more than 16 MiB.
 
 The embedded native library leaves alternate signal-stack ownership with
 the host application, including when the host runs under a sanitizer.
@@ -478,7 +497,7 @@ termination flushes the latest values after earlier writes.
 | Configuration | `~/.config/koi/config` |
 | Layout and machine metadata | `~/.local/state/koi/layout.json` |
 | Named project recipes | `~/.local/state/koi/projects.json` |
-| Server log | `~/.local/state/koi/server.log` |
+| Server log | `~/.local/state/koi/server.log`, rolled to `server.log.1` at 8 MiB |
 | Socket and server lock | macOS's per-user temporary directory + `/koi`, `/run/user/<uid>/koi` on Linux, or `/tmp/koi-<uid>` |
 | macOS window preferences, palette recents and Sparkle's update schedule | The app's UserDefaults domain |
 
