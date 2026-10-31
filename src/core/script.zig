@@ -111,6 +111,17 @@ fn reportError(L: *c.lua_State) u8 {
 fn koiRun(state: ?*c.lua_State) callconv(.c) c_int {
     const L = state.?;
     const n = c.lua_gettop(L);
+    // Convert before owning Zig allocations: Lua errors unwind with longjmp,
+    // which does not run Zig defers. Keep strings rooted in the argument slots.
+    var argument: c_int = 1;
+    while (argument <= n) : (argument += 1) {
+        var len: usize = 0;
+        const text = c.luaL_tolstring(L, argument, &len);
+        if (std.mem.indexOfScalar(u8, text[0..len], 0) != null)
+            return raise(L, "koi.run: arguments cannot contain NUL");
+        c.lua_copy(L, -1, argument);
+        c.lua_settop(L, -2);
+    }
     var arena_state = std.heap.ArenaAllocator.init(script_gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -125,9 +136,8 @@ fn koiRun(state: ?*c.lua_State) callconv(.c) c_int {
     var i: c_int = 1;
     while (i <= n) : (i += 1) {
         var len: usize = 0;
-        const s = c.luaL_tolstring(L, i, &len); // numbers and booleans read naturally
+        const s = c.lua_tolstring(L, i, &len);
         argv[@intCast(i)] = (arena.dupeSentinel(u8, s[0..len], 0) catch return raise(L, "out of memory")).ptr;
-        c.lua_settop(L, -2);
     }
     argv[@as(usize, @intCast(n)) + 1] = null;
 
@@ -173,11 +183,32 @@ fn koiJson(state: ?*c.lua_State) callconv(.c) c_int {
     const L = state.?;
     var len: usize = 0;
     const text = c.luaL_checklstring(L, 1, &len);
+    // Reserve enough Lua stack for bounded recursive tables before owning JSON.
+    if (c.lua_checkstack(L, 512) == 0) return raise(L, "koi.json: out of stack space");
     const parsed = std.json.parseFromSlice(std.json.Value, script_gpa, text[0..len], .{}) catch
         return raise(L, "koi.json: not valid JSON");
+    // Reject deep input before recursion can exhaust either the C or Lua stack.
+    if (!valueFitsStack(parsed.value, 0)) {
+        parsed.deinit();
+        return raise(L, "koi.json: nesting exceeds 128 levels");
+    }
     defer parsed.deinit();
     pushValue(L, parsed.value);
     return 1;
+}
+
+fn valueFitsStack(value: std.json.Value, depth: usize) bool {
+    if (depth > 128) return false;
+    switch (value) {
+        .array => |a| for (a.items) |v| {
+            if (!valueFitsStack(v, depth + 1)) return false;
+        },
+        .object => |o| for (o.values()) |v| {
+            if (!valueFitsStack(v, depth + 1)) return false;
+        },
+        else => {},
+    }
+    return true;
 }
 
 fn pushValue(L: *c.lua_State, value: std.json.Value) void {
@@ -239,6 +270,9 @@ test "script gets json, sleep and plain libraries" {
         \\assert(string.rep("ab", 2) == "abab" and math.floor(2.7) == 2 and os.time() > 0)
         \\assert(require == nil and package == nil and debug == nil)
         \\assert(not pcall(koi.json, "{nope"))
+        \\assert(not pcall(koi.json, string.rep("[", 150) .. "0" .. string.rep("]", 150)))
+        \\assert(not pcall(koi.run, "hello" .. string.char(0) .. "hidden"))
+        \\assert(not pcall(koi.run, setmetatable({}, {__tostring=function() error("bad") end})))
     );
 }
 
