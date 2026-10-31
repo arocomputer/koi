@@ -6,7 +6,15 @@ import SwiftUI
 /// Unattached panes stay unattached; sampling never starts a connection or shell.
 struct DiagnosticsSnapshot {
     struct Machine: Identifiable { let endpoint: Endpoint; let title: String; var id: Endpoint { endpoint } }
-    struct Pane: Identifiable { let id: String; let title: String; let connection: String; let rendering: RenderDiagnosticsSnapshot? }
+    struct Pane: Identifiable {
+        let id: String
+        let title: String
+        let connection: String
+        let transport: String
+        let response: String
+        let prediction: String
+        let rendering: RenderDiagnosticsSnapshot?
+    }
     struct Issue: Identifiable { let id: String; let date: Date; let subsystem: String; let message: String; let count: Int }
     let machine: Endpoint
     let title: String
@@ -262,7 +270,12 @@ private struct DiagnosticsView: View {
             Text("Panes in this window").font(.headline).padding(.top, 8)
             if screen.snapshot.panes.isEmpty { Text("No panes are known for this machine.").foregroundStyle(.secondary) }
             ForEach(screen.snapshot.panes) { pane in
-                row(pane.title, pane.connection)
+                VStack(alignment: .leading, spacing: 4) {
+                    row(pane.title, pane.connection)
+                    row("Transport", pane.transport)
+                    row("Last input response", pane.response)
+                    row("Typing prediction", pane.prediction)
+                }.padding(.vertical, 4)
             }
         }
     }

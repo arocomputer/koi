@@ -5,6 +5,121 @@ import Testing
 @testable import Koi
 
 @MainActor extension SessionTests {
+    /// A predicted glyph keeps the cell's own background and foreground, so
+    /// typing in a colored prompt or input box does not flash default colors.
+    @Test func predictionInheritsTheCellColors() throws {
+        let renderer = try #require(Renderer(metrics: FontMetrics(size: 13, scale: 1)))
+        renderer.hidesCursor = true
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        // An amber X on a purple background, cursor moved back onto the X.
+        terminal.write(Array("\u{1b}[48;2;40;20;60m\u{1b}[38;2;255;180;80mX\u{1b}[D".utf8))
+        renderer.overlay = .init(cells: [.init(x: 0, y: 0, text: "Z")], caret: (x: 1, y: 0))
+        #expect(renderer.prepareFrame(terminal, force: true))
+
+        let metrics = renderer.atlas.metrics
+        let cell = SIMD2<Float>(Float(metrics.cellWidth), Float(metrics.cellHeight))
+        let fills = renderer.quads.filter { $0.kind == 0 && $0.origin == .zero && $0.size == cell }
+        let cover = try #require(fills.last)
+        #expect(cover.color == SIMD4<Float>(40.0 / 255, 20.0 / 255, 60.0 / 255, 1))
+
+        let pad = Float(renderer.atlas.pad)
+        let glyphs = renderer.quads.filter { $0.kind == 1 && $0.origin.x == -pad && $0.origin.y == -pad }
+        let predicted = try #require(glyphs.last)
+        #expect(predicted.color == SIMD4<Float>(255.0 / 255, 180.0 / 255, 80.0 / 255, 1))
+    }
+
+    /// Covering a blank colored cell leaves its background fill alone instead
+    /// of stacking a default-colored box over it, and the predicted glyph
+    /// keeps that input's text color.
+    @Test func predictionOverABlankColoredCellAddsNoBox() throws {
+        let renderer = try #require(Renderer(metrics: FontMetrics(size: 13, scale: 1)))
+        renderer.hidesCursor = true
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array("\u{1b}[48;2;10;20;30m\u{1b}[38;2;200;100;50m \u{1b}[D".utf8))
+        renderer.overlay = .init(cells: [.init(x: 0, y: 0, text: "Y")], caret: (x: 1, y: 0))
+        #expect(renderer.prepareFrame(terminal, force: true))
+
+        let metrics = renderer.atlas.metrics
+        let cell = SIMD2<Float>(Float(metrics.cellWidth), Float(metrics.cellHeight))
+        let fills = renderer.quads.filter { $0.kind == 0 && $0.origin == .zero && $0.size == cell }
+        let background = try #require(fills.first)
+        #expect(fills.count == 1)
+        #expect(background.color == SIMD4<Float>(10.0 / 255, 20.0 / 255, 30.0 / 255, 1))
+        let pad = Float(renderer.atlas.pad)
+        let predicted = try #require(renderer.quads.last { $0.kind == 1 && $0.origin.x == -pad && $0.origin.y == -pad })
+        #expect(predicted.color == SIMD4<Float>(200.0 / 255, 100.0 / 255, 50.0 / 255, 1))
+    }
+
+    /// The rendered pixels prove the predicted cell is purple with an amber
+    /// glyph, not the default dark box with white text.
+    @Test func predictionKeepsCellColorsOnTheGPU() throws {
+        let renderer = try #require(Renderer(metrics: FontMetrics(size: 13, scale: 1)))
+        renderer.hidesCursor = true
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array("\u{1b}[48;2;40;20;60m\u{1b}[38;2;255;180;80mX\u{1b}[D".utf8))
+        renderer.overlay = .init(cells: [.init(x: 0, y: 0, text: "Z")], caret: (x: 1, y: 0))
+        #expect(renderer.prepareFrame(terminal, force: true))
+
+        let metrics = renderer.atlas.metrics
+        let width = metrics.cellWidth, height = metrics.cellHeight
+        let device = renderer.device
+        let library = try device.makeLibrary(source: Renderer.shaders, options: nil)
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = library.makeFunction(name: "quad_vertex")
+        descriptor.fragmentFunction = library.makeFunction(name: "quad_fragment")
+        let attachment = try #require(descriptor.colorAttachments[0])
+        attachment.pixelFormat = .rgba16Float
+        attachment.isBlendingEnabled = true
+        attachment.sourceRGBBlendFactor = .one
+        attachment.sourceAlphaBlendFactor = .one
+        attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+        attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false)
+        textureDescriptor.storageMode = .shared
+        textureDescriptor.usage = [.renderTarget]
+        let texture = try #require(device.makeTexture(descriptor: textureDescriptor))
+        let queue = try #require(device.makeCommandQueue())
+        let bg = Theme.current.background
+        let clear = SIMD4<Float>(Float(bg.r) / 255, Float(bg.g) / 255, Float(bg.b) / 255, 1)
+        let command = try #require(queue.makeCommandBuffer())
+        let pass = MTLRenderPassDescriptor()
+        let color = try #require(pass.colorAttachments[0])
+        color.texture = texture
+        color.loadAction = .clear
+        color.storeAction = .store
+        color.clearColor = MTLClearColorMake(Double(clear.x), Double(clear.y), Double(clear.z), 1)
+        let encoder = try #require(command.makeRenderCommandEncoder(descriptor: pass))
+        let buffer = try #require(renderer.quads.withUnsafeBytes { bytes in
+            device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared)
+        })
+        var view = SIMD4<Float>(Float(width), Float(height), 0, 0), inverse = clear
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+        encoder.setVertexBytes(&view, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
+        encoder.setFragmentTexture(renderer.atlas.texture, index: 0)
+        encoder.setFragmentBytes(&inverse, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: renderer.quads.count)
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        try #require(command.status == .completed)
+
+        var values = [Float16](repeating: 0, count: width * height * 4)
+        values.withUnsafeMutableBytes { bytes in
+            texture.getBytes(bytes.baseAddress!, bytesPerRow: width * 8,
+                             from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        }
+        let pixels = values.map(Float.init)
+        let corner = Array(pixels[0..<4])
+        #expect(abs(corner[0] - 40.0 / 255) < 0.03, "the cell keeps its purple background")
+        #expect(abs(corner[2] - 60.0 / 255) < 0.03)
+        #expect(stride(from: 0, to: pixels.count, by: 4).contains { i in
+            pixels[i] > 0.6 && pixels[i + 1] > 0.3 && pixels[i + 2] < 0.5
+        }, "the predicted glyph is amber, not the default white")
+    }
+
     /// Cursor opacity blends a complete block/inverse layer, preserving text at zero.
     @Test func cursorOpacityAlsoControlsItsInverseGlyph() throws {
         let saved = Config.current

@@ -86,6 +86,16 @@ import Testing
         #expect(throws: (any Error).self) { try report.exportFromUserAction(to: URL(string: "https://example.test/report")!) }
     }
 
+    /// Pane transport, response and prediction facts are part of the redacted
+    /// support report, without terminal contents.
+    @Test func reportIncludesPaneInteractionFacts() {
+        var report = fixture
+        report.interactionSummary = ["Pane fixture: Connected, transport Encrypted UDP, last input response 1.4 ms, prediction Off (program)"]
+        let text = report.text
+        #expect(text.contains("Panes\nPane fixture: Connected, transport Encrypted UDP"))
+        #expect(text.contains("last input response 1.4 ms, prediction Off (program)"))
+    }
+
     private var fixture: Diagnostics {
         Diagnostics(server: .init(transport: .sshRelay, connected: true),
                     configURL: URL(fileURLWithPath: "/fixture/home/.config/koi/config"),

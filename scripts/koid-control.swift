@@ -7,6 +7,8 @@ import Foundation
 // control in Koid without sending input to the screen. `palette [QUERY]`
 // opens the palette; `palette run ID [VALUE]` exercises one of its entries.
 // `palette inspect PATH [QUERY]` writes selected IDs and matching entry IDs.
+// `predict TEXT` paints a synthetic typing prediction on the selected pane;
+// with no text it clears it.
 let args = Array(CommandLine.arguments.dropFirst())
 if args.first == "shot", args.count == 2 {
     DistributedNotificationCenter.default().postNotificationName(
@@ -16,6 +18,12 @@ if args.first == "shot", args.count == 2 {
 if args.first == "popup", args.count == 2 {
     DistributedNotificationCenter.default().postNotificationName(
         Notification.Name("com.fschrhunt.koid.popup"), object: args[1], userInfo: nil, deliverImmediately: true)
+    exit(0)
+}
+if args.first == "predict" {
+    DistributedNotificationCenter.default().postNotificationName(
+        Notification.Name("com.fschrhunt.koid.predict"), object: args.count > 1 ? args[1] : "",
+        userInfo: nil, deliverImmediately: true)
     exit(0)
 }
 if args.first == "palette" {

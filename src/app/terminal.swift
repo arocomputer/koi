@@ -102,6 +102,32 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         onConnectionChange?()
     }
 
+    /// The actual transport carrying this pane, for Diagnostics.
+    var transportDescription: String {
+        guard connection != nil else { return "Not attached" }
+        if endpoint == .local { return "Local socket" }
+        return connection?.usesEncryptedLink == true ? "Encrypted UDP" : "SSH relay"
+    }
+
+    /// The last keystroke-to-output sample, or its current wait state.
+    var responseDescription: String {
+        guard connection != nil else { return "Not attached" }
+        if let sent = inputSentAt,
+           ProcessInfo.processInfo.systemUptime - sent < 2 { return "Waiting" }
+        if let ms = lastResponseMS { return String(format: "%.1f ms", ms) }
+        return "No sample"
+    }
+
+    /// Why prediction is active, ready, or off for the current foreground.
+    var predictionDescription: String {
+        guard let predictor else { return "Off (local)" }
+        guard let terminal else { return "Off" }
+        if terminal.isAlternateScreen { return "Off (full-screen)" }
+        if terminal.mode(2026) { return "Off (synchronized)" }
+        guard predictor.shellProgram else { return "Off (program)" }
+        return predictor.isActive ? "Active" : "Ready"
+    }
+
     private let keyboard = TerminalKeyboard()
     private var mouseEncoder: GhosttyMouseEncoder?
     private var mouseEvent: GhosttyMouseEvent?
@@ -121,12 +147,16 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var findBar: NSView?
     private var findField: NSTextField?
     private var findLabel: NSTextField?
-    /// Instant typing, for panes on other machines; nil locally, where the
-    /// echo is as fast as a prediction would be.
+    /// Instant typing for panes on other machines; nil locally, where the
+    /// echo is as fast as a prediction would be. Prediction only runs at a
+    /// semantic shell prompt, never inside a full-screen program.
     private var predictor: Prediction?
-    /// With KOI_PERF set: when input was last sent, to time the echo.
+    /// With KOI_PERF set: log every echo and resize to stderr.
     private static let perf = ProcessInfo.processInfo.environment["KOI_PERF"] != nil
-    private var inputSentAt: Date?
+    /// Uptime when input was last sent, for the next-response sample.
+    private var inputSentAt: TimeInterval?
+    /// Milliseconds from the last keystroke to the next output batch.
+    private var lastResponseMS: Double?
 
     var fontSize: CGFloat = 13 { didSet { updateMetrics() } }
 
@@ -282,6 +312,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         connection?.close()
         connection = nil
         requested = nil
+        inputSentAt = nil
         connectPane()
     }
 
@@ -296,6 +327,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         connection?.close()
         connection = nil
         requested = nil
+        inputSentAt = nil
         restoredConnection = false
         setFocused(false)
         if wantsConnection { scheduleReconnect(description) }
@@ -349,6 +381,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         connectionGeneration = UUID()
         connection?.close()
         connection = nil
+        inputSentAt = nil
+        lastResponseMS = nil
         showCursor()
         setFocused(false)
         selection?.cancel()
@@ -399,9 +433,13 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                 setFocused(window?.isKeyWindow == true && window?.firstResponder === self)
                 if !observing, !holdsResizes { requestResize() }
             case .output(let bytes):
-                if Self.perf, let sent = inputSentAt {
+                if let sent = inputSentAt {
+                    let elapsed = ProcessInfo.processInfo.systemUptime - sent
                     inputSentAt = nil
-                    perfLog("echo after \(Int(Date().timeIntervalSince(sent) * 1000)) ms (\(bytes.count) bytes)")
+                    if elapsed < 2 {
+                        lastResponseMS = elapsed * 1000
+                        if Self.perf { perfLog("echo after \(Int(elapsed * 1000)) ms (\(bytes.count) bytes)") }
+                    }
                 }
                 writeOutput(bytes)
             case .resized(let size):
@@ -591,10 +629,30 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         pushOverlay()
     }
 
+    #if KOID
+    /// Draws a synthetic prediction at the cursor so Koid can screenshot the
+    /// overlay without typing into the screen; nil clears it.
+    func previewPrediction(_ text: String?) {
+        guard let renderer else { return }
+        if let text, !text.isEmpty, let terminal {
+            let at = terminal.cursor
+            let caret = at.x < terminal.size.cols - 1 ? at.x + 1 : at.x
+            renderer.overlay = .init(cells: [.init(x: at.x, y: at.y, text: text)], caret: (x: caret, y: at.y))
+        } else {
+            renderer.overlay = .init()
+        }
+        forceRender = true
+        needsRender = true
+        // Preview even when the window is occluded: screenshots capture the
+        // window surface, but the normal path pauses drawing off-screen.
+        renderNow(inTransaction: false)
+    }
+    #endif
+
     /// Only changed predictions invalidate a frame. Input may present at once;
     /// output and timer updates share their caller's single presentation.
     private func pushOverlay(immediate: Bool = false) {
-        guard let predictor else { return }
+        guard let predictor, let renderer else { return }
         guard renderer.overlay != predictor.overlay else { return }
         renderer.overlay = predictor.overlay
         needsRender = true
@@ -898,8 +956,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         if action != GHOSTTY_KEY_ACTION_RELEASE {
             terminal.clearSelection()
             scrollToBottom()
+            if connection != nil { inputSentAt = ProcessInfo.processInfo.systemUptime }
         }
-        if Self.perf, action != GHOSTTY_KEY_ACTION_RELEASE { inputSentAt = Date() }
         connection?.send(input: bytes)
         if action != GHOSTTY_KEY_ACTION_RELEASE { predict(event, text: text) }
     }

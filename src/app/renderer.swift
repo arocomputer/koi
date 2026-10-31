@@ -229,6 +229,12 @@ final class Renderer {
         /// The glyph quad at each column, for drawing the cell under a block
         /// cursor in the background color.
         var glyphAt: [UInt16: Quad] = [:]
+        /// An explicit background color at each column, so a prediction over
+        /// the cell covers it in that cell's colors instead of the defaults.
+        var backgroundAt: [UInt16: SIMD4<Float>] = [:]
+        /// The resolved foreground at each column, including blank cells, so
+        /// a prediction in a colored input keeps that input's text color.
+        var foregroundAt: [UInt16: SIMD4<Float>] = [:]
     }
 
     /// The device, shader library and pipeline are immutable and costly to
@@ -537,29 +543,38 @@ final class Renderer {
         return moved
     }
 
-    /// The overlay's quads: each predicted cell painted in the default
-    /// colors over whatever the grid shows there.
+    /// The overlay's quads: each predicted cell covers what it replaces in
+    /// that cell's own colors, so typing in a colored prompt or input box does
+    /// not flash a default-colored box. A blank cell needs no cover: the
+    /// terminal background (and any background quad beneath it) already shows.
     private func overlayQuads() -> [Quad] {
         var out: [Quad] = []
         let m = atlas.metrics
         let cw = Float(m.cellWidth), ch = Float(m.cellHeight)
-        let bg = premultiplied(colors.background)
         for cell in overlay.cells where Int(cell.y) < rows.count {
+            let row = rows[Int(cell.y)]
             let origin = SIMD2<Float>(Float(cell.x) * cw, Float(cell.y) * ch)
-            out.append(Quad(origin: origin, size: [cw, ch], uvOrigin: .zero, color: bg, kind: 0))
-            if let glyph = overlayGlyph(cell) { out.append(glyph) }
+            if row.glyphAt[cell.x] != nil {
+                let bg = row.backgroundAt[cell.x] ?? premultiplied(colors.background)
+                out.append(Quad(origin: origin, size: [cw, ch], uvOrigin: .zero, color: bg, kind: 0))
+            }
+            if let glyph = overlayGlyph(cell, in: row) { out.append(glyph) }
         }
         return out
     }
 
-    /// Resolve the same glyph for predicted text and its cursor, including predicted erases.
-    private func overlayGlyph(_ cell: Prediction.Cell) -> Quad? {
+    /// Resolve the same glyph for predicted text and its cursor, inheriting
+    /// the foreground of the cell being replaced when it has one.
+    private func overlayGlyph(_ cell: Prediction.Cell, in row: Row) -> Quad? {
         guard cell.text != " ", let entry = atlas.entry(.init(text: cell.text, bold: false, italic: false, wide: false)) else { return nil }
         let metrics = atlas.metrics
         let pad = Float(atlas.pad)
+        let inherited = row.glyphAt[cell.x].flatMap { $0.kind == 1 ? $0.color : nil }
+            ?? row.foregroundAt[cell.x]
         return Quad(origin: [Float(Int(cell.x) * metrics.cellWidth) - pad, Float(Int(cell.y) * metrics.cellHeight) - pad],
                     size: [Float(entry.width), Float(entry.height)], uvOrigin: [Float(entry.x), Float(entry.y)],
-                    color: entry.colored ? [1, 1, 1, 1] : premultiplied(colors.foreground), kind: entry.colored ? 2 : 1)
+                    color: entry.colored ? [1, 1, 1, 1] : inherited ?? premultiplied(colors.foreground),
+                    kind: entry.colored ? 2 : 1)
     }
 
     private func buildRow(_ y: Int) -> Row {
@@ -569,6 +584,7 @@ final class Renderer {
         let cw = Float(m.cellWidth), ch = Float(m.cellHeight)
         let top = Float(y) * ch
         let defaultFg = colors.foreground, defaultBg = colors.background
+        let defaultForeground = premultiplied(defaultFg)
         var style = GhosttyStyle()
         var codepoints = [UInt32](repeating: 0, count: 32)
         var x: UInt16 = 0
@@ -597,8 +613,16 @@ final class Renderer {
             }
             let left = Float(x) * cw
             if fillBg {
-                row.backgrounds.append(Quad(origin: [left, top], size: [cw, ch], uvOrigin: .zero, color: premultiplied(bg), kind: 0))
+                let fill = Quad(origin: [left, top], size: [cw, ch], uvOrigin: .zero, color: premultiplied(bg), kind: 0)
+                row.backgrounds.append(fill)
+                row.backgroundAt[x] = fill.color
             }
+
+            let color = premultiplied(fg, alpha: style.faint ? 0.5 : 1)
+            // Most cells keep the default foreground; only record an override,
+            // so a prediction can inherit a styled input without a dictionary
+            // entry per cell on every full frame.
+            if color != defaultForeground { row.foregroundAt[x] = color }
 
             var len: UInt32 = 0
             ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &len)
@@ -611,9 +635,11 @@ final class Renderer {
             for cp in codepoints[0..<Int(len)] { if let s = Unicode.Scalar(cp) { text.append(s) } }
             let wide = isWide()
             if wide, fillBg {
-                row.backgrounds.append(Quad(origin: [left + cw, top], size: [cw, ch], uvOrigin: .zero, color: premultiplied(bg), kind: 0))
+                let fill = Quad(origin: [left + cw, top], size: [cw, ch], uvOrigin: .zero, color: premultiplied(bg), kind: 0)
+                row.backgrounds.append(fill)
+                row.backgroundAt[x + 1] = fill.color
+                if color != defaultForeground { row.foregroundAt[x + 1] = color }
             }
-            let color = premultiplied(fg, alpha: style.faint ? 0.5 : 1)
             if text.count == 1, text.first == " " {
                 // Nothing to draw but its decorations.
             } else if let e = atlas.entry(.init(text: String(text), bold: style.bold, italic: style.italic, wide: wide)) {
@@ -793,9 +819,10 @@ final class Renderer {
             // against the block — only when the block spans the whole glyph,
             // or a shrunk cursor would tint the parts it doesn't cover.
             let predicted = overlay.cells.last { $0.x == c.viewport_x && $0.y == c.viewport_y }
+            let row = rows[Int(c.viewport_y)]
             let glyph: Quad?
-            if let predicted { glyph = overlayGlyph(predicted) }
-            else { glyph = rows[Int(c.viewport_y)].glyphAt[c.viewport_x] }
+            if let predicted { glyph = overlayGlyph(predicted, in: row) }
+            else { glyph = row.glyphAt[c.viewport_x] }
             if fullHeight, let g = glyph, g.kind == 1 {
                 // The glyph bitmap includes atlas padding. Offset its UVs to
                 // the cursor's own rectangle and clip inversion to that cell.

@@ -42,6 +42,8 @@ struct Diagnostics {
     /// Coordinator-formatted numeric renderer facts and sanitized issue summaries.
     /// Never supply terminal text, raw logs or environment/configuration values.
     var renderingSummary: [String] = []
+    /// Coordinator-formatted pane transport, response and prediction facts.
+    var interactionSummary: [String] = []
     var recentIssueSummary: [String] = []
     /// Milliseconds from launch to the first local pane's snapshot.
     var launchToFirstPaneMS: Int? = nil
@@ -94,7 +96,7 @@ struct Diagnostics {
         let trustedBuild = version.range(
             of: #"\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\+[0-9a-f]{64}\z"#,
             options: .regularExpression) != nil && Self.redactHosts(version, hosts: server.sensitiveHosts) == version
-        let extra = [("Rendering", renderingSummary), ("Recent issues", recentIssueSummary)].compactMap { title, lines -> String? in
+        let extra = [("Panes", interactionSummary), ("Rendering", renderingSummary), ("Recent issues", recentIssueSummary)].compactMap { title, lines -> String? in
             guard !lines.isEmpty else { return nil }
             let bounded = lines.prefix(100).map { String($0.prefix(500)) }.joined(separator: "\n")
             return "\(title)\n" + Self.redact(bounded, sensitiveHosts: server.sensitiveHosts)

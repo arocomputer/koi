@@ -169,7 +169,7 @@ esac''')
         # A real local repository exercises unborn HEADs without network access.
         upstream = self.root / 'upstream'
         upstream.mkdir()
-        git = shutil.which('git')
+        git = shutil.which('git', path='/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin') or shutil.which('git')
         def run_git(*args):
             """Run real Git against the fixture upstream, never the project checkout."""
             return subprocess.check_output([git, '-C', str(upstream), *args], text=True).strip()

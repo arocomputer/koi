@@ -1,18 +1,21 @@
 import Foundation
 
-/// Instant typing for remote panes.
+/// Instant typing for remote shells.
 ///
 /// A keystroke to another machine takes a round trip before its echo comes
-/// back. The predictor shows the expected result at once as an overlay on
-/// the pane's own grid: the typed character at the caret, or the erased cell
-/// for Backspace, with the cursor moved along. Nothing is written into the
-/// terminal, so a wrong guess can never corrupt the screen; when the real
-/// output arrives the overlay is checked against it, cell by cell, and
-/// anything confirmed or contradicted disappears.
+/// back. While the shell is the foreground program, the predictor shows the
+/// expected result at once as an overlay on the pane's own grid: the typed
+/// character at the caret, or the erased cell for Backspace, with the cursor
+/// moved along. Nothing is written into the terminal, so a wrong guess can
+/// never corrupt the screen; when the real output arrives the overlay is
+/// checked against it, cell by cell, and anything confirmed or contradicted
+/// disappears.
 ///
-/// Completed echoes establish confidence. Reconnects, program changes and
-/// unpredictable input clear it; unconfirmed typing stays hidden while the
-/// predictor learns whether the application is echoing again.
+/// Prediction never runs inside a full-screen program or while synchronized
+/// output is held: those compose their own frame, so a character at the cursor
+/// is not their echo. Completed echoes establish confidence. Reconnects,
+/// program changes and unpredictable input clear it; unconfirmed typing stays
+/// hidden while the predictor learns whether the shell is echoing again.
 struct Prediction {
     struct Cell: Equatable {
         var x: UInt16
@@ -87,9 +90,24 @@ struct Prediction {
         settleUntil = nil
     }
 
-    /// Track narrow input; guesses stay hidden until a real echo establishes confidence.
+    /// Whether the foreground program echoes one character at the cursor.
+    /// The server reports an empty program at a shell prompt; the names cover
+    /// a shell that is itself the foreground before the first discovery sample.
+    private var predicts: Bool {
+        program.isEmpty || Self.shells.contains(program)
+    }
+
+    /// Whether prediction is eligible for the current foreground program.
+    var shellProgram: Bool { predicts }
+
+    private static let shells: Set<String> = ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh"]
+
+    /// Track narrow input; guesses stay hidden until a real echo establishes
+    /// confidence. Only a shell prompt is safe: a full-screen program composes
+    /// its own frame, so a character at the cursor is not its echo.
     mutating func typed(_ text: String, in terminal: VTTerminal, now: Date = Date()) {
-        guard !terminal.mode(2026), text.unicodeScalars.count == 1, let scalar = text.unicodeScalars.first,
+        guard predicts, !terminal.isAlternateScreen, !terminal.mode(2026),
+              text.unicodeScalars.count == 1, let scalar = text.unicodeScalars.first,
               Self.isNarrow(scalar),
               let at = nextCaret(in: terminal) else {
             other()
@@ -109,7 +127,8 @@ struct Prediction {
 
     /// Predict an erase only for characters typed since the last unsafe key.
     mutating func backspace(in terminal: VTTerminal, now: Date = Date()) {
-        guard !terminal.mode(2026), typed > 0, let at = nextCaret(in: terminal), at.x > 0 else {
+        guard predicts, !terminal.isAlternateScreen, !terminal.mode(2026),
+              typed > 0, let at = nextCaret(in: terminal), at.x > 0 else {
             other()
             return
         }
@@ -143,10 +162,14 @@ struct Prediction {
         confident = false
     }
 
-    /// Check completed output; held redraws discard predictions based on the live grid.
+    /// Check completed output; a program or held redraw invalidates predictions
+    /// based on the live grid.
     mutating func reconcile(with terminal: VTTerminal, now: Date = Date()) {
         expire(now: now)
-        guard !terminal.mode(2026) else { other(); return }
+        guard predicts, !terminal.mode(2026), !terminal.isAlternateScreen else {
+            other()
+            return
+        }
         let cursor = terminal.cursor
         guard !pending.isEmpty else {
             if settleUntil != nil { settle(cursor: cursor, now: now) }

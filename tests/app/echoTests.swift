@@ -282,20 +282,19 @@ import Testing
         #expect(p.overlay.cells.isEmpty && p.overlay.caret == nil, "a wrong guess stays hidden until echo matches")
     }
 
-    /// Aliases and unfamiliar programs all learn echo after reconnect.
+    /// Full-screen and agent programs are never predicted; only a shell is.
     @Test(arguments: ["custom-editor", "claude-code", "gemini-cli", "opencode-cli", "opencode-ai", "pi-coding-agent", "aider-chat"])
-    func programsLearnEchoAfterReconnect(program: String) {
+    func programsDoNotPredictTyping(program: String) {
         let t = prompt()
         var p = Prediction()
         p.setProgram(program)
-        p.reset()
         p.typed("a", in: t)
         p.typed("b", in: t)
-        #expect(p.overlay.cells.isEmpty && p.overlay.caret == nil)
+        #expect(p.overlay == Prediction.Overlay() && !p.isActive)
         t.write(Array("ab".utf8))
         p.reconcile(with: t)
         p.typed("c", in: t)
-        #expect(p.overlay.cells.map(\.text) == ["c"])
+        #expect(p.overlay == Prediction.Overlay() && !p.isActive)
     }
 
     /// A coalesced identical replacement must still be covered by a later erase.
@@ -346,6 +345,30 @@ import Testing
         var p = echoingPrediction(in: t)
         p.typed("a", in: t)
         #expect(!p.isActive)
+    }
+
+    /// Only a shell prompt is predictable; a foreground program composes its
+    /// own frame and is left alone.
+    @Test func noPredictionInAForegroundProgram() {
+        let t = prompt()
+        var p = echoingPrediction(in: t)
+        p.setProgram("opencode")
+        p.typed("a", in: t)
+        #expect(p.overlay == Prediction.Overlay() && !p.isActive)
+        p.setProgram("")
+        p.typed("a", in: t)
+        #expect(p.overlay.cells.isEmpty, "a new shell prompt must prove its echo again")
+    }
+
+    /// Full-screen programs compose their own frame; a character at the cursor
+    /// is not their echo.
+    @Test func alternateScreenNeverPredicts() {
+        let t = prompt()
+        var p = echoingPrediction(in: t)
+        t.write(Array("\u{1b}[?1049h".utf8))
+        p.reconcile(with: t)
+        p.typed("a", in: t)
+        #expect(p.overlay == Prediction.Overlay() && !p.isActive)
     }
 
     /// Shell metadata can lag a command that disables echo; it must not

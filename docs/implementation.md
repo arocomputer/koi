@@ -336,10 +336,13 @@ the latest frame. Main-thread output deliveries are bounded to
 output yields between deliveries. The focused pane draws completed output the moment it
 arrives instead of waiting for that tick, which is up to one frame less
 between a keystroke and its echo; other panes draw on the tick. Remote panes
-predict typing locally (see `echo.swift`): the predicted cell is drawn on the
-keystroke itself, before the round trip, and reconciled with the real echo.
-Unchanged blanks require cursor evidence; pending erases cover split echoes,
-and unpredictable input or expiry clears the whole overlay and echo confidence.
+predict typing locally (see `echo.swift`) only while the shell is the foreground
+program and the pane is not on the alternate screen. A predicted cell is drawn
+on the keystroke itself, before the round trip, reconciled with the real echo in
+the colors of the cell it covers, and never shown inside a full-screen program.
+Unchanged blanks require cursor evidence; pending erases cover split echoes, and
+unpredictable input, a foreground change, or expiry clears the whole overlay and
+echo confidence.
 Guesses stay hidden until a completed redraw demonstrates echo; program names
 never bypass that check. Each pane's display link pauses once a tick
 finds nothing to draw, and wakes on output, input, a gesture or the window
@@ -390,6 +393,12 @@ the explicit Open Local Server Log action. Copy/export shares the redacted
 report formatter. Only a validated `major.minor.patch+` version with a
 64-digit lowercase hex hash bypasses token scrubbing in the server-version
 field, and only when it contains no configured host alias.
+
+Connections also lists each attached pane's actual transport (local socket,
+encrypted UDP, or SSH relay), the last keystroke-to-output sample, and whether
+typing prediction is ready, active, or off for the foreground program. The
+response sample is the next output batch after a key, not a network RTT; a
+pane that never answers shows `Waiting` only briefly and then `No sample`.
 
 ## Terminal text and activity
 

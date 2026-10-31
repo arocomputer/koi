@@ -711,11 +711,9 @@ extension SessionTests {
         var pane = try #require(workspace.selectedPane)
         pane.program = "git"
         fixture.report(pane)
-        try await Task.sleep(for: .milliseconds(150))
         pane.program = "vim"
         fixture.report(pane)
-        try await Task.sleep(for: .milliseconds(150))
-        #expect(workspace.presentedPane(pane).program.isEmpty, "a replacement gets its own settling interval")
+        #expect(workspace.presentedPane(pane).program.isEmpty, "a replacement cancels the pending presentation")
         workspace.apply(fixture.state(["b"]))
         workspace.apply(initial)
         try await Task.sleep(for: .milliseconds(350))
