@@ -7,6 +7,7 @@ No builds, installations, firewall edits or existing Koi sessions are involved.
 SSH carries setup/credentials only; timed input/output uses direct UDP.
 """
 
+import utils.session
 import argparse
 import fcntl
 import hashlib
