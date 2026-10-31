@@ -21,6 +21,7 @@ import Testing
         driver.offer(version: "0.2.0") { choices.append($0) }
         #expect(model.phase == .available(version: "0.2.0"))
         model.accept()
+        model.decline() // the other button must not answer the same callback again
         model.accept()
         #expect(choices == [.install], "a second click does not answer twice")
 
@@ -45,6 +46,8 @@ import Testing
         driver.showDownloadDidStartExtractingUpdate()
         #expect(model.phase == .extracting(version: "0.2.0"))
         #expect(model.onCancel == nil, "extracting can no longer be cancelled")
+        model.decline()
+        #expect(model.phase == .extracting(version: "0.2.0"), "an old offer cannot hide extraction")
     }
 
     @Test func readyUpdateRestartsOrWaits() {

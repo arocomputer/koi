@@ -150,12 +150,18 @@ pub fn selfPath(gpa: std.mem.Allocator) ![]const u8 {
     return gpa.dupe(u8, buf[0..@intCast(n)]);
 }
 
-/// Authenticate a connected Unix peer using kernel credentials, never socket-file metadata.
+/// Authenticate a connected Unix peer as this process's user, using kernel
+/// credentials, never socket-file metadata.
 pub fn sameUserPeer(fd: c_int) bool {
+    return peerIsUser(fd, c.getuid());
+}
+
+/// Whether the kernel says the peer of the connected Unix socket `fd` runs as `uid`.
+pub fn peerIsUser(fd: c_int, user: c.uid_t) bool {
     if (builtin.os.tag == .macos) {
         var uid: c.uid_t = undefined;
         var gid: c.gid_t = undefined;
-        return c.getpeereid(fd, &uid, &gid) == 0 and uid == c.getuid();
+        return c.getpeereid(fd, &uid, &gid) == 0 and uid == user;
     } else {
         // `struct ucred` is only visible to C with _GNU_SOURCE, which also
         // turns glibc's sockaddr arguments into transparent unions; its
@@ -164,7 +170,7 @@ pub fn sameUserPeer(fd: c_int) bool {
         var cred: Ucred = undefined;
         var len: c.socklen_t = @sizeOf(Ucred);
         return c.getsockopt(fd, c.SOL_SOCKET, std.os.linux.SO.PEERCRED, &cred, &len) == 0 and
-            len == @sizeOf(Ucred) and cred.uid == c.getuid();
+            len == @sizeOf(Ucred) and cred.uid == user;
     }
 }
 
@@ -181,6 +187,25 @@ pub fn directoryInfo(fd: c_int) !struct { uid: c.uid_t, gid: c.gid_t, mode: u32 
         if (linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .UID = true, .GID = true, .MODE = true }, &st) != 0 or
             !st.mask.UID or !st.mask.GID or !st.mask.MODE) return error.UnsafeDirectory;
         return .{ .uid = st.uid, .gid = st.gid, .mode = st.mode };
+    }
+}
+
+/// Which file a descriptor is, and how large: enough to tell whether two
+/// names or descriptors are the same file. Linux uses statx for the reason
+/// `directoryInfo` does.
+pub const FileInfo = struct { dev: u64, ino: u64, size: u64 };
+
+pub fn fileInfo(fd: c_int) ?FileInfo {
+    if (builtin.os.tag == .macos) {
+        var st: c.struct_stat = undefined;
+        if (c.fstat(fd, &st) != 0) return null;
+        return .{ .dev = @intCast(st.st_dev), .ino = st.st_ino, .size = @intCast(st.st_size) };
+    } else {
+        const linux = std.os.linux;
+        var st: linux.Statx = undefined;
+        if (linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .INO = true, .SIZE = true }, &st) != 0 or
+            !st.mask.INO or !st.mask.SIZE) return null;
+        return .{ .dev = (@as(u64, st.dev_major) << 32) | st.dev_minor, .ino = st.ino, .size = st.size };
     }
 }
 

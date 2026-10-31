@@ -44,9 +44,15 @@ import SwiftUI
         onCancel = nil
     }
 
-    func accept() { let action = onAccept; onAccept = nil; action?() }
-    func decline() { let action = onDecline; onDecline = nil; action?() }
-    func cancel() { let action = onCancel; onCancel = nil; action?() }
+    func clearActions() {
+        onAccept = nil
+        onDecline = nil
+        onCancel = nil
+    }
+
+    func accept() { let action = onAccept; clearActions(); action?() }
+    func decline() { let action = onDecline; clearActions(); action?() }
+    func cancel() { let action = onCancel; clearActions(); action?() }
 
     /// Progress through a download whose total length may not be known.
     func downloaded(_ bytes: UInt64, of expected: UInt64?, version: String) {
@@ -82,6 +88,7 @@ import SwiftUI
     }
 
     func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {
+        model.clearActions()
         model.show(.checking, userInitiated: true)
         model.onCancel = { [model] in model.hide(); cancellation() }
     }
@@ -93,6 +100,7 @@ import SwiftUI
     /// An update was found: put the question on the toast.
     func offer(version: String, reply: @escaping (SPUUserUpdateChoice) -> Void) {
         self.version = version
+        model.clearActions()
         model.show(.available(version: version))
         model.onAccept = { reply(.install) }
         model.onDecline = { [model] in model.hide(); reply(.dismiss) }
@@ -104,12 +112,14 @@ import SwiftUI
 
     func showUpdateNotFoundWithError(_ error: any Error, acknowledgement: @escaping () -> Void) {
         guard model.userInitiated else { acknowledgement(); return }
+        model.clearActions()
         model.show(.upToDate)
         finishSoon(acknowledgement, after: noticeSeconds)
     }
 
     func showUpdaterError(_ error: any Error, acknowledgement: @escaping () -> Void) {
         guard model.userInitiated || model.phase != .hidden else { acknowledgement(); return }
+        model.clearActions()
         model.show(.failed(Self.message(for: error)))
         finishSoon(acknowledgement, after: errorSeconds)
     }
@@ -117,6 +127,7 @@ import SwiftUI
     func showDownloadInitiated(cancellation: @escaping () -> Void) {
         received = 0
         expected = nil
+        model.clearActions()
         model.show(.downloading(version: version, fraction: nil))
         model.onCancel = { [model] in model.hide(); cancellation() }
     }
@@ -138,6 +149,7 @@ import SwiftUI
     func showExtractionReceivedProgress(_ progress: Double) {}
 
     func showReady(toInstallAndRelaunch reply: @escaping (SPUUserUpdateChoice) -> Void) {
+        model.clearActions()
         model.show(.ready(version: version))
         model.onAccept = { reply(.install) }
         // Later: the update installs when Koi next quits. Sessions live in the server, so nothing is lost.
