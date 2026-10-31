@@ -42,7 +42,8 @@ struct Diagnostics {
     /// Coordinator-formatted numeric renderer facts and sanitized issue summaries.
     /// Never supply terminal text, raw logs or environment/configuration values.
     var renderingSummary: [String] = []
-    /// Coordinator-formatted pane transport, response and prediction facts.
+    /// Coordinator-formatted pane transport, response and prediction facts,
+    /// from fixed labels and numbers only; never connection or error text.
     var interactionSummary: [String] = []
     var recentIssueSummary: [String] = []
     /// Milliseconds from launch to the first local pane's snapshot.

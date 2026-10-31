@@ -229,12 +229,12 @@ final class Renderer {
         /// The glyph quad at each column, for drawing the cell under a block
         /// cursor in the background color.
         var glyphAt: [UInt16: Quad] = [:]
-        /// An explicit background color at each column, so a prediction over
-        /// the cell covers it in that cell's colors instead of the defaults.
+        /// With `recordsCellStyles`: each explicitly filled column's
+        /// background, so a prediction covers the cell in its own color.
         var backgroundAt: [UInt16: SIMD4<Float>] = [:]
-        /// The resolved foreground at each column, including blank cells, so
-        /// a prediction in a colored input keeps that input's text color.
-        var foregroundAt: [UInt16: SIMD4<Float>] = [:]
+        /// With `recordsCellStyles`: the columns holding the left half of a
+        /// wide glyph, whose right half a prediction must cover too.
+        var wideAt: Set<UInt16> = []
     }
 
     /// The device, shader library and pipeline are immutable and costly to
@@ -309,6 +309,9 @@ final class Renderer {
     var overlay = Prediction.Overlay() {
         didSet { overlayChanged = overlayChanged || overlay != oldValue }
     }
+    /// Keep the per-cell backgrounds and wide glyphs the overlay needs. Only
+    /// panes that predict pay for it; set it before the first frame.
+    var recordsCellStyles = false
     /// Hides the cursor, for a terminal whose first real output has not
     /// arrived, so an empty snapshot does not show a blank block.
     var hidesCursor = false {
@@ -543,38 +546,55 @@ final class Renderer {
         return moved
     }
 
-    /// The overlay's quads: each predicted cell covers what it replaces in
-    /// that cell's own colors, so typing in a colored prompt or input box does
-    /// not flash a default-colored box. A blank cell needs no cover: the
-    /// terminal background (and any background quad beneath it) already shows.
+    /// The overlay's quads: each predicted cell is covered in its own
+    /// background (so a colored prompt or input box does not flash a
+    /// default-colored box), hiding the glyph, decorations, or wide glyph it
+    /// replaces, then drawn in the color of the input it continues.
     private func overlayQuads() -> [Quad] {
         var out: [Quad] = []
         let m = atlas.metrics
         let cw = Float(m.cellWidth), ch = Float(m.cellHeight)
         for cell in overlay.cells where Int(cell.y) < rows.count {
             let row = rows[Int(cell.y)]
-            let origin = SIMD2<Float>(Float(cell.x) * cw, Float(cell.y) * ch)
-            if row.glyphAt[cell.x] != nil {
-                let bg = row.backgroundAt[cell.x] ?? premultiplied(colors.background)
-                out.append(Quad(origin: origin, size: [cw, ch], uvOrigin: .zero, color: bg, kind: 0))
+            // A narrow character over either half of a wide glyph replaces all of it.
+            var covered = [cell.x]
+            if row.wideAt.contains(cell.x) { covered.append(cell.x + 1) }
+            if cell.x > 0, row.wideAt.contains(cell.x - 1) { covered.append(cell.x - 1) }
+            for x in covered {
+                let bg = row.backgroundAt[x] ?? premultiplied(colors.background)
+                out.append(Quad(origin: [Float(x) * cw, Float(cell.y) * ch], size: [cw, ch], uvOrigin: .zero, color: bg, kind: 0))
             }
             if let glyph = overlayGlyph(cell, in: row) { out.append(glyph) }
         }
         return out
     }
 
-    /// Resolve the same glyph for predicted text and its cursor, inheriting
-    /// the foreground of the cell being replaced when it has one.
+    /// Resolve the same glyph for predicted text and its cursor.
     private func overlayGlyph(_ cell: Prediction.Cell, in row: Row) -> Quad? {
         guard cell.text != " ", let entry = atlas.entry(.init(text: cell.text, bold: false, italic: false, wide: false)) else { return nil }
         let metrics = atlas.metrics
         let pad = Float(atlas.pad)
-        let inherited = row.glyphAt[cell.x].flatMap { $0.kind == 1 ? $0.color : nil }
-            ?? row.foregroundAt[cell.x]
         return Quad(origin: [Float(Int(cell.x) * metrics.cellWidth) - pad, Float(Int(cell.y) * metrics.cellHeight) - pad],
                     size: [Float(entry.width), Float(entry.height)], uvOrigin: [Float(entry.x), Float(entry.y)],
-                    color: entry.colored ? [1, 1, 1, 1] : inherited ?? premultiplied(colors.foreground),
-                    kind: entry.colored ? 2 : 1)
+                    color: entry.colored ? [1, 1, 1, 1] : overlayColor(cell, in: row), kind: entry.colored ? 2 : 1)
+    }
+
+    /// A predicted character continues the word to its left, so it takes
+    /// that glyph's color, following predicted cells back to the real text.
+    /// After a blank it is new input in the default color. The covered cell
+    /// is never consulted: it is often an autosuggestion's dim ghost text.
+    private func overlayColor(_ cell: Prediction.Cell, in row: Row) -> SIMD4<Float> {
+        var x = cell.x
+        while x > 0 {
+            x -= 1
+            if let left = overlay.cells.last(where: { $0.x == x && $0.y == cell.y }) {
+                if left.text == " " { break }
+                continue
+            }
+            if let glyph = row.glyphAt[x], glyph.kind == 1 { return glyph.color }
+            break
+        }
+        return premultiplied(colors.foreground)
     }
 
     private func buildRow(_ y: Int) -> Row {
@@ -584,7 +604,6 @@ final class Renderer {
         let cw = Float(m.cellWidth), ch = Float(m.cellHeight)
         let top = Float(y) * ch
         let defaultFg = colors.foreground, defaultBg = colors.background
-        let defaultForeground = premultiplied(defaultFg)
         var style = GhosttyStyle()
         var codepoints = [UInt32](repeating: 0, count: 32)
         var x: UInt16 = 0
@@ -615,14 +634,8 @@ final class Renderer {
             if fillBg {
                 let fill = Quad(origin: [left, top], size: [cw, ch], uvOrigin: .zero, color: premultiplied(bg), kind: 0)
                 row.backgrounds.append(fill)
-                row.backgroundAt[x] = fill.color
+                if recordsCellStyles { row.backgroundAt[x] = fill.color }
             }
-
-            let color = premultiplied(fg, alpha: style.faint ? 0.5 : 1)
-            // Most cells keep the default foreground; only record an override,
-            // so a prediction can inherit a styled input without a dictionary
-            // entry per cell on every full frame.
-            if color != defaultForeground { row.foregroundAt[x] = color }
 
             var len: UInt32 = 0
             ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &len)
@@ -637,9 +650,10 @@ final class Renderer {
             if wide, fillBg {
                 let fill = Quad(origin: [left + cw, top], size: [cw, ch], uvOrigin: .zero, color: premultiplied(bg), kind: 0)
                 row.backgrounds.append(fill)
-                row.backgroundAt[x + 1] = fill.color
-                if color != defaultForeground { row.foregroundAt[x + 1] = color }
+                if recordsCellStyles { row.backgroundAt[x + 1] = fill.color }
             }
+            if wide, recordsCellStyles { row.wideAt.insert(x) }
+            let color = premultiplied(fg, alpha: style.faint ? 0.5 : 1)
             if text.count == 1, text.first == " " {
                 // Nothing to draw but its decorations.
             } else if let e = atlas.entry(.init(text: String(text), bold: style.bold, italic: style.italic, wide: wide)) {

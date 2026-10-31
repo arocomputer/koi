@@ -90,10 +90,8 @@ import Testing
     /// support report, without terminal contents.
     @Test func reportIncludesPaneInteractionFacts() {
         var report = fixture
-        report.interactionSummary = ["Pane fixture: Connected, transport Encrypted UDP, last input response 1.4 ms, prediction Off (program)"]
-        let text = report.text
-        #expect(text.contains("Panes\nPane fixture: Connected, transport Encrypted UDP"))
-        #expect(text.contains("last input response 1.4 ms, prediction Off (program)"))
+        report.interactionSummary = ["Pane fixture: transport Encrypted UDP, last input response 1.4 ms, prediction Off (full-screen)"]
+        #expect(report.text.contains("Panes\nPane fixture: transport Encrypted UDP, last input response 1.4 ms, prediction Off (full-screen)"))
     }
 
     private var fixture: Diagnostics {

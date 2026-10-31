@@ -94,11 +94,12 @@ An application's terminal cursor-shape request overrides `cursor-style`.
 Synchronized terminal redraws retain the last complete frame until release,
 with a one-second fallback for stuck applications. Cursor opacity also applies
 to the inverted character under a block cursor. Typing prediction covers remote
-panes while the shell is the foreground program; commands and full-screen
-programs are left alone. It clears on navigation, paste, and other
-unpredictable input, then waits for a real echo before showing predictions
-again. A predicted cell keeps the background and foreground of the cell it
-covers, so colored prompts do not flash default colors.
+panes, including nested ssh sessions and REPLs; full-screen programs and
+programs that hide the cursor to draw their own are left alone. It clears on
+navigation, paste, and other unpredictable input, then waits for a real echo
+before showing predictions again. A predicted cell keeps the background of the
+cell it covers and the color of the word it continues, so colored prompts and
+autosuggestions do not flash the wrong colors.
 Font family selection includes installed-font search and a sample; Terminal
 also previews text and cursor settings, including the full 1–3 line-height
 range.

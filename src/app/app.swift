@@ -835,7 +835,8 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
         }
         report.recentIssueSummary = issues.map { "\($0.date.formatted(.iso8601)) \($0.subsystem) ×\($0.count): \($0.message)" }
         report.interactionSummary = panes.map { pane in
-            "Pane \(pane.id): \(pane.connection), transport \(pane.transport), last input response \(pane.response), prediction \(pane.prediction)"
+            // The connection description can carry raw error text, so only fixed labels go in the report.
+            "Pane \(pane.id): transport \(pane.transport), last input response \(pane.response), prediction \(pane.prediction)"
         }
         return DiagnosticsSnapshot(machine: endpoint, title: endpoint.title, symbol: machines.deviceIcons.symbol(for: endpoint),
             machines: ([Endpoint.local] + machines.hosts.map(Endpoint.ssh)).map { .init(endpoint: $0, title: $0.title) },

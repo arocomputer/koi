@@ -282,19 +282,20 @@ import Testing
         #expect(p.overlay.cells.isEmpty && p.overlay.caret == nil, "a wrong guess stays hidden until echo matches")
     }
 
-    /// Full-screen and agent programs are never predicted; only a shell is.
+    /// Aliases and unfamiliar programs all learn echo after reconnect.
     @Test(arguments: ["custom-editor", "claude-code", "gemini-cli", "opencode-cli", "opencode-ai", "pi-coding-agent", "aider-chat"])
-    func programsDoNotPredictTyping(program: String) {
+    func programsLearnEchoAfterReconnect(program: String) {
         let t = prompt()
         var p = Prediction()
         p.setProgram(program)
+        p.reset()
         p.typed("a", in: t)
         p.typed("b", in: t)
-        #expect(p.overlay == Prediction.Overlay() && !p.isActive)
+        #expect(p.overlay.cells.isEmpty && p.overlay.caret == nil)
         t.write(Array("ab".utf8))
         p.reconcile(with: t)
         p.typed("c", in: t)
-        #expect(p.overlay == Prediction.Overlay() && !p.isActive)
+        #expect(p.overlay.cells.map(\.text) == ["c"])
     }
 
     /// A coalesced identical replacement must still be covered by a later erase.
@@ -347,17 +348,15 @@ import Testing
         #expect(!p.isActive)
     }
 
-    /// Only a shell prompt is predictable; a foreground program composes its
-    /// own frame and is left alone.
-    @Test func noPredictionInAForegroundProgram() {
+    /// An inline TUI draws its own caret with the terminal cursor hidden;
+    /// typing there is not predicted.
+    @Test func hiddenCursorNeverPredicts() {
         let t = prompt()
         var p = echoingPrediction(in: t)
-        p.setProgram("opencode")
+        t.write(Array("\u{1b}[?25l".utf8))
+        p.reconcile(with: t)
         p.typed("a", in: t)
         #expect(p.overlay == Prediction.Overlay() && !p.isActive)
-        p.setProgram("")
-        p.typed("a", in: t)
-        #expect(p.overlay.cells.isEmpty, "a new shell prompt must prove its echo again")
     }
 
     /// Full-screen programs compose their own frame; a character at the cursor
