@@ -52,7 +52,6 @@ pub const Pane = struct {
     /// The status last reported by the program (OSC 7501 or reportStatus).
     reported: ?wire.Status = null,
     agent: @import("agent.zig").Agent = .{},
-    output_active: bool = false,
     /// Last accepted process-group identity; a same-name replacement is a
     /// foreground switch too. Program name also detects exec within a group.
     foreground_pid: c.pid_t = 0,
@@ -308,7 +307,6 @@ pub const Pane = struct {
             .fullscreen = self.fullscreen,
             .status = self.status,
             .statusSource = if (self.agent.active) "agent" else if (self.reported != null) "reported" else null,
-            .outputActive = self.output_active,
             .agent = try self.agent.session(arena),
             .agentEpoch = if (self.agent.epoch) |epoch| try arena.dupe(u8, &epoch) else null,
             .agentSequence = self.agent.sequence,
@@ -334,12 +332,14 @@ pub const Pane = struct {
             self.fullscreen = fullscreen;
             dirty = true;
         }
-        const output_active = self.last_output > 0 and now - self.last_output < 2000;
-        if (output_active != self.output_active) {
-            self.output_active = output_active;
-            dirty = true;
-        }
-        const status: wire.Status = if (self.agent.active) self.agent.status else self.reported orelse .idle;
+        // A registered agent or a report owns the status; silence never ends
+        // it. Otherwise a command printing within the last couple of seconds
+        // is working. Full-screen programs redraw all the time, so only what
+        // they report counts for them.
+        const status: wire.Status = if (self.agent.active) self.agent.status else if (self.reported) |r| r else blk: {
+            const printing = now - self.last_output < 2000;
+            break :blk if (self.program.items.len > 0 and !self.fullscreen and printing) .working else .idle;
+        };
         if (status != self.status) {
             self.status = status;
             dirty = true;
@@ -835,17 +835,17 @@ pub const Pane = struct {
 
     /// Explicit role declaration, bound to a fresh foreground process, never an argv guess.
     pub fn reportAgent(self: *Pane, name: []const u8, adapter: ?[]const u8, session: ?[]const u8, turn: ?[]const u8, new_run: bool, status: wire.Status) !void {
+        // Output bumps the metadata version many times a second while an agent
+        // streams, so identity is rechecked directly: the sample stands if its
+        // process group still owns the terminal once the lock is held.
         for (0..3) |_| {
-            self.mutex.lock();
-            const version = self.metadata_version;
-            self.mutex.unlock();
             var buffer: [foreground.Foreground.buffer_size]u8 = undefined;
             const sample = foreground.Foreground.of(self.master, &buffer) orelse return error.ForegroundUnavailable;
             if (sample.pid != c.tcgetpgrp(self.master)) continue;
             self.mutex.lock();
             defer self.mutex.unlock();
             if (self.closing.load(.acquire) or self.ended.load(.acquire)) return error.PaneClosed;
-            if (version != self.metadata_version) continue;
+            if (sample.pid != c.tcgetpgrp(self.master)) continue;
             if (sample.pid == self.pid and std.mem.eql(u8, sample.program, self.shell) and self.shell_command.items.len == 0) return error.NoForegroundAgent;
             _ = self.updateForegroundLocked(sample);
             try self.agent.report(sample.pid, name, adapter, session, turn, new_run, status);
@@ -1349,21 +1349,27 @@ test "process-group close kills descendants when their leader exits on HUP" {
 
 extern var environ: [*:null]?[*:0]u8;
 
-/// Build a pane environment from the daemon's portable login baseline, explicitly
-/// forwarded user settings, and the pane's own terminal/shell integration values.
+/// The shell's environment: ours, with the terminal's identity, `koi` on
+/// the PATH, `extra` added, and, when the app carries the shell integration
+/// (`integration`, its directory), zsh and fish arranged to load it: zsh by
+/// starting in Koi's ZDOTDIR, which restores the user's own, and fish by a
+/// vendor configuration directory on XDG_DATA_DIRS. Claude Code's session markers are dropped:
+/// the server is long-lived and may have been started from inside an agent
+/// session, and a shell that inherits them makes every `claude` launched in
+/// it think it is a nested child session (no transcripts, no hooks). Only
+/// the markers go; settings such as `CLAUDE_CONFIG_DIR` or
+/// `CLAUDE_CODE_USE_BEDROCK` are the user's and stay.
 fn environment(arena: Allocator, extra: []const []const u8, inherited: [*:null]const ?[*:0]const u8, shell: []const u8, integration: ?[]const u8) ![*:null]?[*:0]const u8 {
     var list: std.ArrayList(?[*:0]const u8) = .empty;
     const overridden = [_][]const u8{
-        "TERM=",        "COLORTERM=",     "TERM_PROGRAM=",          "KOI_TAB=",
-        "KOI_PANE=",    "KOI_BIN_DIR=",   "PATH=",                  "ZDOTDIR=",
-        "KOI_ZDOTDIR=", "XDG_DATA_DIRS=", "KOI_SHELL_INTEGRATION=",
+        "TERM=",               "COLORTERM=",                "TERM_PROGRAM=",           "KOI_TAB=",
+        "KOI_PANE=",           "KOI_BIN_DIR=",              "PATH=",                   "ZDOTDIR=",
+        "KOI_ZDOTDIR=",        "XDG_DATA_DIRS=",            "KOI_SHELL_INTEGRATION=",
+        // What a running Claude Code session puts in its children's environment.
+         "CLAUDECODE=",
+        "CLAUDE_PID=",         "CLAUDE_EFFORT=",            "CLAUDE_CODE_ENTRYPOINT=", "CLAUDE_CODE_EXECPATH=",
+        "CLAUDE_CODE_SESSION", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_MESSAGING_",
     };
-    var forwarded: ?[]const u8 = null;
-    var scan: usize = 0;
-    while (inherited[scan]) |entry| : (scan += 1) {
-        const value = std.mem.span(entry);
-        if (std.mem.startsWith(u8, value, "KOI_INHERIT_ENV=")) forwarded = value["KOI_INHERIT_ENV=".len..];
-    }
     var path: []const u8 = "/usr/bin:/bin:/usr/sbin:/sbin";
     var has_lang = false;
     var zdotdir: ?[]const u8 = null;
@@ -1379,7 +1385,7 @@ fn environment(arena: Allocator, extra: []const []const u8, inherited: [*:null]c
         for (overridden) |o| if (std.mem.startsWith(u8, e, o)) {
             skip = true;
         };
-        if (!skip and @import("environment.zig").inherit(e, forwarded)) try list.append(arena, entry);
+        if (!skip) try list.append(arena, entry);
     }
     try list.append(arena, "TERM=xterm-256color");
     try list.append(arena, "COLORTERM=truecolor");
@@ -1427,7 +1433,7 @@ fn integrationDirectory(arena: Allocator) ?[]const u8 {
     return shell;
 }
 
-test "pane environment drops arbitrary daemon sessions and forwards explicit user settings" {
+test "shell environment drops Claude Code session markers but keeps its settings" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -1438,7 +1444,7 @@ test "pane environment drops arbitrary daemon sessions and forwards explicit use
     const inherited = [_:null]?[*:0]const u8{
         "CLAUDE_CODE_CHILD_SESSION=1",     "CLAUDECODE=1",       "CLAUDE_CODE_ENTRYPOINT=cli", "CLAUDE_CODE_SESSION_ID=s",
         "CLAUDE_CODE_MESSAGING_SOCKET=/s", "CLAUDE_PID=1",       "CLAUDE_CONFIG_DIR=/cfg",     "CLAUDE_CODE_USE_BEDROCK=1",
-        "HOME=/tmp",                       "PATH=/usr/bin:/bin", "TERM=dumb",                  "KOI_INHERIT_ENV=CLAUDE_CONFIG_DIR,CLAUDE_CODE_USE_BEDROCK",
+        "HOME=/tmp",                       "PATH=/usr/bin:/bin", "TERM=dumb",
     };
     const envp = try environment(arena, &.{}, &inherited, "zsh", null);
     var i: usize = 0;
@@ -2083,8 +2089,7 @@ test "foreground discovery retains reports for cwd changes and clears them for a
     const replaced = pane.updateForegroundLocked(.{ .pid = 300, .program = "other", .cwd = "" });
     pane.refreshMetadataLocked(replaced);
     try std.testing.expect(pane.reported == null);
-    try std.testing.expectEqual(wire.Status.idle, pane.status);
-    try std.testing.expect(pane.output_active);
+    try std.testing.expectEqual(wire.Status.working, pane.status);
     try std.testing.expectEqualStrings("/tmp/work", pane.cwd.items);
 
     pane.terminal.write("\x1b[?1049h");
@@ -2617,7 +2622,6 @@ test "registered agent identity survives display hints and completion survives r
     pane.refreshMetadataLocked(false);
     try std.testing.expect(pane.agent.active);
     try std.testing.expectEqual(wire.Status.working, pane.status);
-    try std.testing.expect(!pane.output_active);
     try pane.agent.report(200, "new-agent", null, "session", null, false, .done);
     _ = pane.updateForegroundLocked(.{ .pid = pane.pid, .program = "zsh", .cwd = "/tmp" });
     pane.refreshMetadataLocked(true);

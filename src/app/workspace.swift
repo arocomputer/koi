@@ -71,7 +71,6 @@ final class Workspace {
     @ObservationIgnored private var views: [String: TerminalView] = [:]
     @ObservationIgnored private var fontSize = Config.current.fontSize
     @ObservationIgnored private var received = false
-    @ObservationIgnored private var outageReported = false
     @ObservationIgnored private var pendingSelection: String?
 
     /// Only chrome metadata is delayed; state, terminal behavior and pane status
@@ -142,7 +141,7 @@ final class Workspace {
             }
             self.connecting = nil
             guard let socket else {
-                if !self.received { self.reportOutage("Could not connect to this machine. Retrying…") }
+                if !self.received { self.onError?("Could not connect to this machine. Retrying…") }
                 self.reconnectControl()
                 return
             }
@@ -163,7 +162,6 @@ final class Workspace {
                 self.connectionDeadline?.cancel()
                 self.connectionDeadline = nil
                 self.reconnectDelay = 300_000_000
-                self.outageReported = false
                 self.apply(state)
                 if firstState {
                     for (id, request) in tabsAwaitingReconnect { self.retireTabRename(id, request: request) }
@@ -172,7 +170,7 @@ final class Workspace {
             }
             c.onError = { [weak self, weak c] message in
                 guard let self, let c, self.control === c else { return }
-                self.reportOutage("Cannot read this machine’s state: \(message)")
+                self.onError?("Cannot read this machine’s state: \(message)")
                 if !initialized { Remote.connectionFailed(endpoint, transport: socket) }
                 c.close()
                 self.reconnectControl()
@@ -190,7 +188,7 @@ final class Workspace {
                     guard let self, let c, self.control === c, !initialized else { return }
                     if deadline.stalled(receivedBytes: c.receivedBytes, now: ProcessInfo.processInfo.systemUptime) {
                         Remote.connectionFailed(endpoint, transport: socket)
-                        self.reportOutage("This machine stopped sending its state. Reconnecting…")
+                        self.onError?("This machine stopped sending its state. Reconnecting…")
                         c.close()
                         self.reconnectControl()
                         return
@@ -198,14 +196,6 @@ final class Workspace {
                 }
             }
         }
-    }
-
-    /// Retries run until the machine answers, so tell the user once per outage
-    /// rather than on every attempt. A fresh state re-arms the report.
-    private func reportOutage(_ message: String) {
-        guard !outageReported else { return }
-        outageReported = true
-        onError?(message)
     }
 
     /// A temporary transport loss must not leave the sidebar frozen. Keep

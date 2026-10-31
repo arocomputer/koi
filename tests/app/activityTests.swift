@@ -42,6 +42,7 @@ import UserNotifications
         feed.report(.working); feed.report(.done)
         await center.consume(snapshot: [.local: feed.state], config: enabled)
         #expect(recorder.sent.map(\.status) == [.done], "tracking resumes after the gap")
+        #expect(!center.historyGap, "the warning clears once events arrive in order again")
     }
 
     @Test func unknownAgentNamesWorkAndUnregisteredCatalogNamesStaySilent() async {

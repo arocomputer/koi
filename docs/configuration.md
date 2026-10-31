@@ -169,8 +169,8 @@ Settings; **Edit Config File** is a separate palette command. See the
 
 **Show Activity** lists non-idle programs across connected machines and can
 focus their panes. Task status comes from explicit agent reports, legacy OSC 7501,
-or [`koi status`](cli.md). Terminal output activity is tracked separately;
-silence never changes a reported task state.
+or [`koi status`](cli.md); otherwise a command that is printing shows as
+working. Silence never changes a reported task state.
 
 Completion cues require explicit [agent registration](agents.md), through
 `koi agent` or a supported provider hook. The icon catalog never decides identity:

@@ -493,6 +493,7 @@ fn reportAgent(gpa: Allocator, args: []const [:0]const u8) u8 {
         }
         const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), input.items, .{}) catch return 2;
         const report = @import("agenthooks.zig").decode(args[1], args[2], parsed.value) catch |err| {
+            if (err == error.NoLifecycleChange) return 0;
             std.debug.print("koi agent: {s}\n", .{@errorName(err)});
             return 2;
         };

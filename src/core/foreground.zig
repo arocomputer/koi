@@ -35,6 +35,17 @@ pub const Foreground = struct {
 const interpreters = [_][]const u8{ "node", "bun", "deno", "python", "python3", "ruby", "perl" };
 const script_suffixes = [_][]const u8{ ".js", ".mjs", ".cjs", ".py", ".rb", ".ts" };
 
+/// The flags of `exe` whose value is the next argument, so it is not the script.
+fn operandFlags(exe: []const u8) []const []const u8 {
+    const js: []const []const u8 = &.{ "--require", "-r", "--import", "--loader", "--experimental-loader", "--conditions", "-C" };
+    const python: []const []const u8 = &.{ "-W", "-X" };
+    const ruby: []const []const u8 = &.{ "-I", "-r", "-C" };
+    if (std.mem.eql(u8, exe, "node") or std.mem.eql(u8, exe, "bun") or std.mem.eql(u8, exe, "deno")) return js;
+    if (std.mem.startsWith(u8, exe, "python")) return python;
+    if (std.mem.eql(u8, exe, "ruby")) return ruby;
+    return &.{};
+}
+
 /// The program name in a path or argv[0]; login shells run as "-zsh".
 fn base(path: []const u8) []const u8 {
     const s = std.fs.path.basename(path);
@@ -85,24 +96,15 @@ fn nameFrom(args: *Args, buf: []u8, used: *usize) []const u8 {
                 std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "--print") or
                 std.mem.startsWith(u8, arg, "--eval=") or std.mem.startsWith(u8, arg, "--print=")) break;
             if (arg.len == 0) continue;
-            // Consume operands of known interpreter flags. A preload is not the
-            // entry point. Unknown switches fail conservatively to argv[0].
-            var operand = false;
-            for ([_][]const u8{ "--require", "-r", "--import", "--loader", "--experimental-loader", "--conditions", "-C", "-W", "-X", "-I" }) |flag| {
-                if (std.mem.eql(u8, arg, flag)) operand = true;
-            }
-            if (operand) {
-                _ = args.next();
-                continue;
-            }
             if (arg[0] == '-') {
-                if (std.mem.indexOfScalar(u8, arg, '=') != null) continue;
-                var known = false;
-                for ([_][]const u8{ "--", "--no-warnings", "--trace-warnings", "-u", "-B", "-O", "-OO" }) |flag| {
-                    if (std.mem.eql(u8, arg, flag)) known = true;
-                }
-                if (known) continue;
-                break;
+                // A preload or option value is not the entry point: skip the
+                // separate operand of this interpreter's operand-taking flags.
+                // Every other switch is skipped alone.
+                for (operandFlags(exe)) |flag| if (std.mem.eql(u8, arg, flag)) {
+                    _ = args.next();
+                    break;
+                };
+                continue;
             }
             var script = base(arg);
             const is_path = std.mem.indexOfScalar(u8, arg, '/') != null;
@@ -264,10 +266,13 @@ fn cwd(pid: c.pid_t, buf: []u8) []const u8 {
     return buf[0..@intCast(n)];
 }
 
-test "foreground hints skip preload operands and decline unknown flag grammars" {
+test "foreground hints skip preload operands but not the script after plain switches" {
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("agent", testName(&buf, "node\x00--require\x00./preload.js\x00./agent.js\x00", 4));
     try std.testing.expectEqualStrings("agent", testName(&buf, "node\x00--import=./preload.js\x00./agent.js\x00", 3));
-    try std.testing.expectEqualStrings("node", testName(&buf, "node\x00--unknown\x00./preload.js\x00./agent.js\x00", 4));
+    try std.testing.expectEqualStrings("cli", testName(&buf, "node\x00--enable-source-maps\x00./cli.js\x00", 3));
+    try std.testing.expectEqualStrings("agent", testName(&buf, "python3\x00-I\x00./agent.py\x00", 3));
+    try std.testing.expectEqualStrings("agent", testName(&buf, "python3\x00-W\x00ignore\x00./agent.py\x00", 4));
+    try std.testing.expectEqualStrings("agent", testName(&buf, "ruby\x00-W\x00./agent.rb\x00", 3));
     try std.testing.expectEqualStrings("uv", testName(&buf, "uv\x00run\x00./agent.py\x00", 3));
 }

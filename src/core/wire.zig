@@ -199,7 +199,6 @@ pub const PaneInfo = struct {
     status: Status,
     /// No task state is inferred from terminal output.
     statusSource: ?[]const u8 = null,
-    outputActive: bool = false,
     agent: ?AgentSession = null,
     agentEpoch: ?[]const u8 = null,
     agentSequence: u64 = 0,

@@ -225,7 +225,6 @@ enum Wire {
         var fullscreen: Bool
         var status: Status
         var statusSource: String? = nil
-        var outputActive: Bool? = nil
         var agent: AgentSession? = nil
         var agentEpoch: String? = nil
         var agentSequence: UInt64? = nil

@@ -423,9 +423,10 @@ journal gaps with a visible Activity warning. They never infer completion from
 status snapshots. A completed process's last session/history remains available
 after returning to the prompt, so a short-lived agent cannot erase its completion.
 
-`status` is reported task state, `statusSource` is `agent`, `reported` or null,
-and `outputActive` independently describes recent PTY output. Silence does not
-change task state. Generic `reportStatus` and legacy OSC 7501 remain supported
+`status` comes from a registered agent, then a report, and otherwise from
+output: a non-full-screen command that printed in the last two seconds is
+`working`. `statusSource` is `agent`, `reported` or null for inferred status.
+Silence never changes an agent's or a reported task state. Generic `reportStatus` and legacy OSC 7501 remain supported
 but do not declare agent identity. The program catalog controls artwork only.
 Agent completion records remain pane-scoped across windows, with small yellow
 icon circles and actionable toasts for other machines. Notification delivery is

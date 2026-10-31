@@ -41,8 +41,8 @@ pub const Agent = struct {
     run: u64 = 0,
     status: wire.Status = .idle,
     last_report: i64 = 0,
-    done_run: u64 = 0,
-    error_run: u64 = 0,
+    /// The run whose done or error was accepted; the first final report wins.
+    final_run: u64 = 0,
 
     pub fn init() Agent {
         return .{ .epoch = randomID() };
@@ -100,14 +100,12 @@ pub const Agent = struct {
         }
         self.last_report = @divTrunc(sys.nowMillis(), 1000);
         // Terminal reports are idempotent for the whole run, including across
-        // SessionEnd/idle and acknowledgements in clients. A late Stop must
-        // neither revive a completion nor overwrite an already reported failure.
-        if (status == .done) {
-            if (self.done_run == self.run or self.error_run == self.run) return;
-            self.done_run = self.run;
-        } else if (status == .@"error") {
-            if (self.error_run == self.run) return;
-            self.error_run = self.run;
+        // SessionEnd/idle and acknowledgements in clients. The first done or
+        // error ends the run: a late Stop or StopFailure neither revives a
+        // completion nor contradicts it with a second alert.
+        if (status == .done or status == .@"error") {
+            if (self.final_run == self.run) return;
+            self.final_run = self.run;
         }
         if (same and status == self.status and (self.count > 0 and self.events[(self.sequence - 1) % capacity].run == self.run)) return;
         self.status = status;
@@ -197,21 +195,22 @@ test "provider prompt boundaries distinguish interrupted turns without external 
     try std.testing.expectEqual(sequence, agent.sequence);
 }
 
-test "terminal reports are idempotent across idle and failures within one run" {
+test "the first terminal report ends a run, across idle and either order" {
     var agent: Agent = .{};
     try agent.report(200, "custom", null, "s", "turn", false, .working);
     try agent.report(200, "custom", null, "s", "turn", false, .done);
     try agent.report(200, "custom", null, "s", null, false, .idle);
     const sequence = agent.sequence;
     try agent.report(200, "custom", null, "s", "turn", false, .done);
+    try agent.report(200, "custom", null, "s", "turn", false, .@"error");
     try std.testing.expectEqual(sequence, agent.sequence);
     try std.testing.expectEqual(wire.Status.idle, agent.status);
-    try agent.report(200, "custom", null, "s", "turn", false, .@"error");
-    try agent.report(200, "custom", null, "s", null, false, .idle);
+    try agent.report(200, "custom", null, "s", "failed", false, .working);
+    try agent.report(200, "custom", null, "s", "failed", false, .@"error");
     const failed_sequence = agent.sequence;
-    try agent.report(200, "custom", null, "s", "turn", false, .done);
-    try agent.report(200, "custom", null, "s", "turn", false, .@"error");
+    try agent.report(200, "custom", null, "s", "failed", false, .done);
     try std.testing.expectEqual(failed_sequence, agent.sequence);
+    try std.testing.expectEqual(wire.Status.@"error", agent.status);
     try agent.report(200, "custom", null, "s", "next-turn", false, .working);
     try agent.report(200, "custom", null, "s", "next-turn", false, .done);
     try std.testing.expectEqual(failed_sequence + 2, agent.sequence);

@@ -54,7 +54,9 @@ unsupported payloads produce no lifecycle event and do not interrupt a turn.
 - `claude-hooks-v1` uses [Claude Code command hooks](https://code.claude.com/docs/en/hooks):
   SessionStart/SessionEnd, UserPromptSubmit, PostToolUse, PermissionRequest, Stop
   and StopFailure. Claude has no public turn ID, so each UserPromptSubmit explicitly starts a run,
-  including when a prior turn was interrupted before reporting its end.
+  including when a prior turn was interrupted before reporting its end. A
+  SessionStart with `source` `compact` is ignored: Claude sends it after
+  compacting, which can happen mid-turn, and it does not change the turn's state.
 - `codex-hooks-v1` follows [Codex's command-input schemas](https://github.com/openai/codex/tree/main/codex-rs/hooks/schema/generated):
   SessionStart/SessionEnd, UserPromptSubmit, PostToolUse, PermissionRequest, Stop
   and Interrupt. Turn-scoped events retain Codex's turn ID. Older Codex releases
@@ -70,22 +72,9 @@ keep the first `.koi-backup`.
 
 ## Pane launch environments
 
-A long-lived daemon's starter may itself be an agent. New panes therefore inherit
-a portable login/desktop baseline rather than that starter's arbitrary environment.
-The baseline includes HOME/USER/SHELL/PATH, locale, temporary and XDG directories,
-SSH agent/desktop sockets, proxy and certificate settings, SDK selection and KOI_DIR.
-Terminal identity and shell integration variables are rebuilt for each pane. There
-is no provider-specific list of session variables.
-
-Put application configuration in shell startup files, or explicitly forward exact
-variable names when starting Koi's server:
-
-```sh
-KOI_INHERIT_ENV=MY_API_KEY,CUSTOM_CONFIG_DIR koi --server
-```
-
-`KOI_INHERIT_ENV` is a comma-separated name list, not values or wildcards. This is
-an intentional environment boundary: arbitrary API keys, provider settings and
-session markers from the daemon starter are not implicitly copied. Shell startup
-files can still set any user configuration. Changing the server's inherited list
-requires a server restart; restarting only the app preserves the existing server.
+A long-lived daemon's starter may itself be an agent. New panes inherit the
+server's environment, minus the session markers a running Claude Code puts in
+its children's environment (`CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_CODE_SESSION*`
+and similar), so a `claude` started in a pane is not mistaken for a nested child
+session. Settings such as `CLAUDE_CONFIG_DIR` stay. Terminal identity and shell
+integration variables are rebuilt for each pane.

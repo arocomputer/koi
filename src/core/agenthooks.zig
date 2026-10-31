@@ -25,6 +25,11 @@ pub fn decode(provider: []const u8, event: []const u8, value: std.json.Value) !R
     if (actual != .string or !std.mem.eql(u8, actual.string, event)) return error.InvalidHookPayload;
     const session = value.object.get("session_id") orelse return error.InvalidHookPayload;
     if (session != .string or session.string.len == 0) return error.InvalidHookPayload;
+    // Claude also fires SessionStart after compacting, possibly mid-turn, with
+    // the same session: it is not a lifecycle change and must not read as idle.
+    if (std.mem.eql(u8, provider, "claude") and std.mem.eql(u8, event, "SessionStart")) {
+        if (value.object.get("source")) |source| if (source == .string and std.mem.eql(u8, source.string, "compact")) return error.NoLifecycleChange;
+    }
     var run: ?[]const u8 = null;
     if (std.mem.eql(u8, provider, "codex") and status != .idle) {
         // Codex's command-input schemas require turn_id on turn-scoped events.
@@ -51,4 +56,14 @@ test "hook adapters validate provider schema and preserve session and turn ident
     const old = try std.json.parseFromSlice(std.json.Value, t.allocator, "{\"hook_event_name\":\"Stop\",\"session_id\":\"s\"}", .{});
     defer old.deinit();
     try t.expectError(error.UnsupportedHookSchema, decode("codex", "Stop", old.value));
+}
+
+test "claude compaction is not a session start" {
+    const t = std.testing;
+    const compact = try std.json.parseFromSlice(std.json.Value, t.allocator, "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"s\",\"source\":\"compact\"}", .{});
+    defer compact.deinit();
+    try t.expectError(error.NoLifecycleChange, decode("claude", "SessionStart", compact.value));
+    const startup = try std.json.parseFromSlice(std.json.Value, t.allocator, "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"s\",\"source\":\"startup\"}", .{});
+    defer startup.deinit();
+    try t.expectEqual(wire.Status.idle, (try decode("claude", "SessionStart", startup.value)).status);
 }

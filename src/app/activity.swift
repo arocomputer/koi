@@ -59,8 +59,11 @@ struct ActivityItem: Identifiable, Equatable {
     @ObservationIgnored private var cursors: [ActivityItem.ID: Cursor] = [:]
     @ObservationIgnored private var lastPanes: [ActivityItem.ID: Wire.PaneInfo] = [:]
     @ObservationIgnored private var runs: [ActivityItem.ID: String] = [:]
-    /// A replay gap is shown rather than fabricating transitions from a snapshot.
-    private(set) var historyGap = false
+    /// Panes whose journal expired during a disconnect, until they next
+    /// deliver events in order. A gap is shown rather than fabricating
+    /// transitions from a snapshot.
+    private var historyGaps: Set<ActivityItem.ID> = []
+    var historyGap: Bool { !historyGaps.isEmpty }
     private(set) var reportingAgents: [Wire.AgentSession] = []
 
     func acknowledge(_ id: ActivityItem.ID) {
@@ -142,8 +145,9 @@ struct ActivityItem: Identifiable, Equatable {
                             let unseen = (pane.agentEvents ?? []).filter { $0.sequence > cursor.sequence }
                             // Never bridge a truncated journal. Rebaseline and expose the gap.
                             if sequence > cursor.sequence && unseen.first?.sequence != cursor.sequence + 1 {
-                                historyGap = true
+                                historyGaps.insert(id)
                             } else {
+                                if sequence > cursor.sequence { historyGaps.remove(id) }
                                 events = unseen.filter { $0.session == pane.agent?.id && $0.run == pane.agent?.run }
                             }
                         }
@@ -186,6 +190,7 @@ struct ActivityItem: Identifiable, Equatable {
         }
         completions = completions.filter { next[$0.key] != nil }
         cursors = cursors.filter { next[$0.key] != nil }
+        historyGaps = historyGaps.filter { next[$0] != nil }
         lastPanes = lastPanes.filter { next[$0.key] != nil }
         runs = nextRuns
         reportingAgents = reporting
