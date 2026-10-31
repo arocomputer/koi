@@ -106,7 +106,7 @@ pub fn describe(gpa: Allocator, op: ?[]const u8, capabilities: []const []const u
     }, .{ .emit_null_optional_fields = false });
 }
 
-test "every operation and every command field is described, and it parses back" {
+test "api describes every op and field" {
     const gpa = std.testing.allocator;
     const caps = [_][]const u8{"serverInfo"};
     const text = (try describe(gpa, null, &caps)).?;
@@ -120,7 +120,7 @@ test "every operation and every command field is described, and it parses back" 
     for (root.get("operations").?.array.items) |o| try std.testing.expect(o.object.get("summary").?.string.len > 10);
 }
 
-test "one operation is described alone, and an unknown one is not" {
+test "api describes one op" {
     const gpa = std.testing.allocator;
     const text = (try describe(gpa, "reportStatus", &.{})).?;
     defer gpa.free(text);
@@ -129,7 +129,7 @@ test "one operation is described alone, and an unknown one is not" {
     try std.testing.expect((try describe(gpa, "launchMissiles", &.{})) == null);
 }
 
-test "the capability an operation names is one the server advertises" {
+test "api capabilities are real" {
     const server = @import("server.zig");
     for (operations) |o| {
         const wanted = o.capability orelse continue;
