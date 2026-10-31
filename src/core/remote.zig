@@ -123,7 +123,7 @@ fn frameBytes(gpa: std.mem.Allocator, kind: wire.Kind, payload: []const u8) ![]u
     return wire.frame(gpa, kind, payload);
 }
 
-test "keepalives are swallowed, other frames pass through whole, in order, however the bytes arrive" {
+test "relay swallows keepalives and forwards the rest" {
     const gpa = std.testing.allocator;
     const open = try frameBytes(gpa, .open, "{\"pane\":\"a\"}");
     defer gpa.free(open);
@@ -148,7 +148,7 @@ test "keepalives are swallowed, other frames pass through whole, in order, howev
     }
 }
 
-test "only a peer that has sent a keepalive is timed out, and only after the deadline" {
+test "relay times out only a peer that sent a keepalive" {
     const gpa = std.testing.allocator;
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
@@ -170,7 +170,7 @@ test "only a peer that has sent a keepalive is timed out, and only after the dea
     try std.testing.expect(!asked.expired(2000 + keepalive_deadline_ms + 1));
 }
 
-test "a frame no peer should send ends the relay as it would the server" {
+test "relay rejects a bad frame" {
     const gpa = std.testing.allocator;
     var filter = Filter.init(gpa, 0);
     defer filter.deinit();
