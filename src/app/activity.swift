@@ -223,15 +223,15 @@ struct ActivitySettingsView: View {
             Text("Agent Reporting").font(.headline).padding(.top, 8)
             Text("Installed hooks are configuration only. Agents appear here after Koi accepts a valid lifecycle report.")
                 .font(.callout).foregroundStyle(.secondary)
-            if reportingAgents.isEmpty { Text("No verified reports from active agents.").foregroundStyle(.secondary) }
-            ForEach(reportingAgents, id: \.id) { agent in
+            if center.reportingAgents.isEmpty { Text("No verified reports from active agents.").foregroundStyle(.secondary) }
+            ForEach(center.reportingAgents, id: \.id) { agent in
                 VStack(alignment: .leading) {
                     Text(agent.name + " · " + (agent.adapter ?? "custom integration"))
                     Text("Last report: " + Date(timeIntervalSince1970: agent.lastReport).formatted(date: .abbreviated, time: .standard))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if historyGap { Text("Some agent history expired during a disconnect. Koi resumed tracking without sending catch-up alerts.").font(.caption).foregroundStyle(.secondary) }
+            if center.historyGap { Text("Some agent history expired during a disconnect. Koi resumed tracking without sending catch-up alerts.").font(.caption).foregroundStyle(.secondary) }
             Text("Activity").font(.headline).padding(.top, 8)
             if center.activities.isEmpty { Text("No programs are reporting activity.").foregroundStyle(.secondary) }
             ForEach(center.activities) { item in
