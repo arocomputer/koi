@@ -29,4 +29,7 @@
 #else
 #include <pty.h>
 #endif
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
 #include <ghostty/vt.h>

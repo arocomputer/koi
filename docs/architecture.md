@@ -51,6 +51,7 @@ rather than adding a layer for each helper. Useful boundaries are:
 | Configuration, Settings and fixed palette | [`config.swift`](../src/app/config.swift), [`settings.swift`](../src/app/settings.swift), [`theme.swift`](../src/app/theme.swift) |
 | Project recipes and current activity | [`projects.swift`](../src/app/projects.swift), [`activity.swift`](../src/app/activity.swift) |
 | Running-server facts and support | [`server.swift`](../src/app/server.swift), [`updater.swift`](../src/app/updater.swift), [`diagnostics.swift`](../src/app/diagnostics.swift), [`diagnosticswindow.swift`](../src/app/diagnosticswindow.swift) |
+| Scripting (`koi do`, `koi run`) | [`script.zig`](../src/core/script.zig), [`prelude.lua`](../src/core/prelude.lua) |
 | Terminal text accessibility and opt-in installation | [`accessibility.swift`](../src/app/accessibility.swift), [`install.swift`](../src/app/install.swift), [`integrations.swift`](../src/app/integrations.swift) |
 | Storage and development previews | [`layout.swift`](../src/app/layout.swift), [`paths.swift`](../src/app/paths.swift), [`koid.swift`](../src/app/koid.swift) |
 

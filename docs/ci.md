@@ -256,7 +256,7 @@ restarts.
 
 | Boundary | Count | Dependencies |
 | --- | --- | --- |
-| Direct external product code | 1 | libghostty-vt, pinned in `build-ghostty-vt.sh` |
+| Direct external product code | 2 | libghostty-vt, pinned in `build-ghostty-vt.sh`; Lua 5.4.8, pinned by hash in `build.zig.zon` |
 | Remote Swift packages | 1 | Sparkle 2.10.1, pinned in `Package.swift`; GhosttyVt is locally built and CKoi/libkoi is Koi's own code |
 | External libraries used through the pinned VT build | 4 | uucode, Wuffs, SIMDUTF, Highway |
 | GitHub Action repositories | 5 | actions/checkout, mlugg/setup-zig, actions/cache (restore/save), actions/upload-artifact, actions/download-artifact |
