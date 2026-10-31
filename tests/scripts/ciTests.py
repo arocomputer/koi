@@ -134,19 +134,24 @@ class CommandDispatchTests(unittest.TestCase):
     def run_x(self, *args):
         return subprocess.run(['sh', str(self.root / 'x'), *args], capture_output=True, text=True)
 
-    def test_core_short_and_legacy_names_share_filter_dispatch(self):
-        for command in ['testc', 'test-core']:
-            for rest in [[], ['pane watcher']]:
-                with self.subTest(command=command, rest=rest):
-                    result = self.run_x(command, *rest)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(result.stdout.splitlines(), ['test', '--core', *rest])
+    def test_core_filter_dispatch(self):
+        for rest in [[], ['pane watcher']]:
+            with self.subTest(rest=rest):
+                result = self.run_x('testc', *rest)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), ['test', '--core', *rest])
 
-    def test_app_short_and_legacy_names_run_the_hosted_subset(self):
-        for command in ['testa', 'test-app']:
+    def test_app_command_runs_the_hosted_subset(self):
+        result = self.run_x('testa')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ['test', '--headless'])
+
+    def test_removed_command_names_are_rejected(self):
+        for command in ['test-core', 'test-app']:
             result = self.run_x(command)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.splitlines(), ['test', '--headless'])
+            self.assertEqual(result.returncode, 2)
+            self.assertNotIn('--core', result.stdout)
+            self.assertNotIn('--headless', result.stdout)
 
     def test_invalid_arguments_never_reach_the_runner(self):
         for args in [('testc', '--bad'), ('testc', 'one', 'two'), ('testa', 'filter'),

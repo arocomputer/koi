@@ -3,7 +3,7 @@
 //! which an attaching client gets its snapshot.
 const std = @import("std");
 const sys = @import("sys.zig");
-const vt = sys.vt;
+const vt = sys.c;
 const wire = @import("wire.zig");
 
 /// Scrollback kept per terminal, in bytes of terminal pages.

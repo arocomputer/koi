@@ -18,18 +18,11 @@ usage: ./x [command]
   testa        Hosted app test subset with isolated fixtures (Mac)
   bundle       Release bundle and signature verification; never installs
   help         Show this help
-
-Aliases: test-core = testc; test-app = testa
 EOF
 }
 
 task=${1:-check}
 if [ "$#" -gt 0 ]; then shift; fi
-# Preserve existing scripts and muscle memory while presenting short command names.
-case "$task" in
-  test-core) task=testc ;;
-  test-app) task=testa ;;
-esac
 case "$task" in
   test|testc)
     [ "$#" -le 1 ] || { usage >&2; exit 2; }

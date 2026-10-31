@@ -136,9 +136,8 @@ Write a binding as `keybind = <trigger> = <action>`. The Settings key recorder
 edits the same format. The palette, menu and hover hints show effective
 bindings, including changes loaded from the file.
 
-Modifiers are `cmd` (`command`, `super`), `shift`, `ctrl` (`control`) and
-`alt` (`opt`, `option`). Keys can be a single character or one of `left`,
-`right`, `up`, `down`, `enter` (`return`), `space`, `tab`, `plus`, `minus`,
+Modifiers are `cmd`, `shift`, `ctrl` and `alt`. Keys can be a single character or one of `left`,
+`right`, `up`, `down`, `enter`, `space`, `tab`, `plus`, `minus`,
 `equal` and `comma`. Use `plus` for the + key because + separates trigger
 parts. Use `none` to unassign an action. Clear writes `none`; Reset removes
 the override and restores the built-in binding.

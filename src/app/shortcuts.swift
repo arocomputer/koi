@@ -12,7 +12,7 @@ struct Keybind: Equatable {
         self.mods = mods
     }
 
-    /// Parses a trigger like `cmd+shift+d` or `opt+cmd+left`, Ghostty's
+    /// Parses a trigger like `cmd+shift+d` or `alt+cmd+left`, Ghostty's
     /// config syntax. Returns nil if a part isn't recognized.
     static func parse(_ text: String) -> Keybind? {
         if text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "none" { return Keybind("", []) }
@@ -21,10 +21,10 @@ struct Keybind: Equatable {
         for raw in text.lowercased().split(separator: "+") {
             let part = raw.trimmingCharacters(in: .whitespaces)
             switch part {
-            case "cmd", "command", "super": mods.insert(.command)
+            case "cmd": mods.insert(.command)
             case "shift": mods.insert(.shift)
-            case "ctrl", "control": mods.insert(.control)
-            case "alt", "opt", "option": mods.insert(.option)
+            case "ctrl": mods.insert(.control)
+            case "alt": mods.insert(.option)
             default:
                 guard let k = equivalent(part) else { return nil }
                 key = k
@@ -104,7 +104,7 @@ struct Keybind: Equatable {
         case "right": return "\u{F703}"
         case "up": return "\u{F700}"
         case "down": return "\u{F701}"
-        case "enter", "return": return "\r"
+        case "enter": return "\r"
         case "space": return " "
         case "tab": return "\t"
         case "plus": return "+"

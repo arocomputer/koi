@@ -35,8 +35,7 @@ scripts/koid run
 ```
 
 `./x` is the project entry point. `./x testc [FILTER]` runs core tests;
-`./x testa` runs the hosted app subset. `test-core` and `test-app` remain
-compatible aliases. `./x help` lists available commands. `./x test` delegates to the Koid-backed test runner, while `./x bundle` covers packaging and release validation.
+`./x testa` runs the hosted app subset. `./x help` lists available commands. `./x test` delegates to the Koid-backed test runner, while `./x bundle` covers packaging and release validation.
 
 Useful commands:
 
