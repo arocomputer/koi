@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Portable checks
+    name: Scripts and catalog (Linux)
     runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     outputs:
@@ -35,8 +35,8 @@ jobs:
       - name: Application catalog
         run: ./x programs
 
-  native:
-    name: Native checks
+  macos:
+    name: Core, app and bundle (macOS)
     needs: checks
     if: needs.checks.outputs.core == 'true' || needs.checks.outputs.app == 'true' || needs.checks.outputs.bundle == 'true'
     runs-on: nscloud-macos-tahoe-arm64-6x14
@@ -55,7 +55,7 @@ jobs:
         with:
           version: 0.17.0
           cache-key: native-xcode-26.3
-      - name: Identify native toolchain
+      - name: Identify macOS toolchain
         id: toolchain
         run: |
           root="$PWD"
@@ -149,7 +149,7 @@ jobs:
         run: ./x bundle
 
   linux-core:
-    name: Linux core tests
+    name: Core tests (Linux)
     needs: checks
     if: needs.checks.outputs.core == 'true'
     runs-on: nscloud-ubuntu-24.04-amd64-2x4
@@ -162,13 +162,29 @@ jobs:
         with:
           version: 0.17.0
           cache-key: linux-core-v1
-      - name: Run isolated core tests (native Linux, musl)
+      - name: Run isolated core tests (Linux, musl)
         run: ./x test-core
 
   required:
+    name: All checks passed
+    if: always()
+    needs: [checks, macos, linux-core]
+    runs-on: nscloud-ubuntu-24.04-amd64-2x4
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Require every selected check to pass
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci.py gate
+
+  # Keep the existing protected check available during the display-name migration.
+  required-compat:
     name: Required
     if: always()
-    needs: [checks, native, linux-core]
+    needs: [checks, macos, linux-core]
     runs-on: nscloud-ubuntu-24.04-amd64-2x4
     timeout-minutes: 5
     steps:

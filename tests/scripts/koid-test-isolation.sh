@@ -131,6 +131,17 @@ assert_stopped() {
   pid=$(cat "$1")
   n=0
   while kill -0 "$pid" 2>/dev/null; do
+    # Minimal container init processes may leave dead children as zombies.
+    # They no longer execute or own resources; kill -0 alone cannot tell.
+    if [ -r "/proc/$pid/stat" ] && python3 - "$pid" <<'PYZOMBIE'
+import pathlib, sys
+try:
+    stat = pathlib.Path('/proc', sys.argv[1], 'stat').read_text()
+    sys.exit(0 if stat.rsplit(')', 1)[1].split()[0] == 'Z' else 1)
+except FileNotFoundError:
+    sys.exit(0)
+PYZOMBIE
+    then break; fi
     n=$((n + 1))
     [ "$n" -lt 100 ] || { echo "mock server $pid still running" >&2; exit 1; }
     sleep 0.05

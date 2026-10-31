@@ -18,6 +18,7 @@ pub const Kind = enum(u8) {
     command = 7, // JSON Command; answered by .result
     offer = 8, // over the local socket; answered by .offered
     paneControl = 9, // one byte: 1 claims, 0 releases
+    keepalive = 10, // empty; sent over SSH, consumed by `koi --stdio`, never reaches the server
 
     // Server to client.
     attached = 64, // JSON PaneInfo

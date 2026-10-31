@@ -70,7 +70,7 @@ def selection(event_name, event):
 
 
 def check_results(needs):
-    """Require the portable job and each selected native step, not just a green job."""
+    """Require the scripts job and each selected macOS step, not just a green job."""
     if needs["checks"]["result"] != "success":
         raise ValueError(f"checks: {needs['checks']['result']}")
     selections = needs["checks"]["outputs"]
@@ -81,15 +81,15 @@ def check_results(needs):
     expected = "success" if selections["core"] == "true" else "skipped"
     if linux != expected:
         raise ValueError(f"linux-core: expected {expected}, got {linux}")
-    native = needs["native"]
+    macos = needs["macos"]
     selected = any(selections[name] == "true" for name in ("core", "app", "bundle"))
     expected = "success" if selected else "skipped"
-    if native["result"] != expected:
-        raise ValueError(f"native: expected {expected}, got {native['result']}")
+    if macos["result"] != expected:
+        raise ValueError(f"macos: expected {expected}, got {macos['result']}")
     if not selected:
         return
     for name in ("core", "app", "bundle"):
-        result = native.get("outputs", {}).get(name)
+        result = macos.get("outputs", {}).get(name)
         expected = "success" if selections[name] == "true" else "skipped"
         if result != expected:
             raise ValueError(f"{name}: expected {expected}, got {result}")
@@ -106,7 +106,7 @@ def main():
             stream.write(output)
     elif sys.argv[1:] == ["gate"]:
         check_results(json.loads(os.environ["CI_NEEDS"]))
-        print("All required checks passed; unaffected native jobs were skipped.")
+        print("All required checks passed; unaffected macOS jobs were skipped.")
     else:
         raise ValueError("usage: scripts/ci.py select|gate")
 
