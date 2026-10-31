@@ -53,7 +53,7 @@ See [docs/configuration.md](docs/configuration.md) for settings, keyboard shortc
 
 ## Repository status
 
-Koi is under active development. The app is not yet published as a general release, and install/update flows are intentionally explicit instead of silent.
+Koi is under active development. Release builds support signed in-place updates through Sparkle, with an update toast and a daily-check setting. Development builds of Koid do not update themselves.
 | [Contributing](CONTRIBUTING.md) | Build, test, Koid previews and program icons |
 | [Assets](docs/assets.md) | App artwork, program-logo sources and licenses |
 

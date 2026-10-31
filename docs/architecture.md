@@ -118,3 +118,20 @@ If you need to understand a feature, start in the closest layer:
 - remote setup and link fallback: `src/app/remote.swift` and `src/core/remote.zig`
 
 The repository keeps a flat organization by responsibility rather than introducing large abstraction layers for every helper.
+
+## Runtime contracts
+
+The [implementation reference](implementation.md) retains the detailed ownership,
+wire compatibility, rendering and storage contracts. Runtime sockets and locks
+use a platform path derived from the user, independent of `TMPDIR` and
+`XDG_RUNTIME_DIR`; `KOI_DIR` overrides it for isolated development and tests.
+Moving that path is a migration because existing servers stay at the old path.
+
+The server refuses new panes at 128 and connections at 1024. Its log rotates at
+8 MiB; this is a periodic threshold, not a hard disk-space bound. SSH relays
+consume keepalive frames and expire after 75 seconds of silence once armed.
+
+Updates use Sparkle with signed archives and a signed appcast; Koid does not
+check for updates. Agent hooks are an explicit opt-in. `koi api` describes the
+wire vocabulary, while `koi do` and `koi run` script CLI operations with Lua.
+See [CLI](cli.md) and [configuration](configuration.md) for those interfaces.

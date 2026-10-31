@@ -22,7 +22,10 @@ existing foreign or edited wrapper. Moving the app can invalidate its wrapper.
 | `koi send TARGET TEXT...` | Send text to the target tab's first pane |
 | `koi capture [TARGET]` | Print the first pane's screen and scrollback |
 | `koi split [TARGET] [--down \| --right] [--cwd DIR] [--command SOURCE]` | Split right by default, or down; print the new pane ID |
+| `koi do SOURCE` | Run Lua source with the `koi` scripting table; see [Scripting](#scripting) |
+| `koi run FILE [ARG...]` | Run a Lua script file; `ARG...` arrive in the global `arg` |
 | `koi status [PANE] STATE` | Report `working`, `blocked`, `done`, `error` or `idle` for an exact pane ID |
+| `koi api [OP]` | Print the commands the server accepts as JSON: every operation with a summary and the capability to probe for, and every command field with its type and values. With `OP`, only that operation. Reads the binary, so it works without a running server |
 | `koi info [--json]` | Report the running server's version, PID, protocol, uptime, transports and capabilities |
 | `koi version` | Print this binary's own version, without contacting a server |
 | `koi clear [TARGET]` | Erase retained scrollback, preserving the visible screen and modes |
@@ -61,6 +64,58 @@ the shell. The server broadcasts the resulting snapshot to attached clients.
 There is no CLI `configure` subcommand: theme defaults and scrollback
 configuration use JSON `configurePane` through the control protocol.
 
+## Describing the commands
+
+`koi api` is for scripts and agents that need the command vocabulary without
+reading the source:
+
+```sh
+koi api reportStatus     # one operation, with the full field list
+koi api | jq '.operations[].op'
+```
+
+The fields come from the same type the server decodes, so they cannot drift
+from what it accepts. They are shared by all operations; the field list does
+not say which operations read which, and an operation ignores fields it does not
+use. Probe an operation's `capability` with `koi info --json` before sending it
+to a server that may be older.
+
+## Scripting
+
+`koi do` and `koi run` run Lua 5.4 with a global `koi` table. Scripts drive the
+same commands as the shell, so there is nothing to learn twice:
+
+```lua
+-- koi run build.lua
+local tab = koi.new { cwd = os.getenv("HOME") .. "/src/app", command = "make watch" }
+koi.wait(tab, "Build succeeded", 120)       -- nil on timeout
+koi.split(tab, { direction = "down", command = "tail -f server.log" })
+for _, item in ipairs(koi.ls().items) do print(item.tab and item.tab._0.id) end
+```
+
+| Function | Does |
+| --- | --- |
+| `koi.run(...)` | Runs `koi ...` and returns `ok, stdout, exit_status` |
+| `koi.json(text)` | Decodes JSON; `null` becomes `nil` |
+| `koi.sleep(seconds)` | Waits |
+| `koi.ls()` | The server's tree, decoded from `koi ls --json` |
+| `koi.new{cwd, command}` | New tab; returns its id |
+| `koi.split(target, {direction, cwd, command})` | Splits; returns the new pane's id |
+| `koi.send(target, text)`, `koi.capture(target)`, `koi.close(target)`, `koi.status(state)` | The commands of the same names |
+| `koi.wait(target, pattern, timeout)` | Polls a pane until a Lua pattern matches; returns the match, or `nil` after `timeout` seconds (default 30). Safe right after `koi.new` |
+
+The helpers raise an error naming the failed command. A script that raises, or
+cannot be loaded, prints `koi: MESSAGE` and exits 1; one that finishes exits 0,
+and `os.exit(n)` chooses the status. The standard libraries are the plain ones
+(base, string, table, math, utf8, coroutine, io, os). `require`, `package` and
+C modules are not available, and `debug` is left out. A script runs with your
+own authority, like a shell script you chose to run: it can run programs with
+`os.execute` and `io.popen`. It reaches the server only through the `koi` commands,
+so it needs the same `KOI_DIR` the commands would.
+
+This is a way to script the multiplexer from outside. It has no events, timers or
+`init.lua` of its own.
+
 ## Targets and pane selection
 
 A tab target is its full ID, an ID suffix of at least four characters, or a
@@ -78,7 +133,8 @@ Koi sets `KOI_TAB` and `KOI_PANE` in its shells. Preserve their server context,
 including `KOI_DIR`, when reporting status from tools. Explicit status reports
 reach the server directly and do not depend on tool stdout reaching the PTY.
 Reports describe the foreground program; they are cleared when its identity
-changes. Advisory agent skills do not guarantee lifecycle reporting.
+changes. Advisory agent skills do not guarantee lifecycle reporting; the optional
+status hooks in Settings report Claude Code's and Codex's lifecycle events for them.
 
 Closing one pane removes the whole tab only when it was the last pane.
 To close every pane in a tab, use **Close Tab** in the app or palette

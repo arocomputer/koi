@@ -11,6 +11,24 @@ bundled SIMDUTF and Highway. The Linux core target is x86_64-linux-musl. Build
 options or toolchain changes can change the dependencies and require another
 review.
 
+## Updates
+
+- **Sparkle** 2.10.1 — Copyright (c) 2006-2017 Andy Matuschak, Elgato Systems
+  GmbH, Kornel Lesiński, Mayur Pawashe, C.W. Betts, Petroules Corporation, Big
+  Nerd Ranch and others; [MIT license](licenses/sparkle.txt), which also carries
+  the notices of the components Sparkle bundles (such as its Ed25519,
+  bsdiff and sais code). The app embeds `Sparkle.framework` without its
+  sandbox-only XPC services. Source:
+  [Sparkle 2.10.1](https://github.com/sparkle-project/Sparkle/tree/2.10.1).
+
+## Scripting
+
+- **Lua** 5.4.8 — Copyright (C) 1994-2025 Lua.org, PUC-Rio;
+  [MIT license](licenses/lua.txt). Built into the `koi` program, for `koi do`
+  and `koi run`, from the sources fetched by `build.zig.zon` (without the
+  standalone interpreter and without C-module loading). Source:
+  [lua.org/ftp/lua-5.4.8.tar.gz](https://www.lua.org/ftp/lua-5.4.8.tar.gz).
+
 ## Ghostty and terminal data
 
 - **libghostty-vt** — Copyright (c) 2024 Mitchell Hashimoto, Ghostty

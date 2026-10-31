@@ -297,3 +297,11 @@ source and license (if new), check results, and a Koid screenshot when you
 have a Mac. State when visual validation needs a maintainer. To confirm the
 reported program, run the application in a disposable Koid pane and inspect
 `scripts/koid koi ls --json`; never submit credentials or private terminal text.
+
+## Detailed development guidance
+
+The [development reference](docs/development.md) retains fixture isolation,
+preview commands, protocol and rendering rules, and dependency/release guidance.
+Use `./x mutate` (core) or `./x mutate --app` after changing security boundaries,
+limits or lifecycle rules. App tests require macOS; Linux can run `./x scripts`,
+`./x programs` and `./x test-core` with the pinned Zig toolchain.

@@ -29,6 +29,7 @@ enum Wire {
         case command = 7   // JSON Command; answered by .result
         case offer = 8     // empty, over the local socket; answered by .offered
         case paneControl = 9 // one byte: 1 claims, 0 releases
+        case keepalive = 10 // empty; over SSH only, consumed by `koi --stdio` and never forwarded
 
         // Server to client.
         case attached = 64 // JSON PaneInfo

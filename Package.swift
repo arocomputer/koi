@@ -7,16 +7,23 @@ import PackageDescription
 let package = Package(
     name: "Koi",
     platforms: [.macOS("26.0")],
+    dependencies: [
+        // Downloads, verifies and installs updates; Koi supplies the interface
+        // (src/app/updates.swift). bundle.sh embeds the framework in the app.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
+    ],
     targets: [
         .executableTarget(
             name: "Koi",
-            dependencies: ["GhosttyVt", "CKoi"],
+            dependencies: ["GhosttyVt", "CKoi", .product(name: "Sparkle", package: "Sparkle")],
             path: "src/app",
             exclude: ["resources"],
             linkerSettings: [
                 .linkedLibrary("c++"),
                 .unsafeFlags(["-L\(Context.packageDirectory)/vendor/libkoi/lib"]),
                 .linkedLibrary("koi"),
+                // The app bundle carries Sparkle in Contents/Frameworks.
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
             ]
         ),
         .binaryTarget(name: "GhosttyVt", path: "vendor/GhosttyVt.xcframework"),
