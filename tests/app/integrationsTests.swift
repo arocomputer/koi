@@ -153,6 +153,16 @@ import Testing
         }
     }
 
+    @Test func obsoleteHookEventsAreUpdatedAndRemoved() throws {
+        let old = Data(#"{"hooks":{"OldEvent":[{"hooks":[{"type":"command","command":"koi status done # koi-status"},{"type":"command","command":"foreign"}]}]}}"#.utf8)
+        #expect(try AgentHooks.state(of: old, for: .codex) == .outdated)
+        let updated = try AgentHooks.installing(into: old, for: .codex)
+        #expect(try AgentHooks.state(of: updated, for: .codex) == .installed)
+        #expect(handlers(updated, event: "OldEvent").compactMap { $0["command"] as? String } == ["foreign"])
+        let removed = try AgentHooks.removing(from: old)
+        #expect(handlers(removed, event: "OldEvent").compactMap { $0["command"] as? String } == ["foreign"])
+    }
+
     @Test func hooksKeepModeAndScope() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -46,6 +46,11 @@ enum AgentHooks {
     static func installing(into existing: Data?, for agent: AgentIntegration) throws -> Data {
         var root = try object(from: existing)
         var hooks = try hooksObject(in: root)
+        // Remove obsolete event names too, so upgrades cannot leave old commands active.
+        for event in Array(hooks.keys) {
+            let groups = removingKoi(from: try groupList(hooks[event]))
+            hooks[event] = groups.isEmpty ? nil : groups
+        }
         for (event, status) in events(for: agent) {
             var groups = try groupList(hooks[event])
             groups = removingKoi(from: groups)
@@ -72,17 +77,18 @@ enum AgentHooks {
     static func state(of existing: Data?, for agent: AgentIntegration) throws -> State {
         guard let existing else { return .absent }
         let hooks = try hooksObject(in: try object(from: existing))
-        var found = 0
+        let marked = try hooks.values.flatMap { try groupList($0) }
+            .flatMap { ($0["hooks"] as? [[String: Any]]) ?? [] }
+            .filter { ($0["command"] as? String)?.hasSuffix(marker) == true }.count
         var current = 0
         for (event, status) in events(for: agent) {
             let handlers = try groupList(hooks[event]).flatMap { ($0["hooks"] as? [[String: Any]]) ?? [] }
             let ours = handlers.compactMap { $0["command"] as? String }.filter { $0.hasSuffix(marker) }
-            found += ours.isEmpty ? 0 : 1
             current += ours == [command(status: status)] ? 1 : 0
         }
         let total = events(for: agent).count
-        if found == 0 { return .absent }
-        return current == total ? .installed : .outdated
+        if marked == 0 { return .absent }
+        return current == total && marked == total ? .installed : .outdated
     }
 
     // MARK: JSON
