@@ -46,6 +46,9 @@ final class PaneConnection: @unchecked Sendable {
 
     private let socket: Transport
     var receivedBytes: UInt64 { socket.receivedBytes }
+    /// Whether this pane travels the encrypted UDP link rather than a local
+    /// socket or the SSH relay.
+    var usesEncryptedLink: Bool { socket is LinkStream }
     private let lock = NSCondition()
     private var pending: [Event] = []
     private var pendingBytes = 0

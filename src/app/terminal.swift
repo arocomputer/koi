@@ -102,6 +102,32 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         onConnectionChange?()
     }
 
+    /// The actual transport carrying this pane, for Diagnostics.
+    var transportDescription: String {
+        guard connection != nil else { return "Not attached" }
+        if endpoint == .local { return "Local socket" }
+        return connection?.usesEncryptedLink == true ? "Encrypted UDP" : "SSH relay"
+    }
+
+    /// The last keystroke-to-output sample, or its current wait state.
+    var responseDescription: String {
+        guard connection != nil else { return "Not attached" }
+        if let sent = inputSentAt,
+           ProcessInfo.processInfo.systemUptime - sent < 2 { return "Waiting" }
+        if let ms = lastResponseMS { return String(format: "%.1f ms", ms) }
+        return "No sample"
+    }
+
+    /// Why prediction is active, ready, or off for the current foreground.
+    var predictionDescription: String {
+        guard let predictor else { return "Off (local)" }
+        guard let terminal else { return "Off" }
+        if terminal.isAlternateScreen { return "Off (full-screen)" }
+        if terminal.mode(2026) { return "Off (synchronized)" }
+        guard terminal.cursorVisible else { return "Off (hidden cursor)" }
+        return predictor.isActive ? "Active" : "Ready"
+    }
+
     private let keyboard = TerminalKeyboard()
     private var mouseEncoder: GhosttyMouseEncoder?
     private var mouseEvent: GhosttyMouseEvent?
@@ -121,12 +147,24 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     private var findBar: NSView?
     private var findField: NSTextField?
     private var findLabel: NSTextField?
-    /// Instant typing, for panes on other machines; nil locally, where the
-    /// echo is as fast as a prediction would be.
+    /// Instant typing for panes on other machines; nil locally, where the
+    /// echo is as fast as a prediction would be. Prediction never runs on the
+    /// alternate screen or while synchronized output is held.
     private var predictor: Prediction?
-    /// With KOI_PERF set: when input was last sent, to time the echo.
+    #if KOID
+    /// A Koid preview owns the overlay until it is cleared.
+    private var previewingPrediction = false
+    #endif
+    /// With KOI_PERF set: log echo timing, resizes, and grid and render events.
     private static let perf = ProcessInfo.processInfo.environment["KOI_PERF"] != nil
-    private var inputSentAt: Date?
+    /// Uptime of the oldest keystroke still waiting for output, for the
+    /// next-response sample. Only taken when the pane was quiet, so ongoing
+    /// output from a running program is not mistaken for an echo.
+    private var inputSentAt: TimeInterval?
+    /// Uptime of the last output batch.
+    private var lastOutputAt: TimeInterval = 0
+    /// Milliseconds from a keystroke in a quiet pane to its first output.
+    private var lastResponseMS: Double?
 
     var fontSize: CGFloat = 13 { didSet { updateMetrics() } }
 
@@ -177,6 +215,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         metalLayer.framebufferOnly = true
         metalLayer.presentsWithTransaction = false
         renderer = Renderer(metrics: metrics)
+        renderer?.recordsCellStyles = predictor != nil
         renderer?.onFrameNeeded = { [weak self] in self?.redraw() }
         metalLayer.device = renderer?.device
         ghostty_mouse_encoder_new(nil, &mouseEncoder)
@@ -282,6 +321,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         connection?.close()
         connection = nil
         requested = nil
+        inputSentAt = nil
+        lastResponseMS = nil
         connectPane()
     }
 
@@ -296,6 +337,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         connection?.close()
         connection = nil
         requested = nil
+        inputSentAt = nil
+        lastResponseMS = nil
         restoredConnection = false
         setFocused(false)
         if wantsConnection { scheduleReconnect(description) }
@@ -349,6 +392,8 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         connectionGeneration = UUID()
         connection?.close()
         connection = nil
+        inputSentAt = nil
+        lastResponseMS = nil
         showCursor()
         setFocused(false)
         selection?.cancel()
@@ -399,9 +444,14 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                 setFocused(window?.isKeyWindow == true && window?.firstResponder === self)
                 if !observing, !holdsResizes { requestResize() }
             case .output(let bytes):
-                if Self.perf, let sent = inputSentAt {
+                lastOutputAt = ProcessInfo.processInfo.systemUptime
+                if let sent = inputSentAt {
+                    let elapsed = lastOutputAt - sent
                     inputSentAt = nil
-                    perfLog("echo after \(Int(Date().timeIntervalSince(sent) * 1000)) ms (\(bytes.count) bytes)")
+                    if elapsed < 2 {
+                        lastResponseMS = elapsed * 1000
+                        if Self.perf { perfLog("echo after \(Int(elapsed * 1000)) ms (\(bytes.count) bytes)") }
+                    }
                 }
                 writeOutput(bytes)
             case .resized(let size):
@@ -591,10 +641,36 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         pushOverlay()
     }
 
+    #if KOID
+    /// Draws a synthetic prediction at the cursor so Koid can screenshot the
+    /// overlay without typing into the screen; nil clears it. The preview
+    /// holds until cleared, even as output arrives.
+    func previewPrediction(_ text: String?) {
+        guard let renderer else { return }
+        if let text, !text.isEmpty, let terminal {
+            let at = terminal.cursor
+            let caret = at.x < terminal.size.cols - 1 ? at.x + 1 : at.x
+            previewingPrediction = true
+            renderer.overlay = .init(cells: [.init(x: at.x, y: at.y, text: text)], caret: (x: caret, y: at.y))
+        } else {
+            previewingPrediction = false
+            renderer.overlay = predictor?.overlay ?? .init()
+        }
+        forceRender = true
+        needsRender = true
+        // Preview even when the window is occluded: screenshots capture the
+        // window surface, but the normal path pauses drawing off-screen.
+        renderNow(inTransaction: false)
+    }
+    #endif
+
     /// Only changed predictions invalidate a frame. Input may present at once;
     /// output and timer updates share their caller's single presentation.
     private func pushOverlay(immediate: Bool = false) {
-        guard let predictor else { return }
+        guard let predictor, let renderer else { return }
+        #if KOID
+        if previewingPrediction { return }
+        #endif
         guard renderer.overlay != predictor.overlay else { return }
         renderer.overlay = predictor.overlay
         needsRender = true
@@ -898,8 +974,9 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         if action != GHOSTTY_KEY_ACTION_RELEASE {
             terminal.clearSelection()
             scrollToBottom()
+            let now = ProcessInfo.processInfo.systemUptime
+            if connection != nil, inputSentAt == nil, now - lastOutputAt > 0.25 { inputSentAt = now }
         }
-        if Self.perf, action != GHOSTTY_KEY_ACTION_RELEASE { inputSentAt = Date() }
         connection?.send(input: bytes)
         if action != GHOSTTY_KEY_ACTION_RELEASE { predict(event, text: text) }
     }

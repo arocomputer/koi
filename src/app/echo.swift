@@ -10,9 +10,14 @@ import Foundation
 /// output arrives the overlay is checked against it, cell by cell, and
 /// anything confirmed or contradicted disappears.
 ///
+/// Prediction never runs on the alternate screen or while synchronized
+/// output is held, and never starts at a hidden cursor: full-screen and
+/// inline TUIs compose
+/// their own frame, so a character at the cursor is not their echo. Shells,
+/// nested ssh, REPLs and other line-echoing programs still predict.
 /// Completed echoes establish confidence. Reconnects, program changes and
 /// unpredictable input clear it; unconfirmed typing stays hidden while the
-/// predictor learns whether the application is echoing again.
+/// predictor learns whether the program is echoing again.
 struct Prediction {
     struct Cell: Equatable {
         var x: UInt16
@@ -87,9 +92,11 @@ struct Prediction {
         settleUntil = nil
     }
 
-    /// Track narrow input; guesses stay hidden until a real echo establishes confidence.
+    /// Track narrow input; guesses stay hidden until a real echo establishes
+    /// confidence.
     mutating func typed(_ text: String, in terminal: VTTerminal, now: Date = Date()) {
-        guard !terminal.mode(2026), text.unicodeScalars.count == 1, let scalar = text.unicodeScalars.first,
+        guard !terminal.isAlternateScreen, !terminal.mode(2026),
+              text.unicodeScalars.count == 1, let scalar = text.unicodeScalars.first,
               Self.isNarrow(scalar),
               let at = nextCaret(in: terminal) else {
             other()
@@ -109,7 +116,8 @@ struct Prediction {
 
     /// Predict an erase only for characters typed since the last unsafe key.
     mutating func backspace(in terminal: VTTerminal, now: Date = Date()) {
-        guard !terminal.mode(2026), typed > 0, let at = nextCaret(in: terminal), at.x > 0 else {
+        guard !terminal.isAlternateScreen, !terminal.mode(2026),
+              typed > 0, let at = nextCaret(in: terminal), at.x > 0 else {
             other()
             return
         }
@@ -143,10 +151,14 @@ struct Prediction {
         confident = false
     }
 
-    /// Check completed output; held redraws discard predictions based on the live grid.
+    /// Check completed output; a full-screen or held redraw invalidates
+    /// predictions based on the live grid.
     mutating func reconcile(with terminal: VTTerminal, now: Date = Date()) {
         expire(now: now)
-        guard !terminal.mode(2026) else { other(); return }
+        guard !terminal.mode(2026), !terminal.isAlternateScreen else {
+            other()
+            return
+        }
         let cursor = terminal.cursor
         guard !pending.isEmpty else {
             if settleUntil != nil { settle(cursor: cursor, now: now) }
@@ -223,7 +235,7 @@ struct Prediction {
 
     /// Use the predicted caret while pending or settling, else the terminal cursor.
     private func nextCaret(in terminal: VTTerminal) -> (x: UInt16, y: UInt16)? {
-        guard terminal.viewportIsActive, !terminal.isAlternateScreen || terminal.cursorVisible else { return nil }
+        guard terminal.viewportIsActive else { return nil }
         let cursor = terminal.cursor
         if !pending.isEmpty || settleUntil != nil {
             guard let caret, caret.y == cursor.y else { return nil }

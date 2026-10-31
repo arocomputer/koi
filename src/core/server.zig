@@ -21,7 +21,7 @@ const Allocator = std.mem.Allocator;
 /// Release plus source/build hash embedded at compilation. Never consults
 /// Git, a bundle, or the executable that may have replaced this process on disk.
 pub const binary_version = @import("build_options").version;
-pub const capabilities = [_][]const u8{ "serverInfo", "clearPane", "resetPane", "configurePane", "startup", "resizeSplitWeights", "reportStatus", "splitCwd", "paneControl", "ownedCommands" };
+pub const capabilities = [_][]const u8{ "serverInfo", "clearPane", "resetPane", "configurePane", "startup", "resizeSplitWeights", "reportStatus", "agentSessions", "splitCwd", "paneControl", "ownedCommands" };
 const transports = [_][]const u8{ "unix", "encryptedUDP", "sshStdio" };
 
 const Tab = struct {
@@ -558,7 +558,7 @@ pub const Server = struct {
             // Nonstructural commands deliver their snapshots on pane streams;
             // serverInfo is read-only and must not publish a tree.
             .newTab, .splitPane, .move, .group, .ungroup, .closeTab, .closeGroup, .closePane, .swapPanes, .resizeSplit, .renameTab, .renameGroup => self.sendState(t),
-            .clearPane, .resetPane, .configurePane, .serverInfo, .reportStatus => {},
+            .clearPane, .resetPane, .configurePane, .serverInfo, .reportStatus, .agentReport => {},
         };
     }
 
@@ -581,6 +581,14 @@ pub const Server = struct {
                 .capabilities = &capabilities,
                 .layoutFormat = "weighted-v1",
                 .snapshotFormat = "ghostty-vt-v1",
+            },
+            .agentReport => {
+                const status = cmd.status orelse return .{ .@"error" = "missing status" };
+                const name = cmd.name orelse return .{ .@"error" = "missing agent name" };
+                const pane = self.findPane(cmd.pane orelse "") orelse return .{ .@"error" = "no such pane" };
+                defer pane.unpin();
+                pane.reportAgent(name, cmd.adapter, cmd.agentSession, cmd.agentRun, cmd.agentNewRun, status) catch |err| return .{ .@"error" = @errorName(err) };
+                return .{ .pane = cmd.pane };
             },
             .reportStatus => {
                 const status = cmd.status orelse return .{ .@"error" = "missing status" };
@@ -2384,6 +2392,17 @@ test "reportStatus validates targets and schedules watcher metadata without term
             try testing.expect(server.notify_pending);
         }
     }
+    for ([_]wire.Status{ .working, .done, .idle }) |status| {
+        const reply = server.command(testing.allocator, .{ .op = .agentReport, .pane = &pane.id, .name = "custom-agent", .agentSession = "fixture", .status = status });
+        try testing.expect(reply.@"error" == null);
+    }
+    var history_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer history_arena.deinit();
+    const info = try pane.info(history_arena.allocator());
+    try testing.expectEqualStrings("custom-agent", info.agent.?.name);
+    try testing.expectEqual(@as(usize, 3), info.agentEvents.len);
+    try testing.expectEqual(wire.Status.done, info.agentEvents[1].status);
+    try testing.expect(server.command(testing.allocator, .{ .op = .agentReport, .pane = &pane.id, .status = .working }).@"error" != null);
     try testing.expect(server.command(testing.allocator, .{ .op = .reportStatus, .pane = &pane.id }).@"error" != null);
     try testing.expect(server.command(testing.allocator, .{ .op = .reportStatus, .pane = "missing", .status = .blocked }).@"error" != null);
     pane.kill();

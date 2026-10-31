@@ -13,6 +13,7 @@
 #   koid palette [QUERY]    open/search the command palette
 #   koid palette run ID [VALUE]    execute an entry or submit a prompt
 #   koid palette inspect PATH [QUERY]    write selection and catalog matches
+#   koid predict [TEXT]     draw (or clear) a synthetic typing prediction
 #   koid log                the dev server's and app's logs
 #   koid test               core and Swift correctness tests
 #   koid test --filter REGEX  focused Swift tests
@@ -75,6 +76,9 @@ case "${1:-}" in
     "$0" window-id >/dev/null
     shift
     "$root/build/koid-control" palette "$@" ;;
+  predict)
+    "$0" window-id >/dev/null
+    "$root/build/koid-control" predict "${2:-}" ;;
   koi)
     shift
     exec "$root/build/core/koi" "$@" ;;
@@ -167,6 +171,7 @@ with os.fdopen(fd, 'r+') as guard:
               'ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|'
               'IntegrationsTests|UpdaterTests|DiagnosticsTests|DiagnosticIssuesTests|'
               'TabDragTests|ProjectTests|ActivityTests|PaletteSearchTests|RendererDiagnosticsTests|'
+              'fullSplitWeightsAndStatusReportsReachWatchers|'
               'paneHeaderCloseProtectsTheLastPaneInEachTab|paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
               'stdioRelayCarriesTheProtocol|offerFromTheServerOpensALinkForItsSecretOnly|'
               'streamKeepsItsLinkAlive|'

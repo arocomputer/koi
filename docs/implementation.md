@@ -336,10 +336,14 @@ the latest frame. Main-thread output deliveries are bounded to
 output yields between deliveries. The focused pane draws completed output the moment it
 arrives instead of waiting for that tick, which is up to one frame less
 between a keystroke and its echo; other panes draw on the tick. Remote panes
-predict typing locally (see `echo.swift`): the predicted cell is drawn on the
-keystroke itself, before the round trip, and reconciled with the real echo.
-Unchanged blanks require cursor evidence; pending erases cover split echoes,
-and unpredictable input or expiry clears the whole overlay and echo confidence.
+predict typing locally (see `echo.swift`), except on the alternate screen, during
+a held synchronized redraw, or at a hidden cursor. A predicted cell is drawn on
+the keystroke itself, before the round trip, over the background of the cell it
+covers and in the color of the word it continues, then reconciled with the real
+echo.
+Unchanged blanks require cursor evidence; pending erases cover split echoes, and
+unpredictable input, a foreground change, or expiry clears the whole overlay and
+echo confidence.
 Guesses stay hidden until a completed redraw demonstrates echo; program names
 never bypass that check. Each pane's display link pauses once a tick
 finds nothing to draw, and wakes on output, input, a gesture or the window
@@ -391,6 +395,15 @@ report formatter. Only a validated `major.minor.patch+` version with a
 64-digit lowercase hex hash bypasses token scrubbing in the server-version
 field, and only when it contains no configured host alias.
 
+Connections also lists each attached pane's actual transport (local socket,
+encrypted UDP, or SSH relay), the last keystroke-to-output sample, and whether
+typing prediction is ready, active, or off and why. The response sample times
+the first output after a keystroke in a quiet pane, from the oldest unanswered
+key, so it is not a network RTT; panes with ongoing output take no sample, and a
+pane that never answers shows `Waiting` only briefly and then `No sample`. The
+exported report carries only these labels and numbers, never connection error
+text.
+
 ## Terminal text and activity
 
 App mirrors handle OSC 52 text clipboard writes through the engine callback,
@@ -414,24 +427,30 @@ IME marked text remains a separate `NSTextInputClient` document and AX queries
 cannot commit or replace terminal input.
 
 Activity merges connected workspace snapshots by endpoint and pane identity.
-Explicit `reportStatus` and legacy OSC 7501 reports coexist with output/process
-inference; explicit reports are tied to foreground identity rather than a
-permanent pane label. The catalog's optional `agent` flag identifies applications
-eligible for notices. Agent done transitions create pane-scoped unread records
-shared across windows: the tab icon carries a circle until the pane is visited.
-A completion on another machine shows an actionable in-app toast. Baselines,
-repeated statuses and ordinary command completions stay silent. System
-notification delivery is injected, opt-in for blocked,
-done and error transitions, and quiet while focused by default. Initial
-observations and suppressed/repeated statuses produce no catch-up alerts.
-Construction does not query or request notification authorization; a user
-permission action requests it. Notification clicks resolve stable endpoint,
-tab and pane IDs across existing windows, retrying for up to two seconds
-during initial attachment. Stale targets never create connections or shells.
-Optional agent skills are advisory single-file guidance and deliver no status.
-Optional status hooks (`hooks.swift`) make Claude Code and Codex run
-`koi status` on their lifecycle events; they are marked so that install is
-idempotent and removal touches nothing else in the agent's settings.
+Explicit `agentReport` registration binds an opaque server session and numbered
+runs to a freshly sampled foreground process group. Process names are display
+hints only. Each pane retains 64 sequenced lifecycle events and a random epoch;
+these survive watcher and main-thread state coalescing. Consumers baseline first
+observations and new epochs, deduplicate sequence numbers, and silently baseline
+journal gaps with a visible Activity warning. They never infer completion from
+status snapshots. A completed process's last session/history remains available
+after returning to the prompt, so a short-lived agent cannot erase its completion.
+
+`status` comes from a registered agent, then a report, and otherwise from
+output: a non-full-screen command that printed in the last two seconds is
+`working`. `statusSource` is `agent`, `reported` or null for inferred status.
+Silence never changes an agent's or a reported task state. Generic `reportStatus` and legacy OSC 7501 remain supported
+but do not declare agent identity. The program catalog controls artwork only.
+Agent completion records remain pane-scoped across windows, with small yellow
+icon circles and actionable toasts for other machines. Notification delivery is
+injected, opt-in and quiet while focused by default; permission is requested
+only by explicit user action. Notification clicks resolve existing endpoints,
+tabs and panes, never creating shells for stale targets.
+
+Optional status hooks (`hooks.swift`, `agenthooks.zig`) use separate versioned
+provider contracts. Installation proves configuration only; the runtime adapter
+validates session/turn fields before reporting. Activity shows the server's last
+accepted report. See [agent contracts and environment boundaries](agents.md).
 
 ## Ownership and memory limits
 

@@ -297,6 +297,7 @@ scripts/koid palette
 scripts/koid palette run browse_work
 scripts/koid popup machines
 scripts/koid popup hint:toggle_sidebar
+scripts/koid predict A
 scripts/koid shot build/preview.png
 ```
 
@@ -304,7 +305,9 @@ Other popup previews are `tab`, `group` and `shortcut`; the shortcut recorder
 requires Settings → Shortcuts to be visible. `popup dismiss` dismisses the
 popup preview. The `machines` preview uses the compact picker in Top placement.
 Hover hints use `hint:` followed by an action ID, such as
-`new_split` or `close_pane`, and keep the normal hover delay.
+`new_split` or `close_pane`, and keep the normal hover delay. `predict TEXT`
+draws a synthetic typing prediction at the selected pane's cursor without
+sending input; run `predict` with no text to clear it.
 
 `palette run ID [VALUE]` invokes a catalog action or submits a prompt. For
 example, `palette run rename_tab Review` names the selected tab. Use
@@ -421,9 +424,8 @@ an existing SVG logo, an SF Symbol or a short text glyph:
 }
 ```
 
-`runs` lists executable names; keep new aliases lowercase. Optional `agent: true`
-marks coding agents eligible for completion dots, toasts and system notifications;
-leave it out for ordinary commands and general AI/model utilities. Choose one of
+`runs` lists executable names; keep new names lowercase. The catalog controls
+artwork only; [explicit registration](agents.md) controls agent lifecycle notices. Choose one of
 `logo`, `symbol` or `text`. `colors` contains two six-digit hex colors
 without `#`; optional `ink` sets the glyph color, defaulting to white.
 Optional `mark` provides a separate pane-header `symbol` or `text` glyph.

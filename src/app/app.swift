@@ -131,7 +131,11 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
             return nil
         }
         #if KOID
-        if present { Dev.configure(window) { [weak self] request in self?.previewPalette(request) } }
+        if present {
+            Dev.configure(window,
+                          palette: { [weak self] request in self?.previewPalette(request) },
+                          predict: { [weak self] text in self?.workspace.selectedView?.previewPrediction(text) })
+        }
         #else
         if present { window.makeKeyAndOrderFront(nil); NSApp.activate() }
         #endif
@@ -807,7 +811,12 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
         let views = Dictionary(uniqueKeysWithValues: (source?.attachedViews ?? []).map { ($0.paneID, $0) })
         let panes: [DiagnosticsSnapshot.Pane] = (source?.state.tabs.flatMap(\.panes) ?? []).map { pane in
             let view = views[pane.id]
-            return .init(id: pane.id, title: "Pane \(pane.id)", connection: view?.connectionDescription ?? "Not attached in this window", rendering: view?.renderingDiagnostics)
+            return .init(id: pane.id, title: "Pane \(pane.id)",
+                         connection: view?.connectionDescription ?? "Not attached in this window",
+                         transport: view?.transportDescription ?? "Not attached",
+                         response: view?.responseDescription ?? "Not attached",
+                         prediction: view?.predictionDescription ?? "Not attached",
+                         rendering: view?.renderingDiagnostics)
         }
         let appIssues = diagnosticIssues.entries.map {
             DiagnosticsSnapshot.Issue(id: $0.id.uuidString, date: $0.lastSeen, subsystem: $0.subsystem, message: $0.message, count: $0.count)
@@ -825,6 +834,10 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
             return "Pane \(pane.id): \(stats.device), \(stats.drawableWidth)x\(stats.drawableHeight), submitted \(stats.framesSubmitted), completed \(stats.framesCompleted), failed \(stats.framesFailed), pending \(stats.pendingFrame), in-flight \(stats.inFlight), CPU \(milliseconds(stats.lastCPUFrameMS)), max CPU \(milliseconds(stats.maxCPUFrameMS)), GPU \(milliseconds(stats.lastGPUFrameMS)), atlas \(stats.atlasBytes) bytes, buffers \(stats.bufferBytes) bytes; deferred \(stats.deferred.keys.sorted().map { "\($0)=\(stats.deferred[$0] ?? 0)" }.joined(separator: ", "))"
         }
         report.recentIssueSummary = issues.map { "\($0.date.formatted(.iso8601)) \($0.subsystem) ×\($0.count): \($0.message)" }
+        report.interactionSummary = panes.map { pane in
+            // The connection description can carry raw error text, so only fixed labels go in the report.
+            "Pane \(pane.id): transport \(pane.transport), last input response \(pane.response), prediction \(pane.prediction)"
+        }
         return DiagnosticsSnapshot(machine: endpoint, title: endpoint.title, symbol: machines.deviceIcons.symbol(for: endpoint),
             machines: ([Endpoint.local] + machines.hosts.map(Endpoint.ssh)).map { .init(endpoint: $0, title: $0.title) },
             report: report, server: serverInspector.replies[endpoint], checkedAt: serverInspector.checkedAt[endpoint],
@@ -1044,7 +1057,8 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
             state["pane"] = workspace.focusedPane
             state["visible"] = window?.occlusionState.contains(.visible) == true
             state["panes"] = diagnosticSnapshot(for: machines.current).panes.map { pane -> [String: Any] in
-                ["id": pane.id, "connection": pane.connection,
+                ["id": pane.id, "connection": pane.connection, "transport": pane.transport,
+                 "response": pane.response, "prediction": pane.prediction,
                  "frames": pane.rendering?.framesSubmitted ?? 0,
                  "drawable": [pane.rendering?.drawableWidth ?? 0, pane.rendering?.drawableHeight ?? 0]]
             }

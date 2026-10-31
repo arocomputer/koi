@@ -711,10 +711,12 @@ extension SessionTests {
         var pane = try #require(workspace.selectedPane)
         pane.program = "git"
         fixture.report(pane)
-        try await Task.sleep(for: .milliseconds(150))
+        // Replace "git" late in its 250 ms interval and check after it would
+        // have fired, leaving 150 ms before "vim" may present.
+        try await Task.sleep(for: .milliseconds(200))
         pane.program = "vim"
         fixture.report(pane)
-        try await Task.sleep(for: .milliseconds(150))
+        try await Task.sleep(for: .milliseconds(100))
         #expect(workspace.presentedPane(pane).program.isEmpty, "a replacement gets its own settling interval")
         workspace.apply(fixture.state(["b"]))
         workspace.apply(initial)
