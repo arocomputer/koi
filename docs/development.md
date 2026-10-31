@@ -353,7 +353,7 @@ for its actual version and capabilities. An older v6 server can reject
 
 ## Compatibility and integration boundaries
 
-The [architecture guide](../docs/architecture.md#connections-and-protocol)
+The [architecture guide](../docs/implementation.md#connections-and-protocol)
 records the additive v6 operations. Keep Swift/Zig framing, JSON names and
 versions compatible. Probe advertised capabilities before new mutations or
 creation options; old v6 may silently ignore fields. These features use JSON,
@@ -380,7 +380,7 @@ When reviewing a different scrollback maximum, inspect these exact owners:
 - [`configTests.swift`](../tests/app/configTests.swift) and the appearance
   validation tests in [`wire.zig`](../src/core/wire.zig), plus this guide,
   [Configuration](../docs/configuration.md) and
-  [Architecture](../docs/architecture.md#ownership-and-memory-limits).
+  [Architecture](../docs/implementation.md#ownership-and-memory-limits).
 
 The 32 MiB defaults in the two emulators and `Wire.Appearance` are separate
 from the maximum; snapshot framing stays capped at 64 MiB. Changing one

@@ -146,7 +146,7 @@ pane whose ID it is given, or a tab's first pane.
 `info` describes the answering process, even after the executable on disk
 has been rebuilt. Its version includes a build fingerprint; do not substitute
 the app bundle version for server identity. JSON also exposes the exact
-capability names in [Architecture](architecture.md#connections-and-protocol).
+capability names in [Architecture](implementation.md#connections-and-protocol).
 
 The CLI probes `serverInfo` before clear/reset, status, startup source, and
 explicit split-directory requests. Older protocol-v6 servers may lack these

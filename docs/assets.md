@@ -28,5 +28,5 @@ Program identity selects a bundled logo and color palette from
 included. Logos and failed lookups are cached for the app's lifetime; there
 are no runtime icon downloads. Unknown applications use Koi's `>_` mark on
 a neutral tile; an unavailable catalog logo also uses `>_`.
-See [Program icons](../CONTRIBUTING.md#program-icons) for the catalog format,
+See [Program icons](development.md#program-icons) for the catalog format,
 asset requirements and the Python-only contribution check.
