@@ -230,7 +230,7 @@ fn expectScript(source: []const u8) !void {
     try testing.expectEqual(@as(u8, 0), run(testing.allocator, .{ .source = source }, &.{}));
 }
 
-test "a script has JSON, sleep and the plain standard libraries, and no require" {
+test "script gets json, sleep and plain libraries" {
     try expectScript(
         \\local t = koi.json('{"a":[1,2.5,"x",true,null,{"k":"v"}],"n":null,"s":"\\u00e9"}')
         \\assert(t.a[1] == 1 and t.a[2] == 2.5 and t.a[3] == "x" and t.a[4] == true and t.a[6].k == "v")
@@ -242,7 +242,7 @@ test "a script has JSON, sleep and the plain standard libraries, and no require"
     );
 }
 
-test "koi.run reports success, output and failure of the program it starts" {
+test "koi.run reports output and exit status" {
     program = "/bin/echo";
     defer program = null;
     try expectScript(
@@ -260,7 +260,7 @@ test "koi.run reports success, output and failure of the program it starts" {
     );
 }
 
-test "the helpers build the command lines the CLI expects" {
+test "helpers build the right commands" {
     program = "/bin/echo";
     defer program = null;
     try expectScript(
@@ -273,7 +273,7 @@ test "the helpers build the command lines the CLI expects" {
     );
 }
 
-test "a script that fails exits 1, and a script file gets its arguments" {
+test "script failures exit 1, files get args" {
     try testing.expectEqual(@as(u8, 1), run(testing.allocator, .{ .source = "error('boom')" }, &.{}));
     try testing.expectEqual(@as(u8, 1), run(testing.allocator, .{ .source = "this is not lua" }, &.{}));
     try testing.expectEqual(@as(u8, 1), run(testing.allocator, .{ .file = "/nonexistent/script.lua" }, &.{}));
