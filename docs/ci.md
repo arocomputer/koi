@@ -43,7 +43,7 @@ uses the organization's installed Namespace GitHub app. See
 To move providers again, change `runs-on` and verify the selected Xcode path
 exists on the replacement image. GitHub-hosted equivalents are `ubuntu-latest`
 and `macos-26`; select an installed Xcode explicitly on the latter. Keep the
-`All checks passed` job's name in step with the ruleset: branch protection
+`Required` compatibility job's name in step with the ruleset: branch protection
 requires that exact name, and a PR waits forever for a check that never
 reports. Rename it by changing the job, `.github/rulesets/main.json` and the
 live ruleset together. Job IDs may change if `scripts/ci.py`'s gate and its
@@ -54,7 +54,7 @@ weaken required checks to work around a queued or failing runner.
 ## Checks and selection
 
 The [workflow](../.github/workflows/ci.yml) runs on PRs, main pushes and manual
-requests. It has four jobs:
+requests. It has five jobs:
 
 | Job | Work |
 | --- | --- |
@@ -62,6 +62,7 @@ requests. It has four jobs:
 | Core tests (Linux) | Selected core (Zig) tests on Linux with musl, the shipped server's libc |
 | Core, app and bundle (macOS) | Whichever of the core tests, hosted Swift tests and packaging were selected, on one Mac |
 | All checks passed | Require the scripts job, the Linux job and every selected macOS step to pass |
+| Required | Run the same gate under the existing branch-protection name |
 
 "Core" is the Zig server and library in `src/core`; "app" is the Swift app in
 `src/app`; "bundle" is the packaged `Koi.app`. The names carry the platform
@@ -70,7 +71,9 @@ a time, so the Mac steps share one checkout, toolchain and dependency
 preparation instead of queueing a second Mac job behind the first. The scripts
 job finishes before a Mac is requested.
 
-`All checks passed` is the one check branch protection requires. It runs last,
+`Required` remains the check branch protection requires. `All checks passed`
+runs the same validation under the clearer display name, so this stack needs
+no live ruleset change. It runs last,
 waits for the other jobs, and fails if any failed or if a job that should have
 run was skipped. GitHub counts a skipped job as passing, and these jobs are
 skipped on purpose (a docs-only change never starts a Mac), so requiring each
