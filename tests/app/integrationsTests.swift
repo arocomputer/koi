@@ -125,7 +125,7 @@ import Testing
         let integrations = AgentIntegrations(root: root)
         let url = integrations.hooksURL(for: .claude)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        for text in ["{ not json", "[1,2]", #"{"hooks":[]}"#, #"{"hooks":{"Stop":{"a":1}}}"#] {
+        for text in ["{ not json", "[1,2]", #"{"hooks":[]}"#, #"{"hooks":{"Stop":{"a":1}}}"#, #"{"hooks":{"Stop":[{"hooks":"bad"}]}}"#] {
             try Data(text.utf8).write(to: url)
             #expect(throws: AgentHooks.Failure.self) { try integrations.installHooksFromUserAction(.claude) }
             #expect(try String(contentsOf: url, encoding: .utf8) == text, "unchanged: \(text)")

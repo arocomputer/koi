@@ -109,7 +109,8 @@ enum AgentHooks {
 
     private static func groupList(_ value: Any?) throws -> [[String: Any]] {
         guard let value else { return [] }
-        guard let groups = value as? [[String: Any]] else { throw Failure.unexpectedShape }
+        guard let groups = value as? [[String: Any]],
+              groups.allSatisfy({ $0["hooks"] is [[String: Any]] }) else { throw Failure.unexpectedShape }
         return groups
     }
 
