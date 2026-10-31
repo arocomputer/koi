@@ -63,6 +63,7 @@ const Filter = struct {
         try self.reader.append(bytes);
         while (try self.reader.next()) |f| {
             if (f.kind == .keepalive) {
+                if (f.payload.len != 0) return error.Protocol;
                 self.armed = true;
                 continue;
             }
@@ -177,4 +178,9 @@ test "relay rejects a bad frame" {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     try std.testing.expectError(error.Protocol, filter.feed(gpa, &.{ 200, 0, 0, 0, 0 }, 0, &out));
+    var malformed = Filter.init(gpa, 0);
+    defer malformed.deinit();
+    const beat = try frameBytes(gpa, .keepalive, "not empty");
+    defer gpa.free(beat);
+    try std.testing.expectError(error.Protocol, malformed.feed(gpa, beat, 0, &out));
 }
