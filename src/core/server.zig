@@ -2181,14 +2181,15 @@ test "a closed link is reclaimed once no reader serves it, and not before" {
     try testing.expectEqual(0, server.links.items.len);
 }
 
-test "a stream that arrives while its link is being reclaimed is closed, not served" {
+fn expectStreamRefused(closing: bool, connections: usize) !void {
     const gpa = testing.allocator;
     var server = testServer(gpa);
     defer freeTree(&server);
+    server.connections = connections;
     const secret: [32]u8 = @splat(0x5a);
     const entry = try gpa.create(LinkEntry);
     defer gpa.destroy(entry);
-    entry.* = .{ .server = &server, .link = try link_mod.Link.listen(gpa, secret), .closing = true };
+    entry.* = .{ .server = &server, .link = try link_mod.Link.listen(gpa, secret), .closing = closing };
     defer entry.link.destroy();
     entry.link.on_stream_ctx = entry;
     entry.link.on_stream = &Server.onStream;
@@ -2216,7 +2217,16 @@ test "a stream that arrives while its link is being reclaimed is closed, not ser
     try testing.expectEqual(0, stream.read(&buf)); // the server's FIN, not the watchdog's close
     try testing.expect(!client.isClosed());
     try testing.expectEqual(0, entry.readers.load(.acquire));
+    try testing.expectEqual(connections, server.connections);
     stream.release();
+}
+
+test "a stream that arrives while its link is being reclaimed is closed, not served" {
+    try expectStreamRefused(true, 0);
+}
+
+test "a UDP stream is refused when the server connection ceiling is full" {
+    try expectStreamRefused(false, max_connections);
 }
 
 test "serverInfo reports the answering process without changing the tree" {

@@ -440,7 +440,8 @@ new tab or split once 128 panes exist, answering "too many panes: close some
 first", and drops new connections once 1024 are open, logging the first
 refusal each second. Both ceilings are soft: two requests arriving at the
 limit may both pass. The log rolls to `server.log.1` when the server starts and
-every few seconds while it runs, so it never holds more than 16 MiB.
+every few seconds while it runs. Rotation keeps one earlier file; bursts
+between checks can exceed the threshold, so 16 MiB is not a hard bound.
 
 The embedded native library leaves alternate signal-stack ownership with
 the host application, including when the host runs under a sanitizer.

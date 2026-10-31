@@ -9,7 +9,7 @@ let package = Package(
     platforms: [.macOS("26.0")],
     dependencies: [
         // Downloads, verifies and installs updates; Koi supplies the interface
-        // (src/app/updates.swift). bundle.sh embeds the framework in the app.
+        // (src/app/updater.swift). bundle.sh embeds the framework in the app.
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
     ],
     targets: [
