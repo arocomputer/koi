@@ -27,7 +27,7 @@ From the repository root:
 ./x check                  # scripts, catalog and correctness tests
 ./x test PaletteSearchTests # focused, isolated Swift tests
 ./x test-core watcher      # focused, isolated core tests
-./x scripts                # portable regressions, no native toolchain
+./x scripts                # script and CI regressions, no Mac toolchain
 ./x programs               # catalog and artwork validation
 scripts/koid build
 scripts/koid run
@@ -46,9 +46,9 @@ binaries, and installs Koid at the same path across worktrees. Its bundle ID
 is `com.fschrhunt.koid`; its config, layout, server log and socket live under
 `~/.local/state/koid`. Its macOS preferences are separate from Koi's too.
 
-`./x test` runs native and Swift correctness checks with macOS dependencies;
+`./x test` runs the core (Zig) and Swift correctness checks with macOS dependencies;
 benchmarks and Linux cross-compilation are separate. `./x test FILTER` runs
-only matching Swift tests, and `./x test-core FILTER` runs matching native
+only matching Swift tests, and `./x test-core FILTER` runs matching core
 tests after fetching the pinned engine source. `./x test-app` runs the hosted
 Swift subset in debug mode, including selected real-server/session checks.
 All use the same private roots, checkout lock and cleanup. `./x bundle`
@@ -170,13 +170,13 @@ sh tests/scripts/koid-test-isolation.sh
 python3 tests/scripts/buildProvenanceTests.py
 ```
 
-The [CI workflow](.github/workflows/ci.yml) runs portable checks before
-starting one Mac job. PRs select core tests, Swift tests and
+The [CI workflow](.github/workflows/ci.yml) runs script and catalog checks on
+Linux before starting one Mac job. PRs select core tests, Swift tests and
 packaging independently from the complete diff. Swift/test-only edits do not
 cross-compile Linux or assemble a bundle. Resource/packaging changes select
 bundling; core/build/workflow and unknown inputs select everything. Selected
-core tests also run natively on Linux (musl) on a Namespace Linux runner. Main pushes select changed inputs and package Swift source changes;
-manual runs execute all checks. `Required` rejects failed jobs and skipped
+core tests also run on Linux (musl) on a Namespace Linux runner. Main pushes select changed inputs and package Swift source changes;
+manual runs execute all checks. `All checks passed` rejects failed jobs and skipped
 selected steps.
 
 Hosted Macs do not reliably expose Metal. The explicit Swift subset in

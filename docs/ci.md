@@ -24,14 +24,14 @@ profiles or a Namespace token in repository secrets:
 | Jobs | `runs-on` label |
 | --- | --- |
 | Selection, script/catalog checks, Linux core tests, final gate and dependency updates | `nscloud-ubuntu-24.04-amd64-2x4` |
-| Native tests, packaging and release drafts | `nscloud-macos-tahoe-arm64-6x14` |
+| Core, app and bundle jobs on the Mac, and release drafts | `nscloud-macos-tahoe-arm64-6x14` |
 
 The macOS jobs explicitly select
 `/Applications/Xcode_26.3.app/Contents/Developer`. The image was inspected
 with the Namespace CLI: Xcode 26.3 includes Swift 6.2.4, the macOS 26.2 SDK
 and the Metal toolchain. Xcode 26.6 was not installed. `setup-zig` installs
 the pinned Zig version; it is not assumed to be in the base image.
-Workflow logs record the selected toolchain, and native output caches include
+Workflow logs record the selected toolchain, and macOS output caches include
 its actual identity. The existing Actions checkout/cache steps remain in use.
 
 For runner debugging, install `brew install namespacelabs/namespace/nsc`,
@@ -42,9 +42,13 @@ uses the organization's installed Namespace GitHub app. See
 
 To move providers again, change `runs-on` and verify the selected Xcode path
 exists on the replacement image. GitHub-hosted equivalents are `ubuntu-latest`
-and `macos-26`; select an installed Xcode explicitly on the latter. Keep job
-IDs and the `Required` gate unchanged so branch protection continues to
-work. Validate a PR run before merging a runner change. Do not disable or
+and `macos-26`; select an installed Xcode explicitly on the latter. Keep the
+`All checks passed` job's name in step with the ruleset: branch protection
+requires that exact name, and a PR waits forever for a check that never
+reports. Rename it by changing the job, `.github/rulesets/main.json` and the
+live ruleset together. Job IDs may change if `scripts/ci.py`'s gate and its
+tests change with them. Validate a PR run before merging a runner change. Do
+not disable or
 weaken required checks to work around a queued or failing runner.
 
 ## Checks and selection
@@ -54,18 +58,27 @@ requests. It has four jobs:
 
 | Job | Work |
 | --- | --- |
-| Portable checks | Complete PR diff, script regressions and catalog validation on Linux |
-| Native checks | Selected core tests, Swift tests and/or packaging on one Mac |
-| Linux core tests | Selected core tests natively on Linux with musl, the shipped server's libc |
-| Required | Require the portable job and every selected native step to pass |
+| Scripts and catalog (Linux) | Selects what else runs from the complete PR diff, then runs script regressions and catalog validation |
+| Core tests (Linux) | Selected core (Zig) tests on Linux with musl, the shipped server's libc |
+| Core, app and bundle (macOS) | Whichever of the core tests, hosted Swift tests and packaging were selected, on one Mac |
+| All checks passed | Require the scripts job, the Linux job and every selected macOS step to pass |
 
-Portable checks finish before a Mac is requested. The Mac steps share one
-checkout, toolchain and dependency preparation, so a one-Mac workspace no
-longer queues a second native job behind the first.
+"Core" is the Zig server and library in `src/core`; "app" is the Swift app in
+`src/app`; "bundle" is the packaged `Koi.app`. The names carry the platform
+because the Mac is the scarce resource: the workspace allows one macOS job at
+a time, so the Mac steps share one checkout, toolchain and dependency
+preparation instead of queueing a second Mac job behind the first. The scripts
+job finishes before a Mac is requested.
+
+`All checks passed` is the one check branch protection requires. It runs last,
+waits for the other jobs, and fails if any failed or if a job that should have
+run was skipped. GitHub counts a skipped job as passing, and these jobs are
+skipped on purpose (a docs-only change never starts a Mac), so requiring each
+one directly would let a broken selection merge unnoticed.
 
 | Changed inputs in a PR | Core tests | Swift tests | Bundle/Linux cross-build |
 | --- | --- | --- | --- |
-| Docs, catalog, portable maintenance scripts/tests | No | No | No |
+| Docs, catalog, maintenance scripts and their tests | No | No | No |
 | App Swift source or Swift tests | No | Yes | No |
 | Packaged licenses/notices | No | No | Yes |
 | Other app resources or Package.swift | No | Yes | Yes |
@@ -77,7 +90,7 @@ NUL-delimited diff from the PR merge base, including deleted files and both
 sides of renames, without the API's changed-file limit. Missing history
 falls back to all checks. Catalog-only checks cover schema, aliases, SVGs
 and provenance; review runtime artwork on a Mac when changing it.
-The isolation regression is a portable-test exception: edits also select
+The isolation regression is a script-test exception: edits also select
 the Mac lane to verify its Darwin process-ownership path.
 
 Hosted Swift tests run in debug mode through the isolated runner. They
@@ -90,7 +103,7 @@ Routine Swift PRs do not cross-compile a Linux server or assemble a signed
 bundle. Production packaging runs for relevant changes and on main. Tests
 use development resource lookup, which production release builds intentionally
 omit. When core tests are selected, a separate Linux job also runs them
-natively against musl, alongside the Linux server cross-build used for
+on Linux against musl, alongside the Linux server cross-build used for
 packaging.
 
 The final gate checks both the Mac job result and each selected step's
@@ -108,9 +121,9 @@ direct compiler/test commands do not provide the same isolation. Swift tests
 prepare only the macOS server/library. Core-only tests fetch the pinned
 engine source without building the Apple framework or release servers.
 
-`./x check` runs portable checks and the full correctness suite. `./x bench`
+`./x check` runs the script checks and the full correctness suite. `./x bench`
 is separate and opt-in; timing bounds should not interrupt ordinary UI or
-correctness work. Run `./x bundle` when changing packaging, native build inputs
+correctness work. Run `./x bundle` when changing packaging, core build inputs
 or toolchains, and for release validation. Do not repeat passing checks in an
 unchanged checkout merely because another step finished.
 
@@ -122,7 +135,7 @@ message. Test isolation is unaffected — the suite also passes with
 `HOME=/nonexistent` and a private `KOI_DIR`.
 
 CI pins Xcode 26.3 (Swift 6.2.4) and Zig 0.17.0; a local Xcode or Zig that
-differs is the first thing to check when a native failure does not reproduce
+differs is the first thing to check when a macOS failure does not reproduce
 in CI, or the reverse. `./x`, not the raw compiler, is the supported entry
 point because it is what CI runs.
 
@@ -130,7 +143,7 @@ point because it is what CI runs.
 
 The first successful Namespace run took about eight minutes. Its 105 selected
 Swift tests executed in 0.275 seconds; preparation and compilation dominated:
-64 seconds for Ghostty, 109 seconds for native outputs, 46 seconds for the
+64 seconds for Ghostty, 109 seconds for the macOS core outputs, 46 seconds for the
 Swift test build and 28 seconds for the production Swift build. A separate
 71-second core job and a Mac handoff added to elapsed time. These cold-run
 figures are a baseline, not a claim about the revised or warmed workflow.
@@ -149,7 +162,7 @@ Restore and save are explicit steps. A successfully prepared artifact is
 saved immediately, before downstream Swift failures can discard that work.
 Failed preparation never publishes a cache. These are input-provenance
 checks, not content-integrity attestations or distributable release artifacts.
-The Zig compiler cache is shared by the native steps in the same job.
+The Zig compiler cache is shared by the macOS steps in the same job.
 
 GitHub's branch cache scope still applies: a PR does not seed the main
 branch. The first successful main run seeds caches available to later PRs.
@@ -165,7 +178,7 @@ ask/aft with one stable required gate and a narrower administrator bypass:
 
 - PRs and resolved review threads; squash merging and linear history.
 - No branch deletion or force pushes.
-- `Required`, from GitHub Actions, with the branch up to date before merging.
+- `All checks passed`, from GitHub Actions, with the branch up to date before merging.
 - Zero mandatory approvals while there is one maintainer. CODEOWNERS routes
   review requests without making solo work impossible.
 - Administrator bypass only through a PR, not unrestricted direct pushes.

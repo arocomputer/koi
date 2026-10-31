@@ -8,7 +8,7 @@ usage() {
   cat <<'EOF'
 usage: ./x [command]
   check        Default: scripts, catalog, full isolated correctness tests
-  scripts      Portable script and CI regressions (Python 3, no native builds)
+  scripts      Script and CI regressions (Python 3, no Mac toolchain)
   programs     Application catalog and artwork checks (Python 3)
   deps         Discover stable Ghostty updates without editing (Python 3, gh)
   test [FILTER] Full correctness suite or focused Swift tests (Mac)
