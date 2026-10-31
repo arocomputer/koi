@@ -43,9 +43,12 @@ uses the organization's installed Namespace GitHub app. See
 To move providers again, change `runs-on` and verify the selected Xcode path
 exists on the replacement image. GitHub-hosted equivalents are `ubuntu-latest`
 and `macos-26`; select an installed Xcode explicitly on the latter. Keep the
-`Required` job's name unchanged: it is the only check branch protection
-requires. Job IDs may change if `scripts/ci.py`'s gate and its tests change with
-them. Validate a PR run before merging a runner change. Do not disable or
+`All checks passed` job's name in step with the ruleset: branch protection
+requires that exact name, and a PR waits forever for a check that never
+reports. Rename it by changing the job, `.github/rulesets/main.json` and the
+live ruleset together. Job IDs may change if `scripts/ci.py`'s gate and its
+tests change with them. Validate a PR run before merging a runner change. Do
+not disable or
 weaken required checks to work around a queued or failing runner.
 
 ## Checks and selection
@@ -58,7 +61,7 @@ requests. It has four jobs:
 | Scripts and catalog (Linux) | Selects what else runs from the complete PR diff, then runs script regressions and catalog validation |
 | Core tests (Linux) | Selected core (Zig) tests on Linux with musl, the shipped server's libc |
 | Core, app and bundle (macOS) | Whichever of the core tests, hosted Swift tests and packaging were selected, on one Mac |
-| Required | Require the scripts job, the Linux job and every selected macOS step to pass |
+| All checks passed | Require the scripts job, the Linux job and every selected macOS step to pass |
 
 "Core" is the Zig server and library in `src/core`; "app" is the Swift app in
 `src/app`; "bundle" is the packaged `Koi.app`. The names carry the platform
@@ -66,6 +69,12 @@ because the Mac is the scarce resource: the workspace allows one macOS job at
 a time, so the Mac steps share one checkout, toolchain and dependency
 preparation instead of queueing a second Mac job behind the first. The scripts
 job finishes before a Mac is requested.
+
+`All checks passed` is the one check branch protection requires. It runs last,
+waits for the other jobs, and fails if any failed or if a job that should have
+run was skipped. GitHub counts a skipped job as passing, and these jobs are
+skipped on purpose (a docs-only change never starts a Mac), so requiring each
+one directly would let a broken selection merge unnoticed.
 
 | Changed inputs in a PR | Core tests | Swift tests | Bundle/Linux cross-build |
 | --- | --- | --- | --- |
@@ -169,7 +178,7 @@ ask/aft with one stable required gate and a narrower administrator bypass:
 
 - PRs and resolved review threads; squash merging and linear history.
 - No branch deletion or force pushes.
-- `Required`, from GitHub Actions, with the branch up to date before merging.
+- `All checks passed`, from GitHub Actions, with the branch up to date before merging.
 - Zero mandatory approvals while there is one maintainer. CODEOWNERS routes
   review requests without making solo work impossible.
 - Administrator bypass only through a PR, not unrestricted direct pushes.

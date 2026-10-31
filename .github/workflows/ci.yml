@@ -166,7 +166,7 @@ jobs:
         run: ./x test-core
 
   required:
-    name: Required
+    name: All checks passed
     if: always()
     needs: [checks, macos, linux-core]
     runs-on: nscloud-ubuntu-24.04-amd64-2x4
