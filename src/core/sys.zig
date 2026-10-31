@@ -150,12 +150,18 @@ pub fn selfPath(gpa: std.mem.Allocator) ![]const u8 {
     return gpa.dupe(u8, buf[0..@intCast(n)]);
 }
 
-/// Authenticate a connected Unix peer using kernel credentials, never socket-file metadata.
+/// Authenticate a connected Unix peer as this process's user, using kernel
+/// credentials, never socket-file metadata.
 pub fn sameUserPeer(fd: c_int) bool {
+    return peerIsUser(fd, c.getuid());
+}
+
+/// Whether the kernel says the peer of the connected Unix socket `fd` runs as `uid`.
+pub fn peerIsUser(fd: c_int, user: c.uid_t) bool {
     if (builtin.os.tag == .macos) {
         var uid: c.uid_t = undefined;
         var gid: c.gid_t = undefined;
-        return c.getpeereid(fd, &uid, &gid) == 0 and uid == c.getuid();
+        return c.getpeereid(fd, &uid, &gid) == 0 and uid == user;
     } else {
         // `struct ucred` is only visible to C with _GNU_SOURCE, which also
         // turns glibc's sockaddr arguments into transparent unions; its
@@ -164,7 +170,7 @@ pub fn sameUserPeer(fd: c_int) bool {
         var cred: Ucred = undefined;
         var len: c.socklen_t = @sizeOf(Ucred);
         return c.getsockopt(fd, c.SOL_SOCKET, std.os.linux.SO.PEERCRED, &cred, &len) == 0 and
-            len == @sizeOf(Ucred) and cred.uid == c.getuid();
+            len == @sizeOf(Ucred) and cred.uid == user;
     }
 }
 

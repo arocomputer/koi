@@ -103,6 +103,23 @@ pane headers, compact spacing, inactive-pane fading and focus-follows-mouse,
 including config persistence and system Reduce Motion/Transparency. Focused
 and unfocused pane outlines stay neutral; there is no active-border setting.
 
+A passing suite only matters if it fails when behavior breaks. To check that,
+plant known bugs in a copy of the tree and see whether the tests notice:
+
+```sh
+./x mutate          # core: who may connect, trusted directories, dead peers,
+                    # idle exit, frame, input, pane, connection and log limits
+./x mutate --app    # app: the same kinds of guarantees on the Swift side
+./x mutate peer     # only mutations whose name contains "peer"
+```
+
+Each mutation edits one line in a clone beside the checkout, never the working
+tree, and the suite must fail. A survivor is a guarantee nothing checks: add a
+focused test for it rather than a looser mutation. The core run takes about five
+minutes and `--app` about twenty; run them after changing a security boundary,
+a limit or a lifecycle rule, not on every edit. The mutation list lives in
+`scripts/mutate.py`; keep each entry compiling and matching exactly one place.
+
 Performance checks are opt-in:
 
 ```sh
