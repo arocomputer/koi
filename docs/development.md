@@ -176,7 +176,7 @@ packaging independently from the complete diff. Swift/test-only edits do not
 cross-compile Linux or assemble a bundle. Resource/packaging changes select
 bundling; core/build/workflow and unknown inputs select everything. Selected
 core tests also run natively on Linux (musl) on a Namespace Linux runner. Main pushes select changed inputs and package Swift source changes;
-manual runs execute all checks. `Required` (also displayed as `All checks passed`) rejects failed jobs and skipped
+manual runs execute all checks. `Required` rejects failed jobs and skipped
 selected steps.
 
 Hosted Macs do not reliably expose Metal. The explicit Swift subset in
