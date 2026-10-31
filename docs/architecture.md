@@ -50,7 +50,7 @@ rather than adding a layer for each helper. Useful boundaries are:
 | Connection lifecycle and routing | [`connections.swift`](../src/app/connections.swift), [`transport.swift`](../src/app/transport.swift), [`endpoint.swift`](../src/app/endpoint.swift), [`remote.swift`](../src/app/remote.swift) |
 | Configuration, Settings and fixed palette | [`config.swift`](../src/app/config.swift), [`settings.swift`](../src/app/settings.swift), [`theme.swift`](../src/app/theme.swift) |
 | Project recipes and current activity | [`projects.swift`](../src/app/projects.swift), [`activity.swift`](../src/app/activity.swift) |
-| Running-server facts and support | [`server.swift`](../src/app/server.swift), [`updates.swift`](../src/app/updates.swift), [`diagnostics.swift`](../src/app/diagnostics.swift), [`diagnosticswindow.swift`](../src/app/diagnosticswindow.swift) |
+| Running-server facts and support | [`server.swift`](../src/app/server.swift), [`updater.swift`](../src/app/updater.swift), [`diagnostics.swift`](../src/app/diagnostics.swift), [`diagnosticswindow.swift`](../src/app/diagnosticswindow.swift) |
 | Terminal text accessibility and opt-in installation | [`accessibility.swift`](../src/app/accessibility.swift), [`install.swift`](../src/app/install.swift), [`integrations.swift`](../src/app/integrations.swift) |
 | Storage and development previews | [`layout.swift`](../src/app/layout.swift), [`paths.swift`](../src/app/paths.swift), [`koid.swift`](../src/app/koid.swift) |
 
@@ -189,7 +189,17 @@ left unanswered is not repeated for ten minutes: each costs an SSH round
 trip and a blocked port rarely opens within minutes. Bundled server
 builds support Apple silicon macOS and x86_64 Linux. Setup commands have a
 60-second deadline and retain at most 1 MiB each of stdout and stderr;
-cancellation stops and reaps the local SSH process. See
+cancellation stops and reaps the local SSH process.
+
+An SSH channel cannot tell its far end has vanished: a laptop that sleeps or
+drops off the network leaves `koi --stdio` and its server connection running
+on the remote machine, because SSH there may never report the loss. So the app
+sends an empty `keepalive` frame every 20 seconds on each relay connection. The
+relay swallows these, so the server never sees the kind, which an older one
+would reject, and once it has seen one it exits after 75 seconds of silence
+(three lost keepalives and slack). A peer that never sends one is never timed
+out, so an older app behaves as before. The app only sends them through a relay
+it installed itself, which the hash check in `prepare` guarantees. See
 [`remote.swift`](../src/app/remote.swift) and
 [`link.zig`](../src/core/link.zig) for the connection implementation.
 
@@ -424,6 +434,13 @@ no tracing garbage collector. Each terminal owns its engine state, each
 renderer frees its render-state helpers, and each selection gesture retains
 its terminal until its tracked references have been freed.
 
+The server bounds what a runaway or vanished client can cost. It refuses a
+new tab or split once 128 panes exist, answering "too many panes: close some
+first", and drops new connections once 1024 are open, logging the first
+refusal each second. Both ceilings are soft: two requests arriving at the
+limit may both pass. The log rolls to `server.log.1` when the server starts and
+every few seconds while it runs, so it never holds more than 16 MiB.
+
 The embedded native library leaves alternate signal-stack ownership with
 the host application, including when the host runs under a sanitizer.
 
@@ -479,14 +496,28 @@ termination flushes the latest values after earlier writes.
 | Configuration | `~/.config/koi/config` |
 | Layout and machine metadata | `~/.local/state/koi/layout.json` |
 | Named project recipes | `~/.local/state/koi/projects.json` |
-| Server log | `~/.local/state/koi/server.log` |
-| Socket and server lock | `$TMPDIR/koi`, or `/tmp/koi-<uid>` when unset |
-| macOS window preferences, palette recents and manual update source | The app's UserDefaults domain |
+| Server log | `~/.local/state/koi/server.log`, rolled to `server.log.1` at 8 MiB |
+| Socket and server lock | macOS's per-user temporary directory + `/koi`, `/run/user/<uid>/koi` on Linux, or `/tmp/koi-<uid>` |
+| macOS window preferences, palette recents and Sparkle's update schedule | The app's UserDefaults domain |
 
-`XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `XDG_RUNTIME_DIR` override their
-respective directories. `KOI_DIR` puts configuration, state and runtime
-files together in one directory; it does not relocate UserDefaults.
-Long socket paths move the runtime directory to `/tmp/koi-<uid>`.
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME` override their respective
+directories. The runtime directory depends on the user and platform, never on
+`TMPDIR` or `XDG_RUNTIME_DIR`: the server lock inside it is what keeps one
+server per user, so a client started from a GUI, a login shell or SSH must
+compute the same path. Changing it strands any server still running at the
+old path, and the next client starts a second one beside it, so a change is a
+migration. `KOI_DIR` puts configuration,
+state and runtime files together in one directory; it does not relocate
+UserDefaults. Long socket paths move the runtime directory to
+`/tmp/koi-<uid>`.
+
+macOS attributes a permission prompt raised by a program in a pane to Koi,
+not to the program. Koi therefore declares the camera, microphone, contacts,
+calendars, location, photos and Apple Events entitlements in
+`src/app/resources/Koi.entitlements`, which the hardened runtime of a
+notarized release requires, and a matching usage description for each in
+`Info.plist`, which macOS requires before it will show the prompt. Only the app
+executable carries the entitlements; the bundled server does not.
 
 The socket is what authorizes a client to read and drive panes, so its
 directory is the security boundary. The app and server create the state and
@@ -510,8 +541,9 @@ first new tab only after success. Failure stops further work, preserves
 existing jobs and leaves newly created tabs/helpers for inspection. The app
 requires `splitCwd` and `resizeSplitWeights` before restoring a layout.
 
-Support actions stay with their feature owners: updates have no default feed
-or startup fetch and open release pages only after manual checks;
+Support actions stay with their feature owners: updates (`updater.swift`)
+check GitHub's signed appcast daily and show their steps as one toast, with
+Sparkle doing the download, signature check and install;
 diagnostics format allowlisted facts without reading logs, terminal contents
 or raw config values. Copy and save-panel export use the same redacted
 report. CLI and Codex/Claude skill installation

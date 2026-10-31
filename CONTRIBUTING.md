@@ -68,8 +68,8 @@ signals only registered fixture processes whose live executable or command
 matches the run's private binary; stale PID markers are ignored.
 AppKit fixtures host windows/views offscreen;
 installation tests use private fixture homes and fake binaries, notification
-tests inject delivery, and update tests inject fetching. Keep new checks
-isolated the same way: no real notification authorization, update requests,
+tests inject delivery, and update tests drive the toast's driver directly. Keep
+new checks isolated the same way: no real notification authorization, update requests,
 agent installs, home-config reads or writes to existing sessions.
 
 The commands above cover development build/run/test and the ordinary release
@@ -102,6 +102,23 @@ Keep checks for `snappy`/`natural`/`off`, configurable opacity/transparency,
 pane headers, compact spacing, inactive-pane fading and focus-follows-mouse,
 including config persistence and system Reduce Motion/Transparency. Focused
 and unfocused pane outlines stay neutral; there is no active-border setting.
+
+A passing suite only matters if it fails when behavior breaks. To check that,
+plant known bugs in a copy of the tree and see whether the tests notice:
+
+```sh
+./x mutate          # core: who may connect, trusted directories, dead peers,
+                    # idle exit, frame, input, pane, connection and log limits
+./x mutate --app    # app: the same kinds of guarantees on the Swift side
+./x mutate peer     # only mutations whose name contains "peer"
+```
+
+Each mutation edits one line in a clone beside the checkout, never the working
+tree, and the suite must fail. A survivor is a guarantee nothing checks: add a
+focused test for it rather than a looser mutation. The core run takes about five
+minutes and `--app` about twenty; run them after changing a security boundary,
+a limit or a lifecycle rule, not on every edit. The mutation list lives in
+`scripts/mutate.py`; keep each entry compiling and matching exactly one place.
 
 Performance checks are opt-in:
 
@@ -216,7 +233,7 @@ After dependencies are available, focused checks for the newer behavior can
 be selected without running Koid's app or attaching to its sessions:
 
 ```sh
-./x test 'ProjectTests|ActivityTests|UpdatesTests|IntegrationsTests|InstallationTests'
+./x test 'ProjectTests|ActivityTests|UpdaterTests|IntegrationsTests|InstallationTests'
 ./x test closingOneWindowPreservesAnotherWindowsSelectionAndServer
 ./x test 'settings|accessibility'
 ./x test-core serverInfo
@@ -372,9 +389,9 @@ limit alone is not a hard-memory or cross-client history guarantee.
 Optional shell/agent installs and the CLI wrapper must remain user-click
 operations. Skills are single-file guidance, with no guaranteed lifecycle
 hooks. Notification initialization must not ask authorization; explicit
-notification UI actions own that prompt. Updates require a manually
-configured source and user check while the app is unpublished, and open
-release pages without automatic binary installation. See
+notification UI actions own that prompt. Updates come from the signed
+appcast in the app's `Info.plist`, shown as a toast; only a build with that
+feed and key updates, never Koid or a test. See
 [Configuration](docs/configuration.md) for the implemented controls.
 
 When updating Ghostty, change `GHOSTTY_COMMIT` in

@@ -45,9 +45,15 @@ esac''')
         self.tool('xcrun', 'cat "$FIXTURE/sdk-version"')
         self.tool('xcodebuild', 'cat "$FIXTURE/sdk-version"')
         self.tool('security', 'exit 1')
-        self.tool('codesign', ':')
+        self.tool('codesign', 'printf \'%s\\n\' "$*" >> "$FIXTURE/codesign-log"')
         (self.root / 'swift-bin').mkdir()
         (self.root / 'swift-bin/Koi').touch()
+        framework = self.root / '.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework'
+        for name in ('Versions/B/Sparkle', 'Versions/B/Autoupdate', 'Versions/B/Updater.app/Contents/MacOS/Updater',
+                     'Versions/B/XPCServices/Installer.xpc/Contents/MacOS/Installer'):
+            (framework / name).parent.mkdir(parents=True, exist_ok=True)
+            (framework / name).touch()
+        (framework / 'XPCServices').symlink_to('Versions/B/XPCServices')
         (self.root / 'head').write_text(PIN)
         (self.root / 'zig-version').write_text('0.17.0')
         (self.root / 'sdk-version').write_text('27.1')
@@ -61,6 +67,10 @@ esac''')
         path = self.root / 'bin' / name
         path.write_text('#!/bin/sh\nset -eu\n' + body + '\n')
         path.chmod(0o755)
+
+    def codesign_calls(self):
+        log = self.root / 'codesign-log'
+        return [line.split() for line in log.read_text().splitlines()] if log.exists() else []
 
     def run_script(self, name, *args, **env):
         return subprocess.run([str(self.root / 'scripts' / name), *args], env={**self.env, **env},
@@ -197,6 +207,42 @@ exec ''' + shlex.quote(git) + ' "$@"')
         self.assertIn('<key>CFBundleVersion</key><string>0.1.0</string>', plist)
         self.assertIn('<key>CFBundleShortVersionString</key><string>0.1.0</string>', plist)
         self.assertFalse((self.root / 'build/Koi.app').exists())
+
+    def test_bundle_privacy_strings(self):
+        output = self.root / 'release/Test.app'
+        result = self.run_script('bundle.sh', KOI_BUNDLE_OUTPUT=str(output))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plist = (output / 'Contents/Info.plist').read_text()
+        # Every resource the entitlements unlock needs its prompt text, named
+        # for the bundle the prompt is attributed to.
+        for key in ('NSAppleEventsUsageDescription', 'NSCameraUsageDescription',
+                    'NSMicrophoneUsageDescription', 'NSContactsUsageDescription',
+                    'NSCalendarsUsageDescription', 'NSLocationUsageDescription',
+                    'NSPhotoLibraryUsageDescription'):
+            self.assertRegex(plist, r'<key>%s</key><string>A program running in Koi wants' % key)
+        signed = [c for c in self.codesign_calls() if c and c[-1] == str(output)]
+        self.assertTrue(any('--entitlements' in c for c in signed), signed)
+
+    def test_bundle_update_keys(self):
+        koi = self.root / 'release/Test.app'
+        self.assertEqual(self.run_script('bundle.sh', KOI_BUNDLE_OUTPUT=str(koi)).returncode, 0)
+        plist = (koi / 'Contents/Info.plist').read_text()
+        for key in ('SUFeedURL', 'SUPublicEDKey', 'SURequireSignedFeed', 'SUVerifyUpdateBeforeExtraction'):
+            self.assertIn(f'<key>{key}</key>', plist)
+        self.assertIn('/releases/latest/download/appcast.xml', plist)
+        # Sparkle rides in the bundle, without the XPC services only a sandboxed app uses.
+        framework = koi / 'Contents/Frameworks/Sparkle.framework'
+        self.assertTrue((framework / 'Versions/B/Updater.app/Contents/MacOS/Updater').is_file())
+        self.assertEqual(list(framework.rglob('*.xpc')), [])
+        self.assertFalse(os.path.lexists(framework / 'XPCServices'))
+        # It is signed again after that, inside out, so the app's seal holds.
+        signed = [c[-1] for c in self.codesign_calls() if c]
+        self.assertLess(signed.index(str(framework)), signed.index(str(koi)))
+
+        # The development app never touches the network for updates.
+        koid = self.root / 'Applications/Koid.app'
+        self.assertEqual(self.run_script('bundle.sh', '--dev', HOME=str(self.root)).returncode, 0)
+        self.assertNotIn('SUFeedURL', (koid / 'Contents/Info.plist').read_text())
 
     def test_bundle_rejects_non_app_output_before_replacing_it(self):
         output = self.root / 'keep'
