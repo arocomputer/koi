@@ -52,13 +52,13 @@ pub const Agent = struct {
 
     /// Caller supplies a freshly verified process identity and serializes mutations.
     /// Validate on a copy: bad reports cannot partially register or advance a run.
-    pub fn report(self: *Agent, pid: i32, name: []const u8, adapter: ?[]const u8, source: ?[]const u8, turn: ?[]const u8, status: wire.Status) !void {
+    pub fn report(self: *Agent, pid: i32, name: []const u8, adapter: ?[]const u8, source: ?[]const u8, turn: ?[]const u8, new_run: bool, status: wire.Status) !void {
         var next = self.*;
-        try next.apply(pid, name, adapter, source, turn, status);
+        try next.apply(pid, name, adapter, source, turn, new_run, status);
         self.* = next;
     }
 
-    fn apply(self: *Agent, pid: i32, name: []const u8, adapter: ?[]const u8, source: ?[]const u8, turn: ?[]const u8, status: wire.Status) !void {
+    fn apply(self: *Agent, pid: i32, name: []const u8, adapter: ?[]const u8, source: ?[]const u8, turn: ?[]const u8, new_run: bool, status: wire.Status) !void {
         var valid: Key = .{};
         try valid.set(name);
         if (adapter) |value| try valid.set(value);
@@ -93,7 +93,7 @@ pub const Agent = struct {
                 try self.turn.set(key);
                 if (same) self.run += 1;
             }
-        } else if (same and status == .working and (self.status == .done or self.status == .@"error" or self.status == .idle)) {
+        } else if (same and status == .working and (new_run or self.status == .done or self.status == .@"error" or self.status == .idle)) {
             self.run += 1;
         }
         self.last_report = @divTrunc(sys.nowMillis(), 1000);
@@ -130,17 +130,17 @@ fn randomID() [32]u8 {
 test "agent events retain fast transitions and distinguish same-name sessions and turns" {
     const t = std.testing;
     var agent: Agent = .{};
-    try agent.report(200, "custom", null, "session", "turn1", .working);
+    try agent.report(200, "custom", null, "session", "turn1", false, .working);
     const first_id = agent.id;
     const first_run = agent.run;
-    try agent.report(200, "custom", null, "session", "turn1", .done);
-    try agent.report(200, "custom", null, "session", "turn1", .done);
+    try agent.report(200, "custom", null, "session", "turn1", false, .done);
+    try agent.report(200, "custom", null, "session", "turn1", false, .done);
     try t.expectEqual(@as(u64, 2), agent.sequence);
-    try agent.report(200, "custom", null, "session", "turn2", .working);
+    try agent.report(200, "custom", null, "session", "turn2", false, .working);
     try t.expect(agent.run > first_run);
-    try t.expectError(error.StaleAgentRun, agent.report(200, "custom", null, "session", "turn1", .done));
+    try t.expectError(error.StaleAgentRun, agent.report(200, "custom", null, "session", "turn1", false, .done));
     agent.invalidate();
-    try agent.report(201, "custom", null, "session2", null, .working);
+    try agent.report(201, "custom", null, "session2", null, false, .working);
     try t.expect(!std.mem.eql(u8, &first_id, &agent.id));
     var arena = std.heap.ArenaAllocator.init(t.allocator);
     defer arena.deinit();
@@ -151,7 +151,7 @@ test "agent events retain fast transitions and distinguish same-name sessions an
 
 test "agent journal is bounded and exposes an exact replay gap" {
     var agent: Agent = .{};
-    for (0..80) |i| try agent.report(200, "anything", null, null, null, if (i % 2 == 0) .working else .done);
+    for (0..80) |i| try agent.report(200, "anything", null, null, null, false, if (i % 2 == 0) .working else .done);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const events = try agent.history(arena.allocator());
@@ -162,13 +162,25 @@ test "agent journal is bounded and exposes an exact replay gap" {
 
 test "malformed and late terminal reports cannot register or revive a completed turn" {
     var agent: Agent = .{};
-    try std.testing.expectError(error.StaleAgentSession, agent.report(200, "new", null, "s", "t", .done));
+    try std.testing.expectError(error.StaleAgentSession, agent.report(200, "new", null, "s", "t", false, .done));
     try std.testing.expect(!agent.active);
-    try agent.report(200, "new", null, "s", "t", .working);
-    try agent.report(200, "new", null, "s", "t", .done);
+    try agent.report(200, "new", null, "s", "t", false, .working);
+    try agent.report(200, "new", null, "s", "t", false, .done);
     const sequence = agent.sequence;
-    try std.testing.expectError(error.StaleAgentRun, agent.report(200, "new", null, "s", "t", .working));
-    try std.testing.expectError(error.InvalidAgentIdentity, agent.report(200, "bad\nname", null, "s", "t", .working));
+    try std.testing.expectError(error.StaleAgentRun, agent.report(200, "new", null, "s", "t", false, .working));
+    try std.testing.expectError(error.InvalidAgentIdentity, agent.report(200, "bad\nname", null, "s", "t", false, .working));
     try std.testing.expectEqual(sequence, agent.sequence);
     try std.testing.expectEqual(wire.Status.done, agent.status);
+}
+
+test "provider prompt boundaries distinguish interrupted turns without external turn IDs" {
+    var agent: Agent = .{};
+    try agent.report(200, "claude", "claude-hooks-v1", "session", null, true, .working);
+    const run = agent.run;
+    // The first turn was interrupted before a Stop/idle report arrived.
+    try agent.report(200, "claude", "claude-hooks-v1", "session", null, true, .working);
+    try std.testing.expectEqual(run + 1, agent.run);
+    const sequence = agent.sequence;
+    try agent.report(200, "claude", "claude-hooks-v1", "session", null, false, .working);
+    try std.testing.expectEqual(sequence, agent.sequence);
 }

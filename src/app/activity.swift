@@ -158,7 +158,8 @@ struct ActivityItem: Identifiable, Equatable {
                                             program: pane.program, status: pane.status,
                                             changedAt: old == pane.status ? (oldItems[id]?.changedAt ?? now) : now)
                     if pane.status != .idle { items.append(item) }
-                    for event in events.filter({ $0.status == .done || $0.status == .blocked || $0.status == .error }).suffix(1) where !viewedPanes.contains(id) {
+                    if let event = events.last(where: { $0.status != .idle }),
+                       event.status != .working, !viewedPanes.contains(id) {
                         var eventItem = item
                         eventItem.program = pane.agent?.name ?? pane.program
                         eventItem.status = event.status
@@ -174,7 +175,6 @@ struct ActivityItem: Identifiable, Equatable {
                         }
                         if enabled { notices.append((eventItem, revision)) }
                     }
-
                 }
             }
         }

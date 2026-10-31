@@ -500,6 +500,7 @@ fn reportAgent(gpa: Allocator, args: []const [:0]const u8) u8 {
         cmd.adapter = report.adapter;
         cmd.agentSession = report.session;
         cmd.agentRun = report.run;
+        cmd.agentNewRun = report.new_run;
         cmd.status = report.status;
     } else {
         if (args.len < 2 or args.len > 4) {

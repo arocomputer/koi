@@ -102,6 +102,16 @@ import UserNotifications
         #expect(recorder.sent.isEmpty, "reconnect without a retained baseline is silent")
     }
 
+    @Test func resolvedBlockedEventsDoNotNotifyFromACoalescedBatch() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
+        var feed = AgentFeed()
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.blocked); feed.report(.working)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.isEmpty && center.completions.isEmpty)
+    }
+
     @Test func focusedAndDisabledEventsNeverBecomeCatchUpAlerts() async {
         let recorder = ActivityRecorder()
         var focused = true

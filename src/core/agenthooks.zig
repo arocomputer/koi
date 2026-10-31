@@ -3,7 +3,7 @@
 const std = @import("std");
 const wire = @import("wire.zig");
 
-pub const Report = struct { name: []const u8, adapter: []const u8, session: []const u8, run: ?[]const u8, status: wire.Status };
+pub const Report = struct { name: []const u8, adapter: []const u8, session: []const u8, run: ?[]const u8, status: wire.Status, new_run: bool };
 
 pub fn statusFor(provider: []const u8, event: []const u8) ?wire.Status {
     if (std.mem.eql(u8, provider, "claude")) {
@@ -35,7 +35,7 @@ pub fn decode(provider: []const u8, event: []const u8, value: std.json.Value) !R
     // Claude has no public turn ID: the server advances a run on each new prompt
     // after idle/done/error. Subagent hooks must never complete the parent pane.
     if (value.object.get("agent_id")) |agent| if (agent == .string and agent.string.len > 0) return error.SubagentHook;
-    return .{ .name = provider, .adapter = if (std.mem.eql(u8, provider, "claude")) "claude-hooks-v1" else "codex-hooks-v1", .session = session.string, .run = run, .status = status };
+    return .{ .name = provider, .adapter = if (std.mem.eql(u8, provider, "claude")) "claude-hooks-v1" else "codex-hooks-v1", .session = session.string, .run = run, .status = status, .new_run = std.mem.eql(u8, event, "UserPromptSubmit") };
 }
 
 test "hook adapters validate provider schema and preserve session and turn identity" {

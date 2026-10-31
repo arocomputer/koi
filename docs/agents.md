@@ -53,7 +53,8 @@ unsupported payloads produce no lifecycle event and do not interrupt a turn.
 
 - `claude-hooks-v1` uses [Claude Code command hooks](https://code.claude.com/docs/en/hooks):
   SessionStart/SessionEnd, UserPromptSubmit, PostToolUse, PermissionRequest, Stop
-  and StopFailure. Claude has no public turn ID, so the server advances runs.
+  and StopFailure. Claude has no public turn ID, so each UserPromptSubmit explicitly starts a run,
+  including when a prior turn was interrupted before reporting its end.
 - `codex-hooks-v1` follows [Codex's command-input schemas](https://github.com/openai/codex/tree/main/codex-rs/hooks/schema/generated):
   SessionStart/SessionEnd, UserPromptSubmit, PostToolUse, PermissionRequest, Stop
   and Interrupt. Turn-scoped events retain Codex's turn ID. Older Codex releases

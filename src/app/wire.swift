@@ -330,6 +330,7 @@ enum Wire {
         /// Explicit foreground-program status for reportStatus; pane required.
         var status: Status?
         var agentSession: String?
+        var agentNewRun: Bool?
         var agentRun: String?
         var adapter: String?
         var cols: UInt16?

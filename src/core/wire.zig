@@ -381,6 +381,8 @@ pub const Command = struct {
     /// agentReport: explicit role declaration, with optional provider session/turn keys.
     agentSession: ?[]const u8 = null,
     agentRun: ?[]const u8 = null,
+    /// Provider prompt boundary when no public turn key exists.
+    agentNewRun: bool = false,
     adapter: ?[]const u8 = null,
     cols: ?u16 = null,
     rows: ?u16 = null,

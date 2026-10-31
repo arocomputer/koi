@@ -587,7 +587,7 @@ pub const Server = struct {
                 const name = cmd.name orelse return .{ .@"error" = "missing agent name" };
                 const pane = self.findPane(cmd.pane orelse "") orelse return .{ .@"error" = "no such pane" };
                 defer pane.unpin();
-                pane.reportAgent(name, cmd.adapter, cmd.agentSession, cmd.agentRun, status) catch |err| return .{ .@"error" = @errorName(err) };
+                pane.reportAgent(name, cmd.adapter, cmd.agentSession, cmd.agentRun, cmd.agentNewRun, status) catch |err| return .{ .@"error" = @errorName(err) };
                 return .{ .pane = cmd.pane };
             },
             .reportStatus => {

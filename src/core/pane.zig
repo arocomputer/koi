@@ -834,7 +834,7 @@ pub const Pane = struct {
     }
 
     /// Explicit role declaration, bound to a fresh foreground process, never an argv guess.
-    pub fn reportAgent(self: *Pane, name: []const u8, adapter: ?[]const u8, session: ?[]const u8, turn: ?[]const u8, status: wire.Status) !void {
+    pub fn reportAgent(self: *Pane, name: []const u8, adapter: ?[]const u8, session: ?[]const u8, turn: ?[]const u8, new_run: bool, status: wire.Status) !void {
         for (0..3) |_| {
             self.mutex.lock();
             const version = self.metadata_version;
@@ -848,7 +848,7 @@ pub const Pane = struct {
             if (version != self.metadata_version) continue;
             if (sample.pid == self.pid and std.mem.eql(u8, sample.program, self.shell) and self.shell_command.items.len == 0) return error.NoForegroundAgent;
             _ = self.updateForegroundLocked(sample);
-            try self.agent.report(sample.pid, name, adapter, session, turn, status);
+            try self.agent.report(sample.pid, name, adapter, session, turn, new_run, status);
             self.metadata_version +%= 1;
             self.refreshMetadataLocked(true);
             return;
@@ -2611,14 +2611,14 @@ test "registered agent identity survives display hints and completion survives r
     defer pane.cwd.deinit(pane.gpa);
     defer pane.program.deinit(pane.gpa);
     _ = pane.updateForegroundLocked(.{ .pid = 200, .program = "node", .cwd = "/tmp" });
-    try pane.agent.report(200, "new-agent", null, "session", null, .working);
+    try pane.agent.report(200, "new-agent", null, "session", null, false, .working);
     _ = pane.updateForegroundLocked(.{ .pid = 200, .program = "helper", .cwd = "/tmp" });
     pane.last_output = 1;
     pane.refreshMetadataLocked(false);
     try std.testing.expect(pane.agent.active);
     try std.testing.expectEqual(wire.Status.working, pane.status);
     try std.testing.expect(!pane.output_active);
-    try pane.agent.report(200, "new-agent", null, "session", null, .done);
+    try pane.agent.report(200, "new-agent", null, "session", null, false, .done);
     _ = pane.updateForegroundLocked(.{ .pid = pane.pid, .program = "zsh", .cwd = "/tmp" });
     pane.refreshMetadataLocked(true);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
