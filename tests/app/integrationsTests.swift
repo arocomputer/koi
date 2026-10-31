@@ -58,7 +58,7 @@ import Testing
         return groups.flatMap { ($0["hooks"] as? [[String: Any]]) ?? [] }
     }
 
-    @Test(arguments: AgentIntegration.allCases) func hooksInstallOnceAndRemovalRestoresTheUsersFile(agent: AgentIntegration) throws {
+    @Test(arguments: AgentIntegration.allCases) func hooksRoundTrip(agent: AgentIntegration) throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let integrations = AgentIntegrations(root: root)
@@ -93,7 +93,7 @@ import Testing
         #expect(try Data(contentsOf: url.appendingPathExtension("koi-backup")) == Data(original.utf8))
     }
 
-    @Test func hookCommandsReportOnlyFromInsideAPane() throws {
+    @Test func hookReportsOnlyInAPane() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let bin = root.appendingPathComponent("bin")
@@ -119,7 +119,7 @@ import Testing
         #expect(try run("done", environment: ["PATH": "/usr/bin:/bin", "KOI_PANE": "abc"]) == 0, "no koi on PATH must not fail the agent")
     }
 
-    @Test func hooksRefuseSettingsTheyDoNotUnderstand() throws {
+    @Test func hooksRefuseOddSettings() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let integrations = AgentIntegrations(root: root)
@@ -133,7 +133,7 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: url.appendingPathExtension("koi-backup").path))
     }
 
-    @Test func staleKoiHooksAreUpdatedWithoutDuplicates() throws {
+    @Test func staleHooksUpdateInPlace() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let integrations = AgentIntegrations(root: root)
@@ -153,7 +153,7 @@ import Testing
         }
     }
 
-    @Test func hooksKeepTheFilesPermissionsAndPutProjectHooksInTheIgnoredFile() throws {
+    @Test func hooksKeepModeAndScope() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let home = root.appendingPathComponent("home")
@@ -175,7 +175,7 @@ import Testing
         #expect((try FileManager.default.attributesOfItem(atPath: created.path)[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     }
 
-    @Test func hooksRefuseASymlinkedAgentDirectory() throws {
+    @Test func hooksRefuseSymlinks() throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let outside = root.appendingPathComponent("outside")
