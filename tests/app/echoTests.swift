@@ -348,6 +348,28 @@ import Testing
         #expect(!p.isActive)
     }
 
+    /// An inline TUI draws its own caret with the terminal cursor hidden;
+    /// typing there is not predicted.
+    @Test func hiddenCursorNeverPredicts() {
+        let t = prompt()
+        var p = echoingPrediction(in: t)
+        t.write(Array("\u{1b}[?25l".utf8))
+        p.reconcile(with: t)
+        p.typed("a", in: t)
+        #expect(p.overlay == Prediction.Overlay() && !p.isActive)
+    }
+
+    /// Full-screen programs compose their own frame; a character at the cursor
+    /// is not their echo.
+    @Test func alternateScreenNeverPredicts() {
+        let t = prompt()
+        var p = echoingPrediction(in: t)
+        t.write(Array("\u{1b}[?1049h".utf8))
+        p.reconcile(with: t)
+        p.typed("a", in: t)
+        #expect(p.overlay == Prediction.Overlay() && !p.isActive)
+    }
+
     /// Shell metadata can lag a command that disables echo; it must not
     /// reveal input or a predicted caret after Enter.
     @Test(arguments: [false, true])

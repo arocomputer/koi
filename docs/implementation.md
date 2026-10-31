@@ -336,10 +336,14 @@ the latest frame. Main-thread output deliveries are bounded to
 output yields between deliveries. The focused pane draws completed output the moment it
 arrives instead of waiting for that tick, which is up to one frame less
 between a keystroke and its echo; other panes draw on the tick. Remote panes
-predict typing locally (see `echo.swift`): the predicted cell is drawn on the
-keystroke itself, before the round trip, and reconciled with the real echo.
-Unchanged blanks require cursor evidence; pending erases cover split echoes,
-and unpredictable input or expiry clears the whole overlay and echo confidence.
+predict typing locally (see `echo.swift`), except on the alternate screen, during
+a held synchronized redraw, or at a hidden cursor. A predicted cell is drawn on
+the keystroke itself, before the round trip, over the background of the cell it
+covers and in the color of the word it continues, then reconciled with the real
+echo.
+Unchanged blanks require cursor evidence; pending erases cover split echoes, and
+unpredictable input, a foreground change, or expiry clears the whole overlay and
+echo confidence.
 Guesses stay hidden until a completed redraw demonstrates echo; program names
 never bypass that check. Each pane's display link pauses once a tick
 finds nothing to draw, and wakes on output, input, a gesture or the window
@@ -390,6 +394,15 @@ the explicit Open Local Server Log action. Copy/export shares the redacted
 report formatter. Only a validated `major.minor.patch+` version with a
 64-digit lowercase hex hash bypasses token scrubbing in the server-version
 field, and only when it contains no configured host alias.
+
+Connections also lists each attached pane's actual transport (local socket,
+encrypted UDP, or SSH relay), the last keystroke-to-output sample, and whether
+typing prediction is ready, active, or off and why. The response sample times
+the first output after a keystroke in a quiet pane, from the oldest unanswered
+key, so it is not a network RTT; panes with ongoing output take no sample, and a
+pane that never answers shows `Waiting` only briefly and then `No sample`. The
+exported report carries only these labels and numbers, never connection error
+text.
 
 ## Terminal text and activity
 

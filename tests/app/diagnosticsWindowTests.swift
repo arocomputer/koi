@@ -3,6 +3,15 @@ import Testing
 @testable import Koi
 
 extension SessionTests {
+    /// A pane that is not attached reports that, rather than inventing a
+    /// transport or a latency sample.
+    @Test @MainActor func paneDiagnosticsDistinguishUnattachedPanes() {
+        let view = TerminalView(pane: "fixture", at: .local)
+        #expect(view.transportDescription == "Not attached")
+        #expect(view.responseDescription == "Not attached")
+        #expect(view.predictionDescription == "Off (local)")
+    }
+
     /// Selecting a report scope never selects/creates a workspace or starts SSH.
     @Test @MainActor func diagnosticsReportsFollowTheInspectedMachineWithoutConnecting() async throws {
         try await withDiagnosticDirectory {
@@ -105,7 +114,8 @@ extension SessionTests {
         machines: [.init(endpoint: .local, title: "This Mac"), .init(endpoint: .ssh("fixture"), title: "Fixture Remote")],
         report: report, server: .init(serverVersion: report.server.version, serverPID: 123, protocolVersion: 6, uptimeSeconds: 65, capabilities: ["serverInfo", "configurePane"]),
         checkedAt: report.server.checkedAt, refreshError: nil, configurationIssues: [],
-        panes: [.init(id: "fixture", title: "Pane fixture", connection: "Connected", rendering: stats)],
+        panes: [.init(id: "fixture", title: "Pane fixture", connection: "Connected",
+                      transport: "Encrypted UDP", response: "2.4 ms", prediction: "Ready", rendering: stats)],
         issues: [.init(id: "fixture", date: Date(timeIntervalSince1970: 1_793_000_000), subsystem: "Fixture", message: "Sample sanitized connection failure.", count: 2)])
 }
 

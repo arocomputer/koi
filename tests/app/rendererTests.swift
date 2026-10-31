@@ -5,6 +5,56 @@ import Testing
 @testable import Koi
 
 @MainActor extension SessionTests {
+    /// Overlay quads for `text` predicted at (x, 0) after `output`, in a
+    /// renderer that records cell styles as a predicting pane's does.
+    private func predictionQuads(_ output: String, at x: UInt16, _ text: String) throws -> (Renderer, [Renderer.Quad]) {
+        let renderer = try #require(Renderer(metrics: FontMetrics(size: 13, scale: 1)))
+        renderer.recordsCellStyles = true
+        renderer.hidesCursor = true
+        let terminal = VTTerminal(cols: 20, rows: 2)
+        terminal.write(Array(output.utf8))
+        renderer.overlay = .init(cells: [.init(x: x, y: 0, text: text)], caret: (x: x + 1, y: 0))
+        #expect(renderer.prepareFrame(terminal, force: true))
+        return (renderer, renderer.quads)
+    }
+
+    private func rgb(_ r: Float, _ g: Float, _ b: Float) -> SIMD4<Float> { [r / 255, g / 255, b / 255, 1] }
+
+    /// A prediction covers the replaced cell in that cell's own background,
+    /// so typing in a colored input does not flash a default-colored box.
+    @Test func predictionCoversInTheCellBackground() throws {
+        let (renderer, quads) = try predictionQuads("\u{1b}[48;2;40;20;60mX\u{1b}[D", at: 0, "Z")
+        let m = renderer.atlas.metrics
+        let cell = SIMD2<Float>(Float(m.cellWidth), Float(m.cellHeight))
+        let cover = try #require(quads.last { $0.kind == 0 && $0.origin == .zero && $0.size == cell })
+        #expect(cover.color == rgb(40, 20, 60))
+    }
+
+    /// The predicted character continues the word to its left in that word's
+    /// color, never the dim autosuggestion it types over; after a blank it is
+    /// new input in the default color.
+    @Test func predictionTakesTheColorOfTheWordItContinues() throws {
+        let suggestion = "\u{1b}[38;2;255;180;80mg\u{1b}[38;2;90;90;90mit\u{1b}[0m\u{1b}[2D"
+        let (renderer, quads) = try predictionQuads(suggestion, at: 1, "i")
+        let pad = Float(renderer.atlas.pad), x = Float(renderer.atlas.metrics.cellWidth) - pad
+        #expect(quads.last { $0.kind == 1 && $0.origin.x == x }?.color == rgb(255, 180, 80))
+
+        let (fresh, after) = try predictionQuads("\u{1b}[38;2;255;180;80mg \u{1b}[38;2;90;90;90mx\u{1b}[0m\u{1b}[D", at: 2, "y")
+        let start = Float(2 * fresh.atlas.metrics.cellWidth) - Float(fresh.atlas.pad)
+        let defaultColor = try #require(after.last { $0.kind == 1 && $0.origin.x == start }?.color)
+        #expect(defaultColor != rgb(90, 90, 90) && defaultColor != rgb(255, 180, 80))
+    }
+
+    /// A narrow prediction over the right half of a wide glyph covers the
+    /// whole glyph, as the terminal will when it writes the character.
+    @Test func predictionOverAWideGlyphCoversBothHalves() throws {
+        let (renderer, quads) = try predictionQuads("世\u{1b}[D", at: 1, "a")
+        let m = renderer.atlas.metrics
+        let cell = SIMD2<Float>(Float(m.cellWidth), Float(m.cellHeight))
+        let covers = quads.filter { $0.kind == 0 && $0.size == cell && $0.origin.y == 0 }.map(\.origin.x)
+        #expect(covers.contains(0) && covers.contains(cell.x))
+    }
+
     /// Cursor opacity blends a complete block/inverse layer, preserving text at zero.
     @Test func cursorOpacityAlsoControlsItsInverseGlyph() throws {
         let saved = Config.current

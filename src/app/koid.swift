@@ -6,8 +6,10 @@ import AppKit
 @MainActor enum Dev {
     private static weak var previewWindow: NSWindow?
     /// Shows the development window without activating it, optionally at a
-    /// fixed size, and listens for screenshots requested by `koid shot`.
-    static func configure(_ window: NSWindow, palette: @escaping @MainActor ([String: String]) -> Void) {
+    /// fixed size, and listens for screenshot and synthetic-prediction
+    /// requests from `koid`.
+    static func configure(_ window: NSWindow, palette: @escaping @MainActor ([String: String]) -> Void,
+                          predict: @escaping @MainActor (String?) -> Void) {
         previewWindow = window
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak window] _ in
             MainActor.assumeIsolated { previewWindow = window }
@@ -27,6 +29,15 @@ import AppKit
             MainActor.assumeIsolated {
                 guard let window, previewWindow === window else { return }
                 palette(request)
+            }
+        }
+        DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.fschrhunt.koid.predict"), object: nil, queue: .main
+        ) { [weak window] notification in
+            guard let text = notification.object as? String else { return }
+            MainActor.assumeIsolated {
+                guard let window, previewWindow === window else { return }
+                predict(text.isEmpty ? nil : text)
             }
         }
         DistributedNotificationCenter.default().addObserver(
