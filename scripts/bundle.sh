@@ -106,7 +106,7 @@ xcrun actool "$root/src/app/resources/$icon.icon" --compile "$app/Contents/Resou
 updates=
 if [ "$dev" = 0 ]; then
   updates="  <key>SUFeedURL</key><string>https://github.com/arocomputer/koi/releases/latest/download/appcast.xml</string>
-  <key>SUPublicEDKey</key><string>XJ1dLvWkSpRctYL6dpJUhZcIE7cBrPgDq8WOcfQosIs=</string>
+  <key>SUPublicEDKey</key><string>VKn7SeCFRaV30xpxKVdiKxvS7hvrE6WeL3AO1h7d0ro=</string>
   <key>SURequireSignedFeed</key><true/>
   <key>SUVerifyUpdateBeforeExtraction</key><true/>
   <key>SUScheduledCheckInterval</key><integer>86400</integer>"
