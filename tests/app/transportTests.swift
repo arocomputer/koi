@@ -114,7 +114,7 @@ import Testing
 
     /// The queue is bounded in writes as well as bytes: a peer that stops reading
     /// while thousands of tiny writes pile up must not make closures pile up too.
-    @Test func manyTinyWritesBehindAStalledPeerCloseTheSocket() {
+    @Test func tinyWritesOverflowTheQueue() {
         let (a, b) = pair()
         defer { Darwin.close(b) }
         let socket = Socket(fd: a, maxQueued: 1 << 30)

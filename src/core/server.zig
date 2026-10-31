@@ -1564,7 +1564,7 @@ test "log rolls aside at the limit" {
     try testing.expectEqualStrings("0123456789abcdefXYZ", read[0..n]);
 }
 
-test "only the server's own user is admitted, and no one once it is full" {
+test "admit checks the user and the limit" {
     var fds: [2]c_int = undefined;
     try testing.expectEqual(0, c.socketpair(c.AF_UNIX, c.SOCK_STREAM, 0, &fds));
     defer _ = c.close(fds[0]);
@@ -1579,7 +1579,7 @@ test "only the server's own user is admitted, and no one once it is full" {
     try testing.expect(server.admit(fds[0], me));
 }
 
-test "a server exits only when it has had no panes and no connections for a while" {
+test "idle server exits, busy one stays" {
     var server = testServer(testing.allocator);
     defer server.panes.deinit(testing.allocator);
     server.idle_since = sys.elapsedMillis() - 2 * Server.idle_exit_ms;

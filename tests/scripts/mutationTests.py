@@ -11,7 +11,7 @@ spec.loader.exec_module(mutate)
 
 
 class MutationListTests(unittest.TestCase):
-    def test_every_mutation_still_matches_one_place_in_the_source(self):
+    def test_mutations_match_source(self):
         # A refactor that renames the line would otherwise turn a mutation into
         # a silent no-op that always "survives" or never applies.
         for name, relative, old, new in mutate.MUTATIONS + mutate.APP_MUTATIONS:
