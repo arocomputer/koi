@@ -35,9 +35,14 @@ struct AgentIntegrations {
     }
 
     let root: URL
+    /// The user's home; a root equal to it holds personal settings, any other a project's.
+    let home: URL
 
     /// Use a home URL for personal skills or a repository URL for project skills.
-    init(root: URL) { self.root = root.standardizedFileURL }
+    init(root: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.root = root.standardizedFileURL
+        self.home = home.standardizedFileURL
+    }
 
     func fileURL(for agent: AgentIntegration) -> URL {
         root.appendingPathComponent(agent.relativePath)
@@ -45,7 +50,7 @@ struct AgentIntegrations {
 
     /// Read-only ownership check; byte-for-byte equality is required before removing a file.
     func installation(for agent: AgentIntegration) throws -> Installation {
-        try validatePath(for: agent)
+        try validatePath(of: fileURL(for: agent))
         let url = fileURL(for: agent)
         guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey])
@@ -62,7 +67,7 @@ struct AgentIntegrations {
         }
         try FileManager.default.createDirectory(at: fileURL(for: agent).deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
-        try validatePath(for: agent)
+        try validatePath(of: fileURL(for: agent))
         try Self.guidance.write(to: fileURL(for: agent), options: .withoutOverwriting)
     }
 
@@ -77,17 +82,17 @@ struct AgentIntegrations {
 
     /// Reject symlinks from the explicitly chosen root through the leaf, including
     /// dangling links. System ancestors such as macOS /var are outside that boundary.
-    private func validatePath(for agent: AgentIntegration) throws {
+    func validatePath(of file: URL) throws {
         guard root.isFileURL else { throw Failure.unsafePath }
-        try InstallationFiles.validateParents(of: fileURL(for: agent), home: root)
+        try InstallationFiles.validateParents(of: file, home: root)
         let fm = FileManager.default
-        var cursor = fileURL(for: agent)
+        var cursor = file
         while true {
             do {
                 let attributes = try fm.attributesOfItem(atPath: cursor.path)
                 let type = attributes[.type] as? FileAttributeType
                 guard type != .typeSymbolicLink,
-                      cursor == fileURL(for: agent) || type == .typeDirectory else { throw Failure.unsafePath }
+                      cursor == file || type == .typeDirectory else { throw Failure.unsafePath }
             } catch CocoaError.fileReadNoSuchFile { }
             if cursor.path == root.path { break }
             guard cursor.path != "/" else { throw Failure.unsafePath }
@@ -149,7 +154,7 @@ struct IntegrationSettingsView: View {
                 .font(.callout).foregroundStyle(.secondary)
             Divider()
             Text("Agent Guidance").font(.headline)
-            Text("Skills teach Koi commands and status reporting. They do not install automatic agent hooks.")
+            Text("Skills teach an agent Koi's commands and status reporting. They install no hooks; hooks are below.")
                 .font(.callout).foregroundStyle(.secondary)
             HStack {
                 Text(root.path).font(.caption).lineLimit(2).textSelection(.enabled)
@@ -171,6 +176,27 @@ struct IntegrationSettingsView: View {
                     let installed = (try? integrations.installation(for: agent)) == .installed
                     Button(installed ? "Remove" : "Install") {
                         perform { if installed { try integrations.uninstallFromUserAction(agent) } else { try integrations.installFromUserAction(agent) } }
+                    }
+                }
+            }
+            Divider()
+            Text("Agent Status Hooks").font(.headline)
+            Text("Hooks make Claude Code and Codex report working, blocked, done and idle to the pane they run in, with no cooperation from the agent. Each adds a few entries to the agent's own settings file, keeps a .koi-backup of it, and Remove takes out only Koi's entries.")
+                .font(.callout).foregroundStyle(.secondary)
+            ForEach(AgentIntegration.allCases) { agent in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(agent.title)
+                        Text(integrations.hooksURL(for: agent).path).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(2).textSelection(.enabled)
+                    }
+                    Spacer()
+                    let state = (try? integrations.hooksState(for: agent)) ?? .absent
+                    Button(state == .installed ? "Remove" : state == .outdated ? "Update" : "Install") {
+                        perform {
+                            if state == .installed { try integrations.uninstallHooksFromUserAction(agent) }
+                            else { try integrations.installHooksFromUserAction(agent) }
+                        }
                     }
                 }
             }
