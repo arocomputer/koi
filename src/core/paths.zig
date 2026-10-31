@@ -104,7 +104,7 @@ pub const Paths = struct {
     }
 };
 
-test "the runtime directory is the same whatever TMPDIR and XDG_RUNTIME_DIR say" {
+test "runtime directory ignores TMPDIR" {
     const Env = struct {
         fn bare(_: [*:0]const u8) ?[]const u8 {
             return null;
