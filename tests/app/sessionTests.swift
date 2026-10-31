@@ -431,7 +431,7 @@ import Testing
         try theirs.close()
         defer { relay.terminate() }
 
-        let control = try #require(TestControlConnection(socket: Socket(fd: fds[0])))
+        let control = try #require(TestControl(socket: Socket(fd: fds[0])))
         let made = control.run(.init(op: .newTab))
         #expect(made.tab != nil)
         #expect(control.waitFor { $0.tabs.map(\.id) == [made.tab!] })
