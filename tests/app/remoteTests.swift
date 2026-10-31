@@ -83,7 +83,7 @@ import Testing
     /// five hundred blocked in `cat` until the deadline, so this runs a few hundred.
     /// The workers are dispatch threads: they block, and blocking tasks would take
     /// every thread the other tests need to resume.
-    @Test func concurrentCommandsAlwaysSeeTheEndOfTheirInput() {
+    @Test func concurrentCommandsSeeEOF() {
         let input = Data(repeating: 107, count: 128 * 1024)
         let stalled = Mutex(0)
         DispatchQueue.concurrentPerform(iterations: 12) { _ in
