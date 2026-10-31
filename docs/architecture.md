@@ -511,6 +511,14 @@ state and runtime files together in one directory; it does not relocate
 UserDefaults. Long socket paths move the runtime directory to
 `/tmp/koi-<uid>`.
 
+macOS attributes a permission prompt raised by a program in a pane to Koi,
+not to the program. Koi therefore declares the camera, microphone, contacts,
+calendars, location, photos and Apple Events entitlements in
+`src/app/resources/Koi.entitlements`, which the hardened runtime of a
+notarized release requires, and a matching usage description for each in
+`Info.plist`, which macOS requires before it will show the prompt. Only the app
+executable carries the entitlements; the bundled server does not.
+
 The socket is what authorizes a client to read and drive panes, so its
 directory is the security boundary. The app and server create the state and
 runtime directories (and the SSH control directory) private to the user, and

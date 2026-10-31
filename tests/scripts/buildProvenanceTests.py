@@ -45,7 +45,7 @@ esac''')
         self.tool('xcrun', 'cat "$FIXTURE/sdk-version"')
         self.tool('xcodebuild', 'cat "$FIXTURE/sdk-version"')
         self.tool('security', 'exit 1')
-        self.tool('codesign', ':')
+        self.tool('codesign', 'printf \'%s\\n\' "$*" >> "$FIXTURE/codesign-log"')
         (self.root / 'swift-bin').mkdir()
         (self.root / 'swift-bin/Koi').touch()
         (self.root / 'head').write_text(PIN)
@@ -61,6 +61,10 @@ esac''')
         path = self.root / 'bin' / name
         path.write_text('#!/bin/sh\nset -eu\n' + body + '\n')
         path.chmod(0o755)
+
+    def codesign_calls(self):
+        log = self.root / 'codesign-log'
+        return [line.split() for line in log.read_text().splitlines()] if log.exists() else []
 
     def run_script(self, name, *args, **env):
         return subprocess.run([str(self.root / 'scripts' / name), *args], env={**self.env, **env},
@@ -197,6 +201,21 @@ exec ''' + shlex.quote(git) + ' "$@"')
         self.assertIn('<key>CFBundleVersion</key><string>0.1.0</string>', plist)
         self.assertIn('<key>CFBundleShortVersionString</key><string>0.1.0</string>', plist)
         self.assertFalse((self.root / 'build/Koi.app').exists())
+
+    def test_bundle_privacy_strings(self):
+        output = self.root / 'release/Test.app'
+        result = self.run_script('bundle.sh', KOI_BUNDLE_OUTPUT=str(output))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plist = (output / 'Contents/Info.plist').read_text()
+        # Every resource the entitlements unlock needs its prompt text, named
+        # for the bundle the prompt is attributed to.
+        for key in ('NSAppleEventsUsageDescription', 'NSCameraUsageDescription',
+                    'NSMicrophoneUsageDescription', 'NSContactsUsageDescription',
+                    'NSCalendarsUsageDescription', 'NSLocationUsageDescription',
+                    'NSPhotoLibraryUsageDescription'):
+            self.assertRegex(plist, r'<key>%s</key><string>A program running in Koi wants' % key)
+        signed = [c for c in self.codesign_calls() if c and c[-1] == str(output)]
+        self.assertTrue(any('--entitlements' in c for c in signed), signed)
 
     def test_bundle_rejects_non_app_output_before_replacing_it(self):
         output = self.root / 'keep'

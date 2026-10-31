@@ -112,12 +112,30 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>CFBundleIconFile</key><string>$icon</string>
   <key>CFBundleIconName</key><string>$icon</string>
+  <!-- Programs run in a pane ask macOS for these on their own; the prompt is
+       attributed to this app, and without a description the request is
+       refused. Keep in step with src/app/resources/Koi.entitlements. -->
+  <key>NSAppleEventsUsageDescription</key><string>A program running in $name wants to control another app.</string>
+  <key>NSCameraUsageDescription</key><string>A program running in $name wants to use the camera.</string>
+  <key>NSMicrophoneUsageDescription</key><string>A program running in $name wants to use the microphone.</string>
+  <key>NSContactsUsageDescription</key><string>A program running in $name wants to access your contacts.</string>
+  <key>NSCalendarsUsageDescription</key><string>A program running in $name wants to access your calendars.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>A program running in $name wants to access your calendars.</string>
+  <key>NSRemindersFullAccessUsageDescription</key><string>A program running in $name wants to access your reminders.</string>
+  <key>NSLocationUsageDescription</key><string>A program running in $name wants to know your location.</string>
+  <key>NSLocationWhenInUseUsageDescription</key><string>A program running in $name wants to know your location.</string>
+  <key>NSPhotoLibraryUsageDescription</key><string>A program running in $name wants to access your photos.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>A program running in $name wants to access your Desktop folder.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>A program running in $name wants to access your Documents folder.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>A program running in $name wants to access your Downloads folder.</string>
+  <key>NSRemovableVolumesUsageDescription</key><string>A program running in $name wants to access files on a removable volume.</string>
+  <key>NSNetworkVolumesUsageDescription</key><string>A program running in $name wants to access files on a network volume.</string>
 </dict>
 </plist>
 EOF
 identity=-
 security find-identity -v -p codesigning 2>/dev/null | grep -q '"Koi Dev"' && identity="Koi Dev"
-codesign --force --sign "$identity" "$app" >/dev/null
+codesign --force --sign "$identity" --entitlements "$root/src/app/resources/Koi.entitlements" "$app" >/dev/null
 echo "built $app"
 
 # Promote the freshly built bundle to the daily driver. The build above ran
