@@ -200,8 +200,16 @@ enum Remote {
         return nil
     }
 
+    /// How often a keepalive crosses each SSH connection. Mirrors
+    /// `keepalive_interval_ms` in src/core/remote.zig, whose relay drops a
+    /// connection that goes quiet for longer than three of these once it has
+    /// seen one. Without that, a laptop that sleeps or loses its network leaves
+    /// a relay and a server connection behind on the other machine for good.
+    private static let keepaliveInterval: TimeInterval = 20
+
     /// An SSH channel running `koi --stdio` on `host`, which relays to that
-    /// machine's server.
+    /// machine's server. The remote copy is the one `prepare` installed from
+    /// this app, so it understands the keepalive frames sent over the channel.
     private static func relay(_ host: String) -> Socket? {
         guard let options = try? sshOptions else { return nil }
         var fds: [Int32] = [0, 0]
@@ -219,7 +227,14 @@ enum Remote {
         }
         try? theirs.close()
         let socket = Socket(fd: fds[0])
-        socket.onClose = { [p] in if p.isRunning { p.terminate() } }
+        let beat = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        beat.schedule(deadline: .now() + keepaliveInterval, repeating: keepaliveInterval)
+        beat.setEventHandler { [weak socket] in socket?.send(.keepalive) }
+        beat.resume()
+        socket.onClose = { [p] in
+            beat.cancel()
+            if p.isRunning { p.terminate() }
+        }
         return socket
     }
 
@@ -280,7 +295,7 @@ enum Remote {
         var sockets: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &sockets) == 0 else { throw POSIXError(.EIO) }
         let childInput = FileHandle(fileDescriptor: sockets[1], closeOnDealloc: true)
-        defer { try? childInput.close(); Darwin.close(sockets[0]) }
+        defer { try? childInput.close(); if sockets[0] >= 0 { Darwin.close(sockets[0]) } }
         defer { try? out.fileHandleForReading.close(); try? err.fileHandleForReading.close() }
         var noSignal: Int32 = 1
         guard setsockopt(sockets[0], SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
@@ -306,6 +321,18 @@ enum Remote {
         var sent = 0
         let input = input ?? Data()
         var inputClosed = false
+        // Ends the child's input. Shutting down the write side is not enough: on
+        // macOS a child blocked reading the other end of a socketpair was seen,
+        // about once in 500 commands run at the same time, never to wake for it
+        // and to wait for an end of file that had already been sent. Closing our
+        // end as well always did, so a command that reads its input to the end
+        // (the upload's `cat`) cannot hang until the deadline.
+        func closeInput() {
+            shutdown(sockets[0], SHUT_WR)
+            Darwin.close(sockets[0])
+            sockets[0] = -1
+            inputClosed = true
+        }
         var buffer = [UInt8](repeating: 0, count: 16 * 1024)
         while true {
             if Task<Never, Never>.isCancelled { throw CancellationError() }
@@ -329,13 +356,9 @@ enum Remote {
                         Darwin.write(sockets[0], $0.baseAddress! + sent, min(16 * 1024, input.count - sent))
                     }
                     if count > 0 { sent += count }
-                    else if count < 0 && errno != EAGAIN && errno != EINTR {
-                        shutdown(sockets[0], SHUT_WR)
-                        inputClosed = true
-                    }
+                    else if count < 0 && errno != EAGAIN && errno != EINTR { closeInput() }
                 } else {
-                    shutdown(sockets[0], SHUT_WR)
-                    inputClosed = true
+                    closeInput()
                 }
             }
             if ended.allSatisfy({ $0 }) && !process.isRunning { break }

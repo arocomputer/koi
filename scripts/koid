@@ -164,11 +164,12 @@ with os.fdopen(fd, 'r+') as guard:
     # not a claim that all non-GPU suites or integration fixtures are covered.
     suites = ('ConfigTests|KeyboardTests|WireTests|SocketTests|ClientTests|RemoteTests|PredictionTests|'
               'ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|'
-              'IntegrationsTests|UpdatesTests|DiagnosticsTests|DiagnosticIssuesTests|'
+              'IntegrationsTests|UpdaterTests|DiagnosticsTests|DiagnosticIssuesTests|'
               'TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests|'
               'paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
               'stdioRelayCarriesTheProtocol|offerFromTheServerOpensALinkForItsSecretOnly|'
               'streamKeepsItsLinkAlive|'
+              'PaneNegotiationTests|'
               'impairedUDPDeliversOrderedProcessEcho|encryptedSessionSurvivesRebindAndReconnect|'
               'compatibilityPrivatePasteFollowsRestoredModes|compatibilityColorsAndUnicodeCellsSurviveSnapshot|'
               'compatibilityResizeAndSnapshotRestoreTheShell')

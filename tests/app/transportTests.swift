@@ -112,6 +112,19 @@ import Testing
         #expect(closed.wait(timeout: .now() + 2) == .success)
     }
 
+    /// The queue is bounded in writes as well as bytes: a peer that stops reading
+    /// while thousands of tiny writes pile up must not make closures pile up too.
+    @Test func tinyWritesOverflowTheQueue() {
+        let (a, b) = pair()
+        defer { Darwin.close(b) }
+        let socket = Socket(fd: a, maxQueued: 1 << 30)
+        let closed = DispatchSemaphore(value: 0)
+        socket.onClose = { closed.signal() }
+        socket.send([UInt8](repeating: 1, count: 256 * 1024)) // jams the small kernel buffer
+        for _ in 0..<5000 { socket.send([0]) }
+        #expect(closed.wait(timeout: .now() + 5) == .success)
+    }
+
     @Test func sendsArriveInOrder() {
         let (a, b) = pair()
         defer { Darwin.close(b) }

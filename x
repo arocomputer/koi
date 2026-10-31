@@ -14,6 +14,7 @@ usage: ./x [command]
   test [FILTER] Full correctness suite or focused Swift tests (Mac)
   test-core [FILTER] Isolated core tests; optional Zig test-name filter
   bench        Isolated Swift benchmarks (Mac with Metal)
+  mutate [--app] [NAME] Plant known bugs in a copy of the core (or the app); tests must catch each
   test-app     Hosted Swift subset with isolated fixtures (Mac)
   bundle       Release bundle and signature verification; never installs
   help         Show this help
@@ -32,6 +33,7 @@ case "$task" in
     fi
     if [ "$task" = test ]; then exec scripts/koid test; fi
     exec scripts/koid test --core ;;
+  mutate) exec python3 scripts/mutate.py "$@" ;;
 esac
 [ "$#" -eq 0 ] || { usage >&2; exit 2; }
 case "$task" in
@@ -43,6 +45,7 @@ case "$task" in
     python3 tests/scripts/dependencyUpdatesTests.py
     python3 tests/scripts/actionPinsTests.py
     python3 tests/scripts/releaseTests.py
+    python3 tests/scripts/mutationTests.py
     ;;
   programs)
     python3 scripts/check-programs.py

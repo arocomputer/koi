@@ -236,12 +236,28 @@ Publication remains a separate maintainer action; the workflow never installs
 into Applications or launches the app. Development bundles continue to use the
 ordinary `scripts/bundle.sh` signing behavior.
 
+The draft also carries `appcast.xml`, which installed apps read to find the
+release (`SUFeedURL` points at `releases/latest/download/appcast.xml`, so
+publishing the draft is what offers the update). `release.sh` signs the archive
+with the update key using Sparkle's `sign_update`, writes the appcast with the
+archive's signature and length, and signs the appcast too. The key is the
+release environment's `SPARKLE_ED_PRIVATE_KEY` secret: the base64 of a 32-byte
+Ed25519 seed, with its public half as `SUPublicEDKey` in `scripts/bundle.sh`.
+A release run without the secret stops before signing anything. Sparkle's tools
+come from its pinned 2.10.1 release, checked against a SHA-256 in `release.sh`.
+Changing the key strands installed apps, which would refuse every later release,
+so treat it as permanent. To exercise the whole path without a release, launch
+the development app with `KOI_UPDATE_AUTOACCEPT=1` against an appcast of your
+own (a copy of Koid whose `Info.plist` carries a local `SUFeedURL`, a key you
+made, and `NSAllowsLocalNetworking`): it checks at launch, takes the update and
+restarts.
+
 ### Dependency inventory
 
 | Boundary | Count | Dependencies |
 | --- | --- | --- |
-| Direct external product code | 1 | libghostty-vt, pinned in `build-ghostty-vt.sh` |
-| Remote Swift packages | 0 | GhosttyVt is locally built; CKoi/libkoi is Koi's own code |
+| Direct external product code | 2 | libghostty-vt, pinned in `build-ghostty-vt.sh`; Lua 5.4.8, pinned by hash in `build.zig.zon` |
+| Remote Swift packages | 1 | Sparkle 2.10.1, pinned in `Package.swift`; GhosttyVt is locally built and CKoi/libkoi is Koi's own code |
 | External libraries used through the pinned VT build | 4 | uucode, Wuffs, SIMDUTF, Highway |
 | GitHub Action repositories | 5 | actions/checkout, mlugg/setup-zig, actions/cache (restore/save), actions/upload-artifact, actions/download-artifact |
 

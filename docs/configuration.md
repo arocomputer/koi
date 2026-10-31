@@ -198,11 +198,23 @@ Advanced offers optional agent guidance. Only clicking Install writes files:
 - Codex installs `.agents/skills/koi-terminal/SKILL.md`; Claude Code installs
   `.claude/skills/koi-terminal/SKILL.md`, under Home or the chosen project.
   These are single-file guidance skills for stock CLI use and explicit
-  status reporting. They install no agent lifecycle hooks and do not
-  guarantee automatic blocked/done/error reports.
+  status reporting. They install no hooks and cannot make an agent report.
+- **Agent Status Hooks** make Claude Code and Codex report for themselves.
+  Install adds a few entries to the agent's own settings file: Claude Code's
+  `~/.claude/settings.json` (`.claude/settings.local.json` for a chosen
+  project, which Git ignores) and Codex's `.codex/hooks.json`. Each runs
+  `koi status` on a lifecycle event: `working` when a prompt is submitted or a
+  tool finishes, `blocked` on a permission request, `done` when the agent
+  stops, `error` when Claude Code's turn fails, and `idle` when a session ends
+  or Codex is interrupted. Outside a Koi pane they do nothing and always exit 0.
 
 Installers preserve foreign or edited files; removal deletes only unchanged
-Koi guidance.
+Koi guidance. Hooks are recognized by a `# koi-status` mark at the end of
+their command: Install replaces older Koi entries instead of adding more,
+Remove takes out only those, and every other key and hook in the file stays.
+The first change keeps a `.koi-backup` copy. A settings file that is not valid
+JSON, or whose hooks Koi does not recognize, is left untouched with an error.
+Settings files are rewritten as indented JSON with sorted keys.
 
 ## Server, diagnostics and updates
 
@@ -247,15 +259,28 @@ with its 64-digit lowercase build hash is preserved only in the server-version
 field, unless it contains a configured host alias. Advanced also offers log,
 copy/export and [CLI wrapper](cli.md) actions.
 
-Koi is not published yet and has no default update source. In Advanced or
-**Check for Updates…**, save an HTTPS GitHub releases page or release-feed
-URL, then click **Check Now**. The URL is stored in the app's preferences
-(`releaseFeedURL`), not the config file. GitHub release JSON, JSON
-`{"version":"…","url":"https://…"}` entries, and Atom entries with GitHub
-release-tag links are supported. Checks select published stable versions;
-drafts and prereleases are ignored. Saving a source does not fetch it.
-**Open Release** opens the release page. There is no automatic binary
-download or installation.
+Koi updates itself with [Sparkle](https://sparkle-project.org). About once a day,
+and when you choose **Check for Updates…**, it reads the appcast at
+`github.com/arocomputer/koi/releases/latest/download/appcast.xml`. When a newer
+release exists, a toast in the corner of the window in front says so, with
+**Later** and **Update**. Update downloads the archive in the background, checks
+it, and the toast then offers **Restart**; choosing Later instead installs it
+the next time Koi quits. Restarting is safe: shells live in the server, and the
+next launch shows them again. Cancel stops a check or a download.
+
+- Koi reads only an appcast signed with its update key, and installs only an
+  archive signed with that same key, checked before the archive is unpacked.
+  An altered or foreign archive is refused and the installed app is left alone.
+- The request goes to GitHub and carries the app's name and version, as any
+  download does. Koi sends no profile of this Mac, and the check never sends
+  terminal contents, hostnames or settings.
+- A check that finds nothing, or fails, says nothing unless you asked for it;
+  asked for, it says "Koi is up to date" or why it could not check.
+- Settings → Advanced has the daily check's switch, **Check Now** and the
+  version. The switch is Sparkle's own setting in the app's preferences, not the
+  config file.
+- A build with no feed and key in its `Info.plist` does not update: Koid, and
+  the test app. Its menu item says so.
 
 The parser and controls are in [`config.swift`](../src/app/config.swift)
 and [`settings.swift`](../src/app/settings.swift); action IDs are defined

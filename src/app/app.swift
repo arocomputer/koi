@@ -32,7 +32,8 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
     private var accessibilityObserver: NSObjectProtocol?
     let serverInspector = ServerInspector()
     private let activityCenter = ActivityCenter()
-    private let updateChecker = UpdateChecker()
+    /// Created only where used: the application owner's.
+    private lazy var appUpdater = AppUpdater()
     private var projectStore: ProjectStore?
     private var probingServers: Set<Endpoint> = []
     private var configuredPanes: [Endpoint: [String: Wire.Appearance]] = [:]
@@ -102,6 +103,7 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
         UNUserNotificationCenter.current().delegate = self
         DispatchQueue.global(qos: .utility).async { LocalServer.readBundledVersion() }
         launchWindow()
+        appUpdater.start()
         accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated { self?.applyConfig() } }
@@ -387,7 +389,7 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
                 advancedContent: { [weak self] in
                     guard let self else { return AnyView(EmptyView()) }
                     return AnyView(VStack(alignment: .leading, spacing: 24) {
-                        UpdateSettingsView(checker: (applicationOwner ?? self).updateChecker)
+                        UpdateSettingsView(updater: (applicationOwner ?? self).appUpdater)
                         IntegrationSettingsView()
                     })
                 },
@@ -667,7 +669,7 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
     }
 
     @objc func checkUpdates(_ sender: Any?) {
-        presentSupport(UpdateSettingsView(checker: (applicationOwner ?? self).updateChecker).frame(width: 380).padding(14))
+        (applicationOwner ?? self).appUpdater.checkNow()
     }
 
     private var machineSettings: some View {
