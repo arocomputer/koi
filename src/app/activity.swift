@@ -36,8 +36,8 @@ struct ActivityItem: Identifiable, Equatable {
                 let content = UNMutableNotificationContent()
                 switch item.status {
                 case .blocked: content.title = "Koi: input needed"
-                case .done: content.title = "Koi: task finished"
-                case .error: content.title = "Koi: task failed"
+                case .done: content.title = "Koi: agent finished"
+                case .error: content.title = "Koi: agent failed"
                 default: return
                 }
                 content.body = item.title.isEmpty ? item.program : item.title
@@ -57,7 +57,11 @@ struct ActivityItem: Identifiable, Equatable {
     private(set) var completions: [ActivityItem.ID: ActivityItem] = [:]
     @ObservationIgnored private var previousPrograms: [ActivityItem.ID: String] = [:]
 
-    func acknowledge(_ id: ActivityItem.ID) { completions[id] = nil }
+    func acknowledge(_ id: ActivityItem.ID) {
+        completions[id] = nil
+        // Reading a pane also cancels any system alert still waiting for authorization.
+        revisions[id] = UUID()
+    }
 
     private(set) var authorization: UNAuthorizationStatus = .notDetermined
     private(set) var notificationError: String?

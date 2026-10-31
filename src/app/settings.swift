@@ -105,7 +105,7 @@ struct SettingsItem: Identifiable {
         .init(id: "scrollback-mb", tab: .terminal, group: "Input & sessions", title: "Scrollback limit", detail: "History budget per pane in MiB, up to 32 for reliable reattachment. Applies with a compatible server.", control: .number(1...32, step: 1)),
         .init(id: "notify-blocked", tab: .activity, group: "Notifications", title: "Waiting for input", detail: "Notify when an agent is blocked and needs attention.", control: .toggle),
         .init(id: "notify-done", tab: .activity, group: "Notifications", title: "Agent completed", detail: "Send system notifications when an agent finishes. In-app toasts and unread tab dots are always available.", control: .toggle),
-        .init(id: "notify-error", tab: .activity, group: "Notifications", title: "Task failed", detail: "Notify when an agent reports an error.", control: .toggle),
+        .init(id: "notify-error", tab: .activity, group: "Notifications", title: "Agent failed", detail: "Notify when an agent reports an error.", control: .toggle),
         .init(id: "quiet-when-focused", tab: .activity, group: "Notifications", title: "Quiet when focused", detail: "Suppress notifications while Koi has focus.", control: .toggle),
     ]
 }

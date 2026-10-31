@@ -132,6 +132,21 @@ import UserNotifications
         #expect(center.completions.isEmpty)
     }
 
+    @Test func visitingPaneCancelsAnAlertWaitingForAuthorization() async {
+        let recorder = ActivityRecorder()
+        var center: ActivityCenter?
+        var delivery = recorder.delivery
+        delivery.authorization = {
+            center?.acknowledge(.init(endpoint: .local, pane: "pane"))
+            return .authorized
+        }
+        let activity = ActivityCenter(delivery: delivery, isAppFocused: { false })
+        center = activity
+        await activity.consume(snapshot: [.local: state(.working)], config: enabled)
+        await activity.consume(snapshot: [.local: state(.done)], config: enabled)
+        #expect(recorder.sent.isEmpty && activity.completions.isEmpty)
+    }
+
     @Test func initialDoneAndProgramChangesAreSilent() async {
         let recorder = ActivityRecorder()
         let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
