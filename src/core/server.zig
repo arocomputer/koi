@@ -298,7 +298,7 @@ pub const Server = struct {
 
     fn serveStream(entry: *LinkEntry, stream: *link_mod.Stream) void {
         const self = entry.server;
-        self.changeConnections(1);
+        // onStream reserves the connection before starting this thread.
         self.serve(stream.transport());
         self.changeConnections(-1);
         // `serve` has unregistered the stream everywhere; now no one else can use it.
@@ -510,13 +510,17 @@ pub const Server = struct {
         const entry: *LinkEntry = @ptrCast(@alignCast(ctx orelse return));
         const server = entry.server;
         server.mutex.lock();
-        const serving = !entry.closing;
-        if (serving) _ = entry.readers.fetchAdd(1, .acq_rel);
+        const serving = !entry.closing and server.connections < max_connections;
+        if (serving) {
+            server.connections += 1;
+            _ = entry.readers.fetchAdd(1, .acq_rel);
+        }
         server.mutex.unlock();
         // A stream we will not serve is still ours to give back.
         if (!serving) return refuse(stream);
         const t = std.Thread.spawn(.{}, serveStream, .{ entry, stream }) catch {
             refuse(stream);
+            server.changeConnections(-1);
             _ = entry.readers.fetchSub(1, .release);
             return;
         };
