@@ -169,6 +169,7 @@ with os.fdopen(fd, 'r+') as guard:
               'paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
               'stdioRelayCarriesTheProtocol|offerFromTheServerOpensALinkForItsSecretOnly|'
               'streamKeepsItsLinkAlive|'
+              'PaneNegotiationTests|'
               'impairedUDPDeliversOrderedProcessEcho|encryptedSessionSurvivesRebindAndReconnect|'
               'compatibilityPrivatePasteFollowsRestoredModes|compatibilityColorsAndUnicodeCellsSurviveSnapshot|'
               'compatibilityResizeAndSnapshotRestoreTheShell')
