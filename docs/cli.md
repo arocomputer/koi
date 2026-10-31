@@ -128,6 +128,7 @@ when several IDs share a suffix.
 | `send`, `capture`, `close` | Exact pane ID, or tab target selecting its first pane | `capture`/`close` use `$KOI_TAB`; `send` requires a target |
 | `split`, `clear`, `reset` | Exact pane ID, or tab target selecting its first pane | `$KOI_PANE`, then `$KOI_TAB` |
 | `status` | Exact pane ID only | `$KOI_PANE` required |
+| `agent NAME STATE [SESSION [TURN]]` | Uses the current pane | `$KOI_PANE` required |
 
 Koi sets `KOI_TAB` and `KOI_PANE` in its shells. Preserve their server context,
 including `KOI_DIR`, when reporting status from tools. Explicit status reports
@@ -135,6 +136,11 @@ reach the server directly and do not depend on tool stdout reaching the PTY.
 Reports describe the foreground program; they are cleared when its identity
 changes. Advisory agent skills do not guarantee lifecycle reporting; the optional
 status hooks in Settings report Claude Code's and Codex's lifecycle events for them.
+
+Use `koi agent NAME STATE [SESSION [TURN]]` to explicitly declare an agent role.
+Generic `koi status` does not enable agent notifications. The running server must
+advertise `agentSessions`; see [agent integration contracts](agents.md) for examples,
+provider hooks, replay behavior and pane environment settings.
 
 Closing one pane removes the whole tab only when it was the last pane.
 To close every pane in a tab, use **Close Tab** in the app or palette

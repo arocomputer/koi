@@ -168,10 +168,12 @@ Settings; **Edit Config File** is a separate palette command. See the
 ## Activity and optional integrations
 
 **Show Activity** lists non-idle programs across connected machines and can
-focus their panes. Status can come from server inference, legacy OSC 7501,
-or explicit [`koi status`](cli.md).
+focus their panes. Task status comes from explicit agent reports, legacy OSC 7501,
+or [`koi status`](cli.md). Terminal output activity is tracked separately;
+silence never changes a reported task state.
 
-Completion cues are for agent applications identified in Koi's program catalog:
+Completion cues require explicit [agent registration](agents.md), through
+`koi agent` or a supported provider hook. The icon catalog never decides identity:
 
 - While viewing another machine, a completed agent shows a toast with **Open Pane**.
   It switches to that machine, tab and pane without creating a new shell.
@@ -180,12 +182,14 @@ Completion cues are for agent applications identified in Koi's program catalog:
   In split tabs, each completed pane also gets a circle at the upper-right of
   its own header icon. Circles overlap their icon's edge slightly.
 - Visiting the completed pane clears its circle across windows. Work starting
-  again, removal of the pane or another program taking over also clears it.
+  again, removal of the pane or a new registered session also clears it.
   An already focused pane needs no unread indicator.
 
 These in-app cues do not need notification permission. Agent hooks in Advanced
 can report turn completion automatically. Initial observations and repeated
-statuses stay silent; ordinary commands do not produce completion cues.
+events stay silent; ordinary commands do not produce completion cues. Events
+survive coalesced snapshots. Reconnects replay retained history, while expired
+history is rebaselined silently and marked in Activity settings.
 
 System notifications for agents are separate: blocked, done and error each
 default off. `quiet-when-focused` suppresses system notifications while Koi is
@@ -219,10 +223,13 @@ Advanced offers optional agent guidance. Only clicking Install writes files:
   Install adds a few entries to the agent's own settings file: Claude Code's
   `~/.claude/settings.json` (`.claude/settings.local.json` for a chosen
   project, which Git ignores) and Codex's `.codex/hooks.json`. Each runs
-  `koi status` on a lifecycle event: `working` when a prompt is submitted or a
+  `koi agent hook PROVIDER EVENT` on a lifecycle event: `working` when a prompt is submitted or a
   tool finishes, `blocked` on a permission request, `done` when the agent
   stops, `error` when Claude Code's turn fails, and `idle` when a session ends
   or Codex is interrupted. Outside a Koi pane they do nothing and always exit 0.
+  **Configured** means the file matches the adapter, not that the installed agent
+  supports it. Activity settings show accepted reports and the last received time.
+  Payloads with unsupported identity schemas are rejected. See [adapter contracts](agents.md).
 
 Installers preserve foreign or edited files; removal deletes only unchanged
 Koi guidance. Hooks are recognized by a `# koi-status` mark at the end of

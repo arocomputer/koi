@@ -24,6 +24,8 @@ const usage =
     \\  capture [TARGET]      print a tab's screen and scrollback
     \\  split [TARGET] [--down|--right] [--cwd DIR] [--command SOURCE]
     \\                        split a pane; default right; prints its id
+    \\  agent NAME STATE [SESSION [TURN]]  report an explicit agent lifecycle
+    \\  agent hook PROVIDER EVENT  read a provider hook payload from stdin
     \\  status [PANE] STATE   report working|blocked|done|error|idle
     \\                        PANE defaults to KOI_PANE; accepts an exact pane id
     \\  info [--json]          running server version, pid, uptime and capabilities
@@ -53,6 +55,7 @@ pub fn run(gpa: Allocator, args: []const [:0]const u8) u8 {
     }
     const cmd = args[0];
     const rest = args[1..];
+    if (std.mem.eql(u8, cmd, "agent")) return reportAgent(gpa, rest);
     if (std.mem.eql(u8, cmd, "status")) return reportStatus(gpa, rest);
     if (std.mem.eql(u8, cmd, "info")) return info(gpa, rest);
     if (std.mem.eql(u8, cmd, "api")) return api(gpa, rest);
@@ -466,6 +469,56 @@ fn editPane(gpa: Allocator, args: []const [:0]const u8, op: wire.Op) u8 {
     defer result.deinit();
     if (result.value.@"error") |err| {
         std.debug.print("koi: {s}\n", .{err});
+        return 1;
+    }
+    return 0;
+}
+
+/// Generic integrations declare their agent role explicitly. Provider adapters read
+/// validated identity from stdin, never prompts or transcript contents.
+fn reportAgent(gpa: Allocator, args: []const [:0]const u8) u8 {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var cmd = wire.Command{ .op = .agentReport, .pane = sys.getenv("KOI_PANE") };
+    if (args.len == 3 and std.mem.eql(u8, args[0], "hook")) {
+        if (c.isatty(0) != 0) return 2;
+        var input: std.ArrayList(u8) = .empty;
+        defer input.deinit(gpa);
+        var buffer: [4096]u8 = undefined;
+        while (true) {
+            const n = c.read(0, &buffer, buffer.len);
+            if (n == 0) break;
+            if (n < 0 or input.items.len + @as(usize, @intCast(n)) > 8 * 1024 * 1024) return 2;
+            input.appendSlice(gpa, buffer[0..@intCast(n)]) catch return 1;
+        }
+        const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), input.items, .{}) catch return 2;
+        const report = @import("agenthooks.zig").decode(args[1], args[2], parsed.value) catch |err| {
+            std.debug.print("koi agent: {s}\n", .{@errorName(err)});
+            return 2;
+        };
+        cmd.name = report.name;
+        cmd.adapter = report.adapter;
+        cmd.agentSession = report.session;
+        cmd.agentRun = report.run;
+        cmd.status = report.status;
+    } else {
+        if (args.len < 2 or args.len > 4) {
+            std.debug.print("usage: koi agent NAME STATE [SESSION [TURN]]\n       koi agent hook claude|codex EVENT < hook.json\n", .{});
+            return 2;
+        }
+        cmd.name = args[0];
+        cmd.status = std.meta.stringToEnum(wire.Status, args[1]) orelse return 2;
+        if (args.len >= 3) cmd.agentSession = args[2];
+        if (args.len == 4) cmd.agentRun = args[3];
+    }
+    if (cmd.pane == null or cmd.pane.?.len == 0) return 2;
+    var client = Client.connect(gpa) orelse return 4;
+    defer client.deinit();
+    if (!client.supports("agentSessions")) return 1;
+    const result = client.command(cmd) orelse return 1;
+    defer result.deinit();
+    if (result.value.@"error") |err| {
+        std.debug.print("koi agent: {s}\n", .{err});
         return 1;
     }
     return 0;
