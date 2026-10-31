@@ -17,7 +17,7 @@ spec.loader.exec_module(ci)
 class CITests(unittest.TestCase):
     """Exercise the boundaries that decide whether expensive checks may be skipped."""
 
-    def test_docs_and_catalog_skip_the_mac_but_packaged_files_do_not(self):
+    def test_docs_skip_the_mac(self):
         self.assertEqual(ci.select(["docs/cli.md", "src/app/resources/programs/logos/new.svg"]),
                          {"core": False, "app": False, "bundle": False})
         for path in ("THIRD_PARTY_NOTICES.md", "licenses/new.txt", "src/app/resources/shell/koi.zsh"):
