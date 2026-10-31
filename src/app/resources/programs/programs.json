@@ -9,8 +9,7 @@
     "colors": [
       "E38C69",
       "C8603F"
-    ],
-    "agent": true
+    ]
   },
   {
     "runs": [
@@ -22,8 +21,7 @@
       "1A1A1A"
     ],
     "ink": "FFFFFF",
-    "logo": "openai",
-    "agent": true
+    "logo": "openai"
   },
   {
     "runs": [
@@ -37,8 +35,7 @@
       "353535",
       "181818"
     ],
-    "ink": "F1ECEC",
-    "agent": true
+    "ink": "F1ECEC"
   },
   {
     "runs": [
@@ -50,8 +47,7 @@
     "colors": [
       "8E75B2",
       "5C4A8A"
-    ],
-    "agent": true
+    ]
   },
   {
     "runs": [
@@ -63,8 +59,7 @@
       "DA7756",
       "A44830"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -77,8 +72,7 @@
       "343434",
       "181818"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -90,8 +84,7 @@
       "D97745",
       "9D4828"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -104,8 +97,7 @@
       "6950EF",
       "4934B0"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -117,8 +109,7 @@
       "384A40",
       "22322A"
     ],
-    "ink": "F4E9D5",
-    "agent": true
+    "ink": "F4E9D5"
   },
   {
     "runs": [
@@ -130,8 +121,7 @@
       "7B286D",
       "4E1848"
     ],
-    "ink": "FF94DC",
-    "agent": true
+    "ink": "FF94DC"
   },
   {
     "runs": [
@@ -144,8 +134,7 @@
       "FA520F",
       "C73E08"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -157,8 +146,7 @@
       "245E50",
       "163D35"
     ],
-    "ink": "8FE4BB",
-    "agent": true
+    "ink": "8FE4BB"
   },
   {
     "runs": [
@@ -171,8 +159,7 @@
       "E8D849",
       "B9A92A"
     ],
-    "ink": "202020",
-    "agent": true
+    "ink": "202020"
   },
   {
     "runs": [
@@ -186,8 +173,7 @@
       "473399",
       "2B205E"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -199,8 +185,7 @@
       "35353B",
       "18181B"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -212,8 +197,7 @@
       "E6B958",
       "B68C34"
     ],
-    "ink": "252525",
-    "agent": true
+    "ink": "252525"
   },
   {
     "runs": [
@@ -250,8 +234,7 @@
       "393939",
       "202020"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -1076,8 +1059,7 @@
       "3A3A3A",
       "1A1A1A"
     ],
-    "ink": "FFFFFF",
-    "agent": true
+    "ink": "FFFFFF"
   },
   {
     "runs": [
@@ -1089,8 +1071,7 @@
     "colors": [
       "2DB55D",
       "1F8A45"
-    ],
-    "agent": true
+    ]
   },
   {
     "runs": [
@@ -1103,7 +1084,6 @@
       "000000"
     ],
     "ink": "FFFFFF",
-    "agent": true,
     "logo": "pi"
   },
   {

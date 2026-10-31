@@ -33,6 +33,7 @@ fn entry(comptime op: wire.Op) Entry {
         .resetPane => .{ .summary = "Reset a pane's engine screen, history, modes and parser; the process, size and appearance stay.", .capability = "resetPane" },
         .configurePane => .{ .summary = "Apply colors and scrollback size to a pane.", .capability = "configurePane" },
         .serverInfo => .{ .summary = "Report the server's version, process, uptime, transports and capabilities.", .capability = "serverInfo" },
+        .agentReport => .{ .summary = "Declare an agent role and report a process/session/turn-scoped lifecycle event.", .capability = "agentSessions" },
         .reportStatus => .{ .summary = "Report a pane's foreground program as working, blocked, done, error or idle.", .capability = "reportStatus" },
     };
 }

@@ -1,6 +1,6 @@
 //! What runs in the front of a terminal: the process group the TTY belongs
-//! to, read from the kernel, so Koi knows `nvim` or `claude` is running
-//! without the program telling it.
+//! to, read from the kernel. The resulting argv name is a display hint only;
+//! explicit agent registration owns lifecycle identity.
 const std = @import("std");
 const builtin = @import("builtin");
 const sys = @import("sys.zig");
@@ -84,7 +84,26 @@ fn nameFrom(args: *Args, buf: []u8, used: *usize) []const u8 {
                 std.mem.eql(u8, arg, "-m") or std.mem.eql(u8, arg, "-p") or
                 std.mem.eql(u8, arg, "--eval") or std.mem.eql(u8, arg, "--print") or
                 std.mem.startsWith(u8, arg, "--eval=") or std.mem.startsWith(u8, arg, "--print=")) break;
-            if (arg.len == 0 or arg[0] == '-') continue;
+            if (arg.len == 0) continue;
+            // Consume operands of known interpreter flags. A preload is not the
+            // entry point. Unknown switches fail conservatively to argv[0].
+            var operand = false;
+            for ([_][]const u8{ "--require", "-r", "--import", "--loader", "--experimental-loader", "--conditions", "-C", "-W", "-X", "-I" }) |flag| {
+                if (std.mem.eql(u8, arg, flag)) operand = true;
+            }
+            if (operand) {
+                _ = args.next();
+                continue;
+            }
+            if (arg[0] == '-') {
+                if (std.mem.indexOfScalar(u8, arg, '=') != null) continue;
+                var known = false;
+                for ([_][]const u8{ "--", "--no-warnings", "--trace-warnings", "-u", "-B", "-O", "-OO" }) |flag| {
+                    if (std.mem.eql(u8, arg, flag)) known = true;
+                }
+                if (known) continue;
+                break;
+            }
             var script = base(arg);
             const is_path = std.mem.indexOfScalar(u8, arg, '/') != null;
             var has_suffix = false;
@@ -243,4 +262,12 @@ fn cwd(pid: c.pid_t, buf: []u8) []const u8 {
     const n = c.readlink(p.ptr, buf.ptr, buf.len);
     if (n <= 0) return "";
     return buf[0..@intCast(n)];
+}
+
+test "foreground hints skip preload operands and decline unknown flag grammars" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("agent", testName(&buf, "node\x00--require\x00./preload.js\x00./agent.js\x00", 4));
+    try std.testing.expectEqualStrings("agent", testName(&buf, "node\x00--import=./preload.js\x00./agent.js\x00", 3));
+    try std.testing.expectEqualStrings("node", testName(&buf, "node\x00--unknown\x00./preload.js\x00./agent.js\x00", 4));
+    try std.testing.expectEqualStrings("uv", testName(&buf, "uv\x00run\x00./agent.py\x00", 3));
 }

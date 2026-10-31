@@ -393,7 +393,7 @@ extension SessionTests {
                 && abs(actual[1] - 1.0 / 3) < 1e-12 && abs(actual[2] - 0.5) < 1e-12
         })
         let info = control.run(.init(op: .serverInfo))
-        #expect(info.supports("resizeSplitWeights") && info.supports("reportStatus"))
+        #expect(info.supports("resizeSplitWeights") && info.supports("reportStatus") && info.supports("agentSessions"))
         #expect(info.serverVersion?.hasPrefix("0.1.0+") == true)
         // Wait for foreground discovery before binding an explicit report to
         // cat, matching the report's lifetime when the program changes.
@@ -414,6 +414,34 @@ extension SessionTests {
             #expect(cli.terminationStatus == 0)
             #expect(control.waitFor { $0.tabs.first?.pane(pane)?.status == status })
         }
+        // The generic registration works for an unknown application; provider
+        // adapters additionally consume and validate real command-input JSON.
+        for (arguments, payload, status) in [
+            (["agent", "new-agent", "working", "custom-session", "custom-turn"], "", Wire.Status.working),
+            (["agent", "new-agent", "done", "custom-session", "custom-turn"], "", .done),
+            (["agent", "hook", "codex", "SessionStart"], #"{"hook_event_name":"SessionStart","session_id":"codex-session"}"#, .idle),
+            (["agent", "hook", "codex", "UserPromptSubmit"], #"{"hook_event_name":"UserPromptSubmit","session_id":"codex-session","turn_id":"turn-1"}"#, .working),
+            (["agent", "hook", "codex", "Stop"], #"{"hook_event_name":"Stop","session_id":"codex-session","turn_id":"turn-1"}"#, .done)
+        ] {
+            let cli = Process()
+            let input = Pipe()
+            cli.executableURL = server.process.executableURL
+            cli.arguments = arguments
+            cli.standardInput = input
+            cli.environment = (server.process.environment ?? [:]).merging([
+                "KOI_DIR": server.dir.path, "KOI_PANE": pane
+            ]) { _, value in value }
+            try cli.run()
+            input.fileHandleForWriting.write(Data(payload.utf8))
+            try input.fileHandleForWriting.close()
+            cli.waitUntilExit()
+            #expect(cli.terminationStatus == 0)
+            #expect(control.waitFor { $0.tabs.first?.pane(pane)?.status == status })
+        }
+        let agentPane = try #require(control.state.tabs.first?.pane(pane))
+        #expect(agentPane.agent?.name == "codex" && agentPane.agent?.adapter == "codex-hooks-v1")
+        #expect(agentPane.statusSource == "agent" && agentPane.agentSequence == 5)
+        #expect(agentPane.agentEvents?.map(\.status) == [.working, .done, .idle, .working, .done])
         #expect(mirror.waitFor { terminal, count in count == 1 && terminal.text().contains("status-ready") })
         #expect(control.run(.init(op: .closeTab, tab: made.tab)).error == nil)
     }

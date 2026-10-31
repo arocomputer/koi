@@ -51,11 +51,9 @@ class ProgramsTests(unittest.TestCase):
         self.manifest["files"][0]["source"] = "http://example.org/other"
         self.assertIn("files[0].source", self.errors())
 
-    def test_agent_membership_requires_a_boolean(self):
+    def test_catalog_cannot_declare_agent_identity(self):
         self.entries[0]["agent"] = True
-        self.assertEqual(self.errors(), "")
-        self.entries[0]["agent"] = "yes"
-        self.assertIn(".agent: expected boolean", self.errors())
+        self.assertIn(".agent: unknown entry field", self.errors())
 
     def test_duplicate_alias_paths(self):
         self.entries.append(dict(self.entries[0]))

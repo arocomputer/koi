@@ -191,6 +191,22 @@ enum Wire {
         }
     }
 
+    struct AgentSession: Codable, Equatable {
+        var active: Bool
+        var id: String
+        var name: String
+        var adapter: String?
+        var run: UInt64
+        /// Unix seconds of the last accepted report, as observed by the server.
+        var lastReport: Double
+    }
+    struct AgentEvent: Codable, Equatable {
+        var sequence: UInt64
+        var session: String
+        var run: UInt64
+        var status: Status
+    }
+
     struct PaneInfo: Codable, Equatable, Identifiable {
         var id: String
         var pid: Int32
@@ -208,10 +224,15 @@ enum Wire {
         /// Whether a full-screen program (vim, btop) has the alternate screen.
         var fullscreen: Bool
         var status: Status
+        var statusSource: String? = nil
+        var outputActive: Bool? = nil
+        var agent: AgentSession? = nil
+        var agentEpoch: String? = nil
+        var agentSequence: UInt64? = nil
+        var agentEvents: [AgentEvent]? = nil
     }
 
-    /// What a pane's program is doing: as it reports it (OSC 7501), or as
-    /// the server infers it from output.
+    /// Reported task lifecycle. Output activity is a separate field.
     enum Status: String, Codable {
         case idle, working, blocked, done, error
     }
@@ -281,6 +302,7 @@ enum Wire {
             case serverInfo
             /// Reports the current pane program's status without OSC output.
             case reportStatus
+            case agentReport
         }
         var op: Op
         /// Requires ownedCommands. Omitted by legacy CLI requests.
@@ -307,6 +329,10 @@ enum Wire {
         var appearance: Appearance?
         /// Explicit foreground-program status for reportStatus; pane required.
         var status: Status?
+        var agentSession: String?
+        var agentNewRun: Bool?
+        var agentRun: String?
+        var adapter: String?
         var cols: UInt16?
         var rows: UInt16?
         var cellWidth: UInt32?

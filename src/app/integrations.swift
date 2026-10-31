@@ -14,9 +14,9 @@ enum AgentIntegration: String, CaseIterable, Identifiable {
     /// Guidance is advisory: neither skills nor output heuristics guarantee lifecycle status.
     var supportDescription: String {
         "Installs a local koi-terminal skill. Invoke " + (self == .codex ? "$koi-terminal" : "/koi-terminal")
-        + " in a Koi pane. This teaches stock CLI use and koi status reports using KOI_PANE; "
+        + " in a Koi pane. This teaches stock CLI use and explicit agent reports using KOI_PANE; "
         + "it does not install hooks or guarantee blocked/done/error reports. "
-        + "Status comes from explicit CLI reports, server output inference or legacy OSC 7501 reports."
+        + "Task status comes from explicit reports. Terminal output activity is separate."
     }
 }
 
@@ -100,14 +100,14 @@ struct AgentIntegrations {
         }
     }
 
-    /// Uses stock CLI reportStatus and the older OSC 7501 contract in core/pane.zig.
+    /// Uses the capability-negotiated explicit agent lifecycle command.
     /// Skill locations: developers.openai.com/codex/skills and code.claude.com/docs/en/skills.
     static let guidance = Data("""
     ---
     name: koi-terminal
     description: Report task status and use Koi's stock CLI when working in a Koi terminal pane.
     ---
-    <!-- Owned by Koi integration v1. Edited files are preserved on uninstall. -->
+    <!-- Owned by Koi integration v2. Edited files are preserved on uninstall. -->
 
     Work inside an existing Koi pane. Run `koi help` to check the installed CLI's commands.
     `koi ls --json` lists tabs and pane metadata, including status. Use stable full IDs.
@@ -119,21 +119,17 @@ struct AgentIntegrations {
     `koi clear [TARGET]` to erase scrollback, and `koi reset [TARGET]` to reset the terminal
     engine without replacing its process. Check `koi help` for availability before use.
     Clear and reset affect the user's terminal state; use only when requested.
-    Prefer `koi status [PANE] STATE` on CLI/server versions supporting `reportStatus`.
-    Inside a Koi pane, `koi status working` uses KOI_PANE; an explicit equivalent is
-    `koi status "$KOI_PANE" working`. The states are working, blocked, done, error and idle.
-    Report working at task start, blocked when waiting for user input, done on completion,
-    and error on failure. Use idle when no task is active. The CLI sends status directly
-    to the server, so captured tool stdout does not prevent reports. Preserve KOI_DIR and
-    the pane's server context, especially in Koid; do not target unrelated panes.
-    Check `koi help` and `koi info --json` for command/capability support. Older servers
-    without reportStatus may use OSC 7501 only when the shell has a controlling Koi terminal:
-    `printf '\\033]7501;state=working\\007' > /dev/tty`
-    Substitute blocked, done, error or idle as needed. `state=clear` restores server inference.
-    Do not send these reports outside a Koi pane. Captured tool stdout may never reach the
-    pane; without a controlling Koi terminal these reports cannot communicate status.
-    This skill installs no hooks. The CLI supports explicit reporting, but loading guidance
-    does not guarantee automatic agent lifecycle reports. Never invent hooks or commands.
+    Check `koi info --json` for the `agentSessions` capability before reporting.
+    Inside a Koi pane use `koi agent my-agent working SESSION [TURN]`, substituting
+    your application name and stable session/turn IDs. Use the same identity for
+    blocked, done, error and idle reports. Without a public turn ID, omit TURN;
+    the server starts a new run when working follows idle, done or error.
+    Report working at task start, blocked when waiting for input, done on completion,
+    error on failure and idle when no task is active. Reports reach the server directly;
+    captured stdout does not prevent delivery. Preserve KOI_DIR and KOI_PANE.
+    Generic `koi status` and legacy OSC reports do not declare agent identity and
+    cannot trigger agent completion notifications. On old servers, skip integration.
+    This skill installs no hooks and does not guarantee automatic reporting.
     Do not read environment dumps, credentials, or unrelated terminal contents.
 
     """.utf8)
@@ -181,7 +177,7 @@ struct IntegrationSettingsView: View {
             }
             Divider()
             Text("Agent Status Hooks").font(.headline)
-            Text("Hooks make Claude Code and Codex report working, blocked, done and idle to the pane they run in, with no cooperation from the agent. Each adds a few entries to the agent's own settings file, keeps a .koi-backup of it, and Remove takes out only Koi's entries.")
+            Text("Hooks configure provider adapters for Claude Code and Codex. A configured file does not prove your agent version supports it. Activity settings show accepted reports and their last received time. Each install keeps a .koi-backup; Remove takes out only Koi’s entries.")
                 .font(.callout).foregroundStyle(.secondary)
             ForEach(AgentIntegration.allCases) { agent in
                 HStack {
@@ -192,9 +188,10 @@ struct IntegrationSettingsView: View {
                     }
                     Spacer()
                     let state = (try? integrations.hooksState(for: agent)) ?? .absent
-                    Button(state == .installed ? "Remove" : state == .outdated ? "Update" : "Install") {
+                    Text(state == .configured ? "Configured · reporting unverified" : state == .outdated ? "Update available" : "Not configured").font(.caption).foregroundStyle(.secondary)
+                    Button(state == .configured ? "Remove" : state == .outdated ? "Update" : "Install") {
                         perform {
-                            if state == .installed { try integrations.uninstallHooksFromUserAction(agent) }
+                            if state == .configured { try integrations.uninstallHooksFromUserAction(agent) }
                             else { try integrations.installHooksFromUserAction(agent) }
                         }
                     }

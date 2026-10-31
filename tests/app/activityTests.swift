@@ -3,188 +3,232 @@ import Testing
 import UserNotifications
 @testable import Koi
 
-/// No test accesses UNUserNotificationCenter: every authorization and delivery is recorded.
+/// Every transition is a server event; no notification center or agent catalog is used.
 @Suite @MainActor struct ActivityTests {
-    @Test func snapshotsTrackAllMachinesWithoutBaselineOrDuplicateAlerts() async {
+    @Test func coalescedCompletionSurvivesIdenticalSnapshotStatuses() async {
         let recorder = ActivityRecorder()
         let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
-        let remote = Endpoint.ssh("fixture")
-        await center.consume(snapshot: [.local: state(.working), remote: state(.blocked)], config: enabled)
-        #expect(center.activities.count == 2)
-        #expect(recorder.sent.isEmpty)
-        await center.consume(snapshot: [.local: state(.done), remote: state(.error)], config: enabled)
-        #expect(Set(recorder.sent.map(\.status)) == [.done, .error])
-        #expect(Set(recorder.sent.map(\.id.endpoint)) == [.local, remote])
-        await center.consume(snapshot: [.local: state(.done), remote: state(.error)], config: enabled)
-        #expect(recorder.sent.count == 2)
-        #expect(recorder.requests == 0)
+        var feed = AgentFeed()
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        // App never observes the intermediate working snapshot, or even a done status.
+        feed.report(.working); feed.report(.done); feed.report(.idle)
+        feed.active = false
+        var completed = 0
+        await center.consume(snapshot: [.local: feed.state], config: enabled, onAgentCompletion: { _ in completed += 1 })
+        #expect(completed == 1 && center.completions.count == 1)
+        #expect(recorder.sent.map(\.status) == [.done])
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.count == 1)
+        center.acknowledge(.init(endpoint: .local, pane: "pane"))
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(center.completions.isEmpty)
     }
 
-    @Test func focusedAndDisabledTransitionsNeverBecomeCatchUpAlerts() async {
+    @Test func baselineRestartAndJournalGapsAreSilent() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
+        var feed = AgentFeed()
+        feed.report(.working); feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.isEmpty && center.completions.isEmpty)
+        feed.epoch = "restarted"
+        feed.report(.working); feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.isEmpty)
+        feed.report(.working); feed.report(.blocked); feed.report(.done)
+        feed.events = Array(feed.events.suffix(1))
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(center.historyGap && recorder.sent.isEmpty)
+        feed.report(.working); feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.map(\.status) == [.done], "tracking resumes after the gap")
+    }
+
+    @Test func unknownAgentNamesWorkAndUnregisteredCatalogNamesStaySilent() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
+        var feed = AgentFeed()
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.first?.program == "my-new-agent")
+        var ordinary = AgentFeed()
+        ordinary.epoch = "ordinary-epoch"
+        ordinary.registered = false
+        ordinary.name = "claude"
+        await center.consume(snapshot: [.local: ordinary.state], config: enabled)
+        ordinary.report(.working); ordinary.report(.done)
+        await center.consume(snapshot: [.local: ordinary.state], config: enabled)
+        #expect(recorder.sent.count == 1)
+    }
+
+    @Test func sameNameReplacementAndNewTurnsDoNotReplayEarlierRuns() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
+        var feed = AgentFeed()
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.done)
+        let stale = feed.state
+        // New session, same executable name. Old completion is not this session's.
+        feed.session = "new-session"
+        feed.report(.working)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(center.completions.isEmpty && recorder.sent.isEmpty)
+        feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(center.completions.count == 1 && recorder.sent.count == 1)
+        await center.consume(snapshot: [.local: stale], config: enabled)
+        #expect(center.completions.count == 1 && recorder.sent.count == 1, "an older window cannot rewind the current run")
+        feed.report(.working); feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.count == 2, "same-name second turn has independent identity")
+    }
+
+    @Test func machinesAndViewedPanesHaveIndependentUnreadState() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { true })
+        let remote = Endpoint.ssh("fixture")
+        var feed = AgentFeed()
+        await center.consume(snapshot: [.local: feed.state, remote: feed.state])
+        feed.report(.working); feed.report(.done)
+        var completed: [ActivityItem.ID] = []
+        await center.consume(snapshot: [.local: feed.state, remote: feed.state],
+                             viewedPanes: [.init(endpoint: .local, pane: "pane")], onAgentCompletion: { completed.append($0.id) })
+        #expect(completed == [.init(endpoint: remote, pane: "pane")])
+        #expect(center.completions.count == 1 && recorder.sent.isEmpty)
+        await center.consume(snapshot: [:])
+        #expect(center.completions.isEmpty && center.activities.isEmpty)
+        await center.consume(snapshot: [remote: feed.state], config: enabled)
+        #expect(recorder.sent.isEmpty, "reconnect without a retained baseline is silent")
+    }
+
+    @Test func resolvedBlockedEventsDoNotNotifyFromACoalescedBatch() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
+        var feed = AgentFeed()
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.blocked); feed.report(.working)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.isEmpty && center.completions.isEmpty)
+    }
+
+    @Test func focusedAndDisabledEventsNeverBecomeCatchUpAlerts() async {
         let recorder = ActivityRecorder()
         var focused = true
         let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { focused })
-        await center.consume(snapshot: [.local: state(.working)], config: enabled)
-        await center.consume(snapshot: [.local: state(.blocked)], config: enabled)
+        var feed = AgentFeed()
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.blocked)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
         focused = false
-        await center.consume(snapshot: [.local: state(.blocked)], config: enabled)
-        #expect(recorder.sent.isEmpty)
-        await center.consume(snapshot: [.local: state(.error)], config: Config())
-        await center.consume(snapshot: [.local: state(.error)], config: enabled)
-        #expect(recorder.sent.isEmpty)
-        await center.consume(snapshot: [.local: state(.working)], config: enabled)
-        await center.consume(snapshot: [.local: state(.blocked)], config: enabled)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.error)
+        await center.consume(snapshot: [.local: feed.state], config: Config())
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.isEmpty && recorder.requests == 0)
+        feed.report(.working); feed.report(.blocked)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
         #expect(recorder.sent.map(\.status) == [.blocked])
     }
 
-    @Test func authorizationIsOnlyRequestedByTheExplicitUIAction() async {
+    @Test func authorizationIsExplicitAndVisitingCancelsPendingDelivery() async {
         let recorder = ActivityRecorder()
         recorder.status = .notDetermined
+        var feed = AgentFeed()
         let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
-        await center.consume(snapshot: [.local: state(.working)], config: enabled)
-        await center.consume(snapshot: [.local: state(.done)], config: enabled)
-        #expect(recorder.requests == 0)
-        #expect(recorder.sent.isEmpty)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.requests == 0 && recorder.sent.isEmpty)
         #expect(await center.requestAuthorizationFromUserAction())
-        #expect(recorder.requests == 1)
-        #expect(center.authorization == .authorized)
-        #expect(recorder.sent.isEmpty)
+        #expect(recorder.requests == 1 && recorder.sent.isEmpty)
+        var delivery = recorder.delivery
+        var pending: ActivityCenter?
+        delivery.authorization = {
+            pending?.acknowledge(.init(endpoint: .local, pane: "pane"))
+            return .authorized
+        }
+        let next = ActivityCenter(delivery: delivery, isAppFocused: { false })
+        pending = next
+        await next.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.done)
+        await next.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.isEmpty && next.completions.isEmpty)
     }
 
-    @Test func idleAndRemovedPanesLeaveTheCurrentList() async {
+    @Test(arguments: [false, true]) func idlePreservesPendingCompletionButViewingCancelsIt(viewed: Bool) async {
         let recorder = ActivityRecorder()
-        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
-        let first = Date(timeIntervalSince1970: 10)
-        await center.consume(snapshot: [.local: state(.working)], now: first)
-        await center.consume(snapshot: [.local: state(.working)], now: first.addingTimeInterval(5))
-        #expect(center.activities.first?.changedAt == first)
-        await center.consume(snapshot: [.local: state(.idle)])
-        #expect(center.activities.isEmpty)
-        await center.consume(snapshot: [.local: state(.error)], config: enabled)
-        await center.consume(snapshot: [:], config: enabled)
-        #expect(center.activities.isEmpty)
-        let count = recorder.sent.count
-        await center.consume(snapshot: [.local: state(.error)], config: enabled)
-        #expect(recorder.sent.count == count)
+        var feed = AgentFeed()
+        var pending: ActivityCenter?
+        var delivery = recorder.delivery
+        delivery.authorization = {
+            feed.report(.idle)
+            await pending?.consume(snapshot: [.local: feed.state], config: self.enabled,
+                                   viewedPanes: viewed ? [.init(endpoint: .local, pane: "pane")] : [])
+            return .authorized
+        }
+        let center = ActivityCenter(delivery: delivery, isAppFocused: { false })
+        pending = center
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.done)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        #expect(recorder.sent.count == (viewed ? 0 : 1))
+        #expect(center.completions.isEmpty == viewed)
     }
 
-    @Test func deliveryFailuresAreVisibleWithoutReplayingTheTransition() async {
+    @Test func deliveryFailureIsVisibleAndDoesNotReplay() async {
         let recorder = ActivityRecorder()
         var delivery = recorder.delivery
         delivery.send = { _ in throw CocoaError(.fileWriteNoPermission) }
         let center = ActivityCenter(delivery: delivery, isAppFocused: { false })
-        await center.consume(snapshot: [.local: state(.working)], config: enabled)
-        await center.consume(snapshot: [.local: state(.error)], config: enabled)
+        var feed = AgentFeed()
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
+        feed.report(.working); feed.report(.error)
+        await center.consume(snapshot: [.local: feed.state], config: enabled)
         #expect(center.notificationError != nil)
-        #expect(center.activities.first?.status == .error)
-    }
-
-    @Test func aNewerSnapshotInvalidatesAnAlertWaitingForAuthorization() async {
-        let recorder = ActivityRecorder()
-        var center: ActivityCenter?
-        var delivery = recorder.delivery
-        delivery.authorization = {
-            await center?.consume(snapshot: [:])
-            return .authorized
-        }
-        let activity = ActivityCenter(delivery: delivery, isAppFocused: { false })
-        center = activity
-        await activity.consume(snapshot: [.local: state(.working)], config: enabled)
-        await activity.consume(snapshot: [.local: state(.blocked)], config: enabled)
-        #expect(activity.activities.isEmpty)
-        #expect(recorder.sent.isEmpty)
-    }
-
-    @Test func ordinaryProgramsNeverProduceAgentNoticesOrBadges() async {
-        let recorder = ActivityRecorder()
-        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
-        var completions = 0
-        await center.consume(snapshot: [.local: state(.working, program: "make")], config: enabled)
-        await center.consume(snapshot: [.local: state(.done, program: "make")], config: enabled,
-                             onAgentCompletion: { _ in completions += 1 })
-        #expect(completions == 0 && recorder.sent.isEmpty && center.completions.isEmpty)
-        #expect(center.activities.first?.program == "make", "ordinary activity is still searchable")
-    }
-
-    @Test func agentCompletionsAreUnreadPerPaneAndMachineUntilVisited() async {
-        let recorder = ActivityRecorder()
-        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { true })
-        let remote = Endpoint.ssh("fixture")
-        let localID = ActivityItem.ID(endpoint: .local, pane: "pane")
-        let remoteID = ActivityItem.ID(endpoint: remote, pane: "pane")
-        var completed: [ActivityItem.ID] = []
-        await center.consume(snapshot: [.local: state(.working), remote: state(.working)])
-        await center.consume(snapshot: [.local: state(.done), remote: state(.done)],
-                             viewedPanes: [localID], onAgentCompletion: { completed.append($0.id) })
-        #expect(completed == [remoteID])
-        #expect(Set(center.completions.keys) == [remoteID])
-        #expect(recorder.sent.isEmpty, "in-app cues do not require system notification permission")
-        await center.consume(snapshot: [.local: state(.done), remote: state(.idle, program: "")],
-                             viewedPanes: [localID], onAgentCompletion: { completed.append($0.id) })
-        #expect(Set(center.completions.keys) == [remoteID], "returning to a shell preserves unread completion")
-        center.acknowledge(remoteID)
-        await center.consume(snapshot: [.local: state(.done), remote: state(.idle, program: "")])
-        #expect(center.completions.isEmpty && completed.count == 1, "no replay after acknowledgement")
-        await center.consume(snapshot: [remote: state(.working)])
-        await center.consume(snapshot: [remote: state(.done)], onAgentCompletion: { completed.append($0.id) })
-        #expect(completed.count == 2 && center.completions[remoteID] != nil)
-        await center.consume(snapshot: [:])
-        #expect(center.completions.isEmpty)
-    }
-
-    @Test func visitingPaneCancelsAnAlertWaitingForAuthorization() async {
-        let recorder = ActivityRecorder()
-        var center: ActivityCenter?
-        var delivery = recorder.delivery
-        delivery.authorization = {
-            center?.acknowledge(.init(endpoint: .local, pane: "pane"))
-            return .authorized
-        }
-        let activity = ActivityCenter(delivery: delivery, isAppFocused: { false })
-        center = activity
-        await activity.consume(snapshot: [.local: state(.working)], config: enabled)
-        await activity.consume(snapshot: [.local: state(.done)], config: enabled)
-        #expect(recorder.sent.isEmpty && activity.completions.isEmpty)
-    }
-
-    @Test func initialDoneAndProgramChangesAreSilent() async {
-        let recorder = ActivityRecorder()
-        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
-        var completions = 0
-        await center.consume(snapshot: [.local: state(.done, program: "codex")], config: enabled,
-                             onAgentCompletion: { _ in completions += 1 })
-        await center.consume(snapshot: [.local: state(.working, program: "make")], config: enabled)
-        await center.consume(snapshot: [.local: state(.done, program: "claude")], config: enabled,
-                             onAgentCompletion: { _ in completions += 1 })
-        #expect(completions == 0 && recorder.sent.isEmpty && center.completions.isEmpty)
+        #expect(center.reportingAgents.first?.adapter == "fixture-v1")
     }
 
     private var enabled: Config {
         var config = Config()
-        config.notifyBlocked = true
-        config.notifyDone = true
-        config.notifyError = true
+        config.notifyBlocked = true; config.notifyDone = true; config.notifyError = true
         return config
-    }
-
-    /// Same IDs deliberately occur on both machines to protect identity scoping.
-    private func state(_ status: Wire.Status, program: String = "agent") -> Wire.State {
-        let pane = Wire.PaneInfo(id: "pane", pid: 0, title: "Task", cwd: "/fixture", program: program,
-                                 shell: "sh", fullscreen: false, status: status)
-        return Wire.State(items: [.tab(.init(id: "tab", panes: [pane], layout: .pane(pane.id)))])
     }
 }
 
-/// An in-memory notification sink; never constructs the system notification center.
+private struct AgentFeed {
+    var epoch = "epoch"
+    var session = "session"
+    var name = "my-new-agent"
+    var run: UInt64 = 0
+    var sequence: UInt64 = 0
+    var status: Wire.Status = .idle
+    var registered = true
+    var active = true
+    var events: [Wire.AgentEvent] = []
+    mutating func report(_ next: Wire.Status) {
+        if next == .working && (status == .idle || status == .done || status == .error) { run += 1 }
+        status = next; sequence += 1
+        events.append(.init(sequence: sequence, session: session, run: run, status: next))
+    }
+    var state: Wire.State {
+        var pane = Wire.PaneInfo(id: "pane", pid: 42, title: "Task", cwd: "/fixture", program: name,
+                                 shell: "sh", fullscreen: false, status: status)
+        pane.agentEpoch = epoch; pane.agentSequence = sequence; pane.agentEvents = events
+        if registered {
+            pane.agent = .init(active: active, id: session, name: name, adapter: "fixture-v1", run: run, lastReport: 100)
+        }
+        return .init(items: [.tab(.init(id: "tab", panes: [pane], layout: .pane("pane")))])
+    }
+}
+
 @MainActor private final class ActivityRecorder {
     var status: UNAuthorizationStatus = .authorized
     var requests = 0
     var sent: [ActivityItem] = []
     var delivery: ActivityDelivery {
-        ActivityDelivery(authorization: { self.status }, requestAuthorization: {
-            self.requests += 1
-            self.status = .authorized
-            return true
+        .init(authorization: { self.status }, requestAuthorization: {
+            self.requests += 1; self.status = .authorized; return true
         }, send: { self.sent.append($0) })
     }
 }

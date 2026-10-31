@@ -20,15 +20,6 @@ import Testing
         }
     }
 
-    @Test func agentIdentityComesFromCatalogAliases() {
-        for name in ["claude", "claude-code", "codex", "gemini-cli", "opencode-ai", "aider-chat", "pi-coding-agent", "/opt/bin/CODEX"] {
-            #expect(Programs.isAgent(name), "\(name) is an agent")
-        }
-        for name in ["", "make", "node", "python", "ssh", "llm", "unknown-agent"] {
-            #expect(!Programs.isAgent(name), "\(name) is not automatically an agent")
-        }
-    }
-
     @Test func unknownApplicationsKeepThePromptMarkAndTheirOwnName() {
         for name in ["custom-agent", "/opt/bin/MyTool"] {
             let style = Programs.style(for: name, shell: "zsh")

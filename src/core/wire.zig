@@ -171,6 +171,22 @@ pub fn validController(value: []const u8) bool {
 
 pub const Status = enum { idle, working, blocked, done, @"error" };
 
+/// Explicit registration, independent of display-name discovery and the icon catalog.
+pub const AgentSession = struct {
+    active: bool = true,
+    id: []const u8,
+    name: []const u8,
+    adapter: ?[]const u8 = null,
+    run: u64,
+    lastReport: i64,
+};
+pub const AgentEvent = struct {
+    sequence: u64,
+    session: []const u8,
+    run: u64,
+    status: Status,
+};
+
 pub const PaneInfo = struct {
     id: []const u8,
     pid: i32,
@@ -181,6 +197,13 @@ pub const PaneInfo = struct {
     shell: []const u8,
     fullscreen: bool,
     status: Status,
+    /// No task state is inferred from terminal output.
+    statusSource: ?[]const u8 = null,
+    outputActive: bool = false,
+    agent: ?AgentSession = null,
+    agentEpoch: ?[]const u8 = null,
+    agentSequence: u64 = 0,
+    agentEvents: []const AgentEvent = &.{},
 };
 
 pub const TabInfo = struct {
@@ -307,7 +330,7 @@ pub const ParsedGroup = struct {
     tabs: []const ParsedTab,
 };
 
-pub const Op = enum { newTab, closeTab, group, move, renameGroup, renameTab, ungroup, closeGroup, splitPane, closePane, swapPanes, resizeSplit, clearPane, resetPane, configurePane, serverInfo, reportStatus };
+pub const Op = enum { newTab, closeTab, group, move, renameGroup, renameTab, ungroup, closeGroup, splitPane, closePane, swapPanes, resizeSplit, clearPane, resetPane, configurePane, serverInfo, reportStatus, agentReport };
 
 /// Per-pane defaults. Colors are exactly six ASCII hex digits without '#'.
 /// Missing scrollbackMB means 32 MiB; zero disables history. Limits are engine
@@ -355,6 +378,12 @@ pub const Command = struct {
     appearance: ?Appearance = null,
     /// Explicit foreground-program status for reportStatus (pane required).
     status: ?Status = null,
+    /// agentReport: explicit role declaration, with optional provider session/turn keys.
+    agentSession: ?[]const u8 = null,
+    agentRun: ?[]const u8 = null,
+    /// Provider prompt boundary when no public turn key exists.
+    agentNewRun: bool = false,
+    adapter: ?[]const u8 = null,
     cols: ?u16 = null,
     rows: ?u16 = null,
     cellWidth: ?u32 = null,
