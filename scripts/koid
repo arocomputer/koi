@@ -165,7 +165,7 @@ with os.fdopen(fd, 'r+') as guard:
     suites = ('ConfigTests|KeyboardTests|WireTests|SocketTests|ClientTests|RemoteTests|PredictionTests|'
               'ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|'
               'IntegrationsTests|UpdaterTests|DiagnosticsTests|DiagnosticIssuesTests|'
-              'TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests|'
+              'TabDragTests|ProjectTests|ActivityTests|PaletteSearchTests|RendererDiagnosticsTests|'
               'paneHeaderCloseProtectsTheLastPaneInEachTab|paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
               'stdioRelayCarriesTheProtocol|offerFromTheServerOpensALinkForItsSecretOnly|'
               'streamKeepsItsLinkAlive|'
