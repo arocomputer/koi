@@ -155,7 +155,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotEqual(self.run_release('sign').returncode, 0)
         self.assertEqual(self.calls(), [])
 
-    def test_a_release_without_the_update_signing_key_is_refused_before_any_tool_runs(self):
+    def test_release_needs_signing_key(self):
         del self.env['SPARKLE_ED_PRIVATE_KEY']
         result = self.run_release('sign')
         self.assertNotEqual(result.returncode, 0)

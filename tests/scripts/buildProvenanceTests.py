@@ -223,7 +223,7 @@ exec ''' + shlex.quote(git) + ' "$@"')
         signed = [c for c in self.codesign_calls() if c and c[-1] == str(output)]
         self.assertTrue(any('--entitlements' in c for c in signed), signed)
 
-    def test_a_release_bundle_can_update_itself_and_koid_cannot(self):
+    def test_bundle_update_keys(self):
         koi = self.root / 'release/Test.app'
         self.assertEqual(self.run_script('bundle.sh', KOI_BUNDLE_OUTPUT=str(koi)).returncode, 0)
         plist = (koi / 'Contents/Info.plist').read_text()

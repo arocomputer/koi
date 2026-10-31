@@ -14,7 +14,7 @@ import Testing
         return driver
     }
 
-    @Test func anOfferIsAcceptedOrLeftForLaterAndAnsweredOnce() {
+    @Test func offerAnsweredOnce() {
         let model = UpdateToastModel()
         let driver = driver(model: model)
         var choices: [SPUUserUpdateChoice] = []
@@ -30,7 +30,7 @@ import Testing
         #expect(model.phase == .hidden, "Later clears the toast")
     }
 
-    @Test func downloadProgressFollowsTheBytesAndAdmitsWhenTheTotalIsUnknown() {
+    @Test func downloadProgress() {
         let model = UpdateToastModel()
         let driver = driver(model: model)
         driver.offer(version: "0.2.0") { _ in }
@@ -47,7 +47,7 @@ import Testing
         #expect(model.onCancel == nil, "extracting can no longer be cancelled")
     }
 
-    @Test func aReadyUpdateRestartsNowOrInstallsWhenKoiQuits() {
+    @Test func readyUpdateRestartsOrWaits() {
         let model = UpdateToastModel()
         let driver = driver(model: model)
         var choices: [SPUUserUpdateChoice] = []
@@ -63,7 +63,7 @@ import Testing
         #expect(choices == [.dismiss, .install])
     }
 
-    @Test func aBackgroundCheckThatFindsNothingOrFailsSaysNothing() async {
+    @Test func backgroundChecksStaySilent() async {
         let model = UpdateToastModel()
         let driver = driver(model: model)
         var acknowledged = 0
@@ -73,7 +73,7 @@ import Testing
         #expect(model.phase == .hidden)
     }
 
-    @Test func aCheckThePersonAskedForAnswersEvenWhenThereIsNothingNew() async throws {
+    @Test func askedCheckAlwaysAnswers() async throws {
         let model = UpdateToastModel()
         let driver = driver(model: model)
         var acknowledged = false
@@ -89,7 +89,7 @@ import Testing
         #expect(acknowledged)
     }
 
-    @Test func cancellingACheckOrDownloadClearsTheToastAndTellsSparkle() {
+    @Test func cancelClearsTheToast() {
         let model = UpdateToastModel()
         let driver = driver(model: model)
         var cancelled = 0
@@ -109,7 +109,7 @@ import Testing
         #expect(other == "The update didn't install: no room")
     }
 
-    @Test func aBuildWithoutAFeedAndKeyNeverStartsAnUpdater() {
+    @Test func noFeedMeansNoUpdater() {
         // The test bundle carries neither, like Koid and any local build.
         let updater = AppUpdater(bundle: .main)
         #expect(!updater.isConfigured)
