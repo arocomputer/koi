@@ -110,7 +110,7 @@ def run_tests(tree, app):
     try:
         env = dict(os.environ, KOI_DIR=state)
         env.pop("KOI_SERVER_BIN", None)
-        command = ["./x", "test-app"] if app else ["zig", "build", "-j2", "test", "--summary", "all"]
+        command = ["./x", "testa"] if app else ["zig", "build", "-j2", "test", "--summary", "all"]
         proc = subprocess.run(command, cwd=tree, env=env, capture_output=True, text=True)
         return proc.returncode, proc.stdout + proc.stderr
     finally:

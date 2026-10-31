@@ -24,6 +24,12 @@ struct ProgramStyle {
 }
 
 enum Programs {
+    /// Explicit catalog membership; ordinary commands cannot become agents by reporting done.
+    static func isAgent(_ program: String) -> Bool {
+        agentRuns.contains((program as NSString).lastPathComponent.lowercased())
+    }
+    private static let agentRuns = Set(entries.filter { $0.agent == true }.flatMap(\.runs))
+
     /// The style of what a pane runs; a pane not yet reported is at a shell prompt.
     static func style(for pane: Wire.PaneInfo?) -> ProgramStyle {
         style(for: pane?.program ?? "", shell: pane?.shell ?? "zsh")
@@ -47,6 +53,7 @@ enum Programs {
     /// "Program icons", for the resource format.
     struct Entry: Decodable {
         var runs: [String]
+        var agent: Bool?
         var name: String
         var logo: String?
         var symbol: String?

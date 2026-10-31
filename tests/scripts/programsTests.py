@@ -51,6 +51,12 @@ class ProgramsTests(unittest.TestCase):
         self.manifest["files"][0]["source"] = "http://example.org/other"
         self.assertIn("files[0].source", self.errors())
 
+    def test_agent_membership_requires_a_boolean(self):
+        self.entries[0]["agent"] = True
+        self.assertEqual(self.errors(), "")
+        self.entries[0]["agent"] = "yes"
+        self.assertIn(".agent: expected boolean", self.errors())
+
     def test_duplicate_alias_paths(self):
         self.entries.append(dict(self.entries[0]))
         self.assertIn("programs.json[1].runs[0]: duplicate alias 'tool'; first at programs.json[0].runs[0]", self.errors())

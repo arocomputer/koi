@@ -4,8 +4,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub const c = @import("c");
-/// The terminal engine's C API lives in the same module.
-pub const vt = c;
 
 pub fn errno() c_int {
     return std.c._errno().*;

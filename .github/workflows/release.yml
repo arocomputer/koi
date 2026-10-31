@@ -53,8 +53,8 @@ jobs:
           cache-key: release-build
       - run: ./x scripts
       - run: ./x programs
-      - run: ./x test-core
-      - run: ./x test-app
+      - run: ./x testc
+      - run: ./x testa
       - name: Build without signing secrets
         env:
           KOI_BUNDLE_OUTPUT: ${{ runner.temp }}/bundle/Koi.app

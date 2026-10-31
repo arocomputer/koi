@@ -176,9 +176,17 @@ final class SplitContainerView: NSView {
         }
     }
 
+    /// Unread state may change without a new server snapshot or a layout change.
+    func updateAgentCompletions(_ unread: Set<String>) {
+        for (id, card) in cards {
+            card.setAgentCompletion(paneIDs.count > 1 && unread.contains(id))
+        }
+    }
+
     /// Refresh headers without discarding pending animation or optimistic
     /// geometry. A different tab/terminal identity cancels its previous drag.
-    func show(_ tab: Wire.TabInfo?, focused: String?, zoomed: String?, view: (String) -> TerminalView) {
+    func show(_ tab: Wire.TabInfo?, focused: String?, zoomed: String?,
+              completedAgentPanes: Set<String> = [], view: (String) -> TerminalView) {
         let wanted = tab?.panes.map(\.id) ?? []
         let terminals = Dictionary(uniqueKeysWithValues: wanted.map { ($0, view($0)) })
         let sameTab = self.tab?.id == tab?.id && wanted.contains { id in
@@ -225,6 +233,7 @@ final class SplitContainerView: NSView {
             }
             card.update(pane: pane, focused: pane.id == focused, zoomed: zoomed == pane.id,
                         alone: wanted.count == 1, actions: actions)
+            card.setAgentCompletion(wanted.count > 1 && completedAgentPanes.contains(pane.id))
             card.acceptsPaneInput = zoomed == nil || zoomed == pane.id
             card.allowsPointerFocus = !layoutTransitionActive
             if card.superview !== self { addSubview(card) }
@@ -851,6 +860,10 @@ final class PaneCard: NSVisualEffectView {
         layer?.zPosition = 0
     }
 
+    func setAgentCompletion(_ unread: Bool) {
+        if model.hasAgentCompletion != unread { model.hasAgentCompletion = unread }
+    }
+
     /// Update header metadata without replacing its hosting view or terminal.
     /// Every server update passes through here, so only real changes reach the
     /// observable model and the card's surfaces.
@@ -926,6 +939,7 @@ final class PaneHeaderModel {
     var motionDisabled = Config.current.motion == .off
     /// The only pane of its tab: there is nothing for Zoom to expand into.
     var alone = false
+    var hasAgentCompletion = false
     @ObservationIgnored var actions: SplitContainerView.Actions?
 }
 
@@ -950,6 +964,12 @@ struct PaneHeader: View {
             // the same line as the sidebar toggle and New Tab (see headerHeight).
             ProgramMark(style: style)
                 .frame(width: 18, height: 18)
+                .overlay(alignment: .topTrailing) {
+                    if model.hasAgentCompletion {
+                        AgentCompletionDot().offset(x: 2, y: -2)
+                    }
+                }
+                .accessibilityValue(model.hasAgentCompletion ? "Agent finished" : "")
             HStack(spacing: 6) {
                 // The directory gives way before the name does.
                 Text(label.title).foregroundStyle(.primary).layoutPriority(1)
@@ -970,7 +990,9 @@ struct PaneHeader: View {
                     if !model.alone {
                         IconButton(symbol: model.zoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", help: model.zoomed ? "Unzoom Pane" : "Zoom Pane", shortcut: .toggleZoom, glyphSize: 12.5, controlSize: 24) { model.actions?.zoom() }
                     }
-                    IconButton(symbol: "xmark", help: "Close Pane", shortcut: .closePane, glyphSize: 12.5, controlSize: 24) { model.actions?.close() }
+                    IconButton(symbol: "xmark", help: model.alone ? "The last pane stays open. Close its tab to end it." : "Close Pane", shortcut: model.alone ? nil : .closePane, glyphSize: 12.5, controlSize: 24) { model.actions?.close() }
+                        .disabled(model.alone)
+                        .opacity(model.alone ? 0.25 : 1)
                 }
             }
             .frame(width: model.alone ? 76 : 102, height: 24, alignment: .trailing)

@@ -6,13 +6,21 @@ import Testing
 @Test func parsesKeybindTriggers() {
     #expect(Keybind.parse("cmd+t") == Keybind("t", .command))
     #expect(Keybind.parse("cmd+shift+d") == Keybind("d", [.command, .shift]))
-    #expect(Keybind.parse("opt+cmd+left") == Keybind("\u{F702}", [.command, .option]))
+    #expect(Keybind.parse("alt+cmd+left") == Keybind("\u{F702}", [.command, .option]))
     #expect(Keybind.parse("ctrl+a") == Keybind("a", .control))
     // Order and casing don't matter.
     #expect(Keybind.parse("SHIFT+CMD+t") == Keybind("t", [.command, .shift]))
     // Nonsense keys are rejected rather than silently bound.
     #expect(Keybind.parse("cmd+notakey") == nil)
     #expect(Keybind.parse("cmd") == nil)
+}
+
+/// One config spelling per modifier/key, matching what the recorder writes.
+@Test func shortcutSynonymsAreRejected() {
+    for trigger in ["command+t", "super+t", "control+a", "opt+left", "option+left", "cmd+return"] {
+        #expect(Keybind.parse(trigger) == nil, "\(trigger) is not canonical")
+    }
+    #expect(Keybind.parse("cmd+enter") == Keybind("\r", .command))
 }
 
 /// Every default shortcut must serialize to config text that parses back to

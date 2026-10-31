@@ -108,3 +108,10 @@ pane.
 The OpenCode, Cursor, Qwen and Cline logos are copied without modification from Simple Icons revision
 `3237c86aca8e54fdf55b6a33de8b64014b1ff47a`, under the same CC0 license. Its
 source revisions and checksums are recorded in the program-logo manifest.
+
+The **Pi** logo is adapted from the official [pi.dev favicon](https://pi.dev/favicon.svg),
+retrieved on 2026-10-31. It is an upstream brand asset, not a Simple Icons/CC0
+logo; no standalone artwork license is declared at that source. Its geometry
+is unchanged; theme styling is replaced with a template fill. The source
+content digests and local modifications are recorded in the asset manifest.
+Brand ownership and trademark rights remain with their respective holders.

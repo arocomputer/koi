@@ -43,7 +43,7 @@ uses the organization's installed Namespace GitHub app. See
 To move providers again, change `runs-on` and verify the selected Xcode path
 exists on the replacement image. GitHub-hosted equivalents are `ubuntu-latest`
 and `macos-26`; select an installed Xcode explicitly on the latter. Keep the
-`Required` compatibility job's name in step with the ruleset: branch protection
+`Required` job's name in step with the ruleset: branch protection
 requires that exact name, and a PR waits forever for a check that never
 reports. Rename it by changing the job, `.github/rulesets/main.json` and the
 live ruleset together. Job IDs may change if `scripts/ci.py`'s gate and its
@@ -54,15 +54,14 @@ weaken required checks to work around a queued or failing runner.
 ## Checks and selection
 
 The [workflow](../.github/workflows/ci.yml) runs on PRs, main pushes and manual
-requests. It has five jobs:
+requests. It has four jobs:
 
 | Job | Work |
 | --- | --- |
 | Scripts and catalog (Linux) | Selects what else runs from the complete PR diff, then runs script regressions and catalog validation |
 | Core tests (Linux) | Selected core (Zig) tests on Linux with musl, the shipped server's libc |
 | Core, app and bundle (macOS) | Whichever of the core tests, hosted Swift tests and packaging were selected, on one Mac |
-| All checks passed | Require the scripts job, the Linux job and every selected macOS step to pass |
-| Required | Run the same gate under the existing branch-protection name |
+| Required | Require the scripts job, the Linux job and every selected macOS step to pass |
 
 "Core" is the Zig server and library in `src/core`; "app" is the Swift app in
 `src/app`; "bundle" is the packaged `Koi.app`. The names carry the platform
@@ -71,9 +70,7 @@ a time, so the Mac steps share one checkout, toolchain and dependency
 preparation instead of queueing a second Mac job behind the first. The scripts
 job finishes before a Mac is requested.
 
-`Required` remains the check branch protection requires. `All checks passed`
-runs the same validation under the clearer display name, so this stack needs
-no live ruleset change. It runs last,
+`Required` is the check branch protection requires. It runs last,
 waits for the other jobs, and fails if any failed or if a job that should have
 run was skipped. GitHub counts a skipped job as passing, and these jobs are
 skipped on purpose (a docs-only change never starts a Mac), so requiring each
@@ -118,7 +115,7 @@ checks pending. See GitHub's
 
 ## Development checks
 
-Use `./x test FILTER` or `./x test-core FILTER` while editing. They retain the
+Use `./x test FILTER` or `./x testc FILTER` while editing. They retain the
 checkout lock, private paths, server snapshot and process-verified cleanup;
 direct compiler/test commands do not provide the same isolation. Swift tests
 prepare only the macOS server/library. Core-only tests fetch the pinned
@@ -181,7 +178,7 @@ ask/aft with one stable required gate and a narrower administrator bypass:
 
 - PRs and resolved review threads; squash merging and linear history.
 - No branch deletion or force pushes.
-- `All checks passed`, from GitHub Actions, with the branch up to date before merging.
+- `Required`, from GitHub Actions, with the branch up to date before merging.
 - Zero mandatory approvals while there is one maintainer. CODEOWNERS routes
   review requests without making solo work impossible.
 - Administrator bypass only through a PR, not unrestricted direct pushes.

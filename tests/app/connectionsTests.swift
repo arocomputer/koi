@@ -267,7 +267,7 @@ private final class BurstTransport: Transport, @unchecked Sendable {
 
     @Test func malformedControlStateReportsError() async throws {
         let stream = NegotiationTransport()
-        let control = Control(socket: stream)
+        let control = ControlConnection(socket: stream)
         defer { control.close() }
         var error: String?
         control.onError = { error = $0 }

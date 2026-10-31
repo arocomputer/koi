@@ -163,10 +163,11 @@ with os.fdopen(fd, 'r+') as guard:
     # Hosted Macs do not reliably expose Metal. This is an explicit subset,
     # not a claim that all non-GPU suites or integration fixtures are covered.
     suites = ('ConfigTests|KeyboardTests|WireTests|SocketTests|ClientTests|RemoteTests|PredictionTests|'
+              'parsesKeybindTriggers|shortcutSynonymsAreRejected|keybindsRoundTripThroughConfigText|'
               'ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|'
               'IntegrationsTests|UpdaterTests|DiagnosticsTests|DiagnosticIssuesTests|'
-              'TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests|'
-              'paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
+              'TabDragTests|ProjectTests|ActivityTests|PaletteSearchTests|RendererDiagnosticsTests|'
+              'paneHeaderCloseProtectsTheLastPaneInEachTab|paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
               'stdioRelayCarriesTheProtocol|offerFromTheServerOpensALinkForItsSecretOnly|'
               'streamKeepsItsLinkAlive|'
               'PaneNegotiationTests|'

@@ -38,7 +38,7 @@ import Testing
         let fixture = try WorkspaceStateFixture()
         defer { fixture.close() }
         let stream = RenameTransport()
-        let control = Control(socket: stream)
+        let control = ControlConnection(socket: stream)
         let workspace = Workspace(.local, control: control, controlTransport: stream)
         defer { workspace.detachAll() }
         control.onState = { workspace.apply($0) }
@@ -92,7 +92,7 @@ import Testing
         let fixture = try WorkspaceStateFixture()
         defer { fixture.close() }
         let stream = RenameTransport()
-        let control = Control(socket: stream)
+        let control = ControlConnection(socket: stream)
         let workspace = Workspace(.local, control: control, controlTransport: stream)
         defer { workspace.detachAll() }
         control.onState = { workspace.apply($0) }
@@ -149,7 +149,7 @@ import Testing
         let id = try #require(serverControl.run(.init(op: .newTab)).tab)
         _ = serverControl.run(.init(op: .renameTab, tab: id, name: "server"))
         let stream = RenameTransport()
-        let control = Control(socket: stream)
+        let control = ControlConnection(socket: stream)
         let workspace = Workspace(.local, control: control, controlTransport: stream)
         defer { workspace.detachAll() }
         workspace.apply(Wire.State(items: [.tab(.init(id: id, panes: [], layout: .pane("fixture")))]))
@@ -390,7 +390,7 @@ import Testing
         var fds: [Int32] = [0, 0]
         try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
         let peer = Socket(fd: fds[1])
-        let control = Control(socket: Socket(fd: fds[0]))
+        let control = ControlConnection(socket: Socket(fd: fds[0]))
         defer { control.close(); peer.close() }
         let workspace = fixture.workspace
         workspace.apply(fixture.state(["a"]))
@@ -819,7 +819,29 @@ extension SessionTests {
         #expect(workspace.attachedViews.isEmpty, "offline commands must not create terminal connections for sizing")
     }
 
-    /// Real Control failures retain FIFO reporting and do not swallow the next
+    @Test @MainActor func paneHeaderCloseProtectsTheLastPaneInEachTab() throws {
+        let fixture = try WorkspaceStateFixture()
+        defer { fixture.close() }
+        let workspace = fixture.workspace
+        workspace.apply(fixture.state(["a", "b"]))
+        workspace.select("a")
+        var errors: [String] = []
+        workspace.onError = { errors.append($0) }
+        workspace.closePaneFromHeader()
+        #expect(errors.isEmpty, "another tab does not make the last pane closable from its header")
+        #expect(workspace.selectedTab == "a")
+        workspace.apply(fixture.state(["a", "b"], splitFirst: true))
+        workspace.closePaneFromHeader()
+        #expect(errors.count == 1, "a split header dispatches its close; this fixture reports offline")
+        workspace.apply(fixture.state(["a", "b"]))
+        workspace.closePaneFromHeader()
+        #expect(errors.count == 1, "a stale enabled header cannot close a newly single-pane tab")
+        workspace.completedAgentPanes = ["a-pane"]
+        #expect(workspace.hasAgentCompletion(in: workspace.state.tabs[0]))
+        #expect(!workspace.hasAgentCompletion(in: workspace.state.tabs[1]))
+    }
+
+    /// Real ControlConnection failures retain FIFO reporting and do not swallow the next
     /// successful command's callback or its pending selection of a new tab.
     @Test @MainActor func rejectedCommandsReportBeforeSuccessfulNewTabSelection() async throws {
         let server = try TestServer()

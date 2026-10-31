@@ -103,9 +103,9 @@ struct SettingsItem: Identifiable {
         .init(id: "focus-follows-mouse", tab: .terminal, group: "Input & sessions", title: "Focus follows mouse", detail: "Focus the pane under the pointer.", control: .toggle),
         .init(id: "startup-command", tab: .terminal, group: "Input & sessions", title: "Startup command", detail: "Command for new sessions. Empty uses your default shell; existing sessions keep running.", control: .text),
         .init(id: "scrollback-mb", tab: .terminal, group: "Input & sessions", title: "Scrollback limit", detail: "History budget per pane in MiB, up to 32 for reliable reattachment. Applies with a compatible server.", control: .number(1...32, step: 1)),
-        .init(id: "notify-blocked", tab: .activity, group: "Notifications", title: "Waiting for input", detail: "Notify when a task is blocked and needs attention.", control: .toggle),
-        .init(id: "notify-done", tab: .activity, group: "Notifications", title: "Task completed", detail: "Notify when a task finishes successfully.", control: .toggle),
-        .init(id: "notify-error", tab: .activity, group: "Notifications", title: "Task failed", detail: "Notify when a task reports an error.", control: .toggle),
+        .init(id: "notify-blocked", tab: .activity, group: "Notifications", title: "Waiting for input", detail: "Notify when an agent is blocked and needs attention.", control: .toggle),
+        .init(id: "notify-done", tab: .activity, group: "Notifications", title: "Agent completed", detail: "Send system notifications when an agent finishes. In-app toasts and unread tab dots are always available.", control: .toggle),
+        .init(id: "notify-error", tab: .activity, group: "Notifications", title: "Agent failed", detail: "Notify when an agent reports an error.", control: .toggle),
         .init(id: "quiet-when-focused", tab: .activity, group: "Notifications", title: "Quiet when focused", detail: "Suppress notifications while Koi has focus.", control: .toggle),
     ]
 }

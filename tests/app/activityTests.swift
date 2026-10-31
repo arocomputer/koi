@@ -95,6 +95,70 @@ import UserNotifications
         #expect(recorder.sent.isEmpty)
     }
 
+    @Test func ordinaryProgramsNeverProduceAgentNoticesOrBadges() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
+        var completions = 0
+        await center.consume(snapshot: [.local: state(.working, program: "make")], config: enabled)
+        await center.consume(snapshot: [.local: state(.done, program: "make")], config: enabled,
+                             onAgentCompletion: { _ in completions += 1 })
+        #expect(completions == 0 && recorder.sent.isEmpty && center.completions.isEmpty)
+        #expect(center.activities.first?.program == "make", "ordinary activity is still searchable")
+    }
+
+    @Test func agentCompletionsAreUnreadPerPaneAndMachineUntilVisited() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { true })
+        let remote = Endpoint.ssh("fixture")
+        let localID = ActivityItem.ID(endpoint: .local, pane: "pane")
+        let remoteID = ActivityItem.ID(endpoint: remote, pane: "pane")
+        var completed: [ActivityItem.ID] = []
+        await center.consume(snapshot: [.local: state(.working), remote: state(.working)])
+        await center.consume(snapshot: [.local: state(.done), remote: state(.done)],
+                             viewedPanes: [localID], onAgentCompletion: { completed.append($0.id) })
+        #expect(completed == [remoteID])
+        #expect(Set(center.completions.keys) == [remoteID])
+        #expect(recorder.sent.isEmpty, "in-app cues do not require system notification permission")
+        await center.consume(snapshot: [.local: state(.done), remote: state(.idle, program: "")],
+                             viewedPanes: [localID], onAgentCompletion: { completed.append($0.id) })
+        #expect(Set(center.completions.keys) == [remoteID], "returning to a shell preserves unread completion")
+        center.acknowledge(remoteID)
+        await center.consume(snapshot: [.local: state(.done), remote: state(.idle, program: "")])
+        #expect(center.completions.isEmpty && completed.count == 1, "no replay after acknowledgement")
+        await center.consume(snapshot: [remote: state(.working)])
+        await center.consume(snapshot: [remote: state(.done)], onAgentCompletion: { completed.append($0.id) })
+        #expect(completed.count == 2 && center.completions[remoteID] != nil)
+        await center.consume(snapshot: [:])
+        #expect(center.completions.isEmpty)
+    }
+
+    @Test func visitingPaneCancelsAnAlertWaitingForAuthorization() async {
+        let recorder = ActivityRecorder()
+        var center: ActivityCenter?
+        var delivery = recorder.delivery
+        delivery.authorization = {
+            center?.acknowledge(.init(endpoint: .local, pane: "pane"))
+            return .authorized
+        }
+        let activity = ActivityCenter(delivery: delivery, isAppFocused: { false })
+        center = activity
+        await activity.consume(snapshot: [.local: state(.working)], config: enabled)
+        await activity.consume(snapshot: [.local: state(.done)], config: enabled)
+        #expect(recorder.sent.isEmpty && activity.completions.isEmpty)
+    }
+
+    @Test func initialDoneAndProgramChangesAreSilent() async {
+        let recorder = ActivityRecorder()
+        let center = ActivityCenter(delivery: recorder.delivery, isAppFocused: { false })
+        var completions = 0
+        await center.consume(snapshot: [.local: state(.done, program: "codex")], config: enabled,
+                             onAgentCompletion: { _ in completions += 1 })
+        await center.consume(snapshot: [.local: state(.working, program: "make")], config: enabled)
+        await center.consume(snapshot: [.local: state(.done, program: "claude")], config: enabled,
+                             onAgentCompletion: { _ in completions += 1 })
+        #expect(completions == 0 && recorder.sent.isEmpty && center.completions.isEmpty)
+    }
+
     private var enabled: Config {
         var config = Config()
         config.notifyBlocked = true
@@ -104,8 +168,8 @@ import UserNotifications
     }
 
     /// Same IDs deliberately occur on both machines to protect identity scoping.
-    private func state(_ status: Wire.Status) -> Wire.State {
-        let pane = Wire.PaneInfo(id: "pane", pid: 0, title: "Task", cwd: "/fixture", program: "agent",
+    private func state(_ status: Wire.Status, program: String = "agent") -> Wire.State {
+        let pane = Wire.PaneInfo(id: "pane", pid: 0, title: "Task", cwd: "/fixture", program: program,
                                  shell: "sh", fullscreen: false, status: status)
         return Wire.State(items: [.tab(.init(id: "tab", panes: [pane], layout: .pane(pane.id)))])
     }
