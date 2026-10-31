@@ -158,9 +158,9 @@ import Testing
         #expect(try AgentHooks.state(of: old, for: .codex) == .outdated)
         let updated = try AgentHooks.installing(into: old, for: .codex)
         #expect(try AgentHooks.state(of: updated, for: .codex) == .installed)
-        #expect(handlers(updated, event: "OldEvent").compactMap { $0["command"] as? String } == ["foreign"])
+        #expect(handlers(try json(updated), event: "OldEvent").compactMap { $0["command"] as? String } == ["foreign"])
         let removed = try AgentHooks.removing(from: old)
-        #expect(handlers(removed, event: "OldEvent").compactMap { $0["command"] as? String } == ["foreign"])
+        #expect(handlers(try json(removed), event: "OldEvent").compactMap { $0["command"] as? String } == ["foreign"])
     }
 
     @Test func hooksKeepModeAndScope() throws {
