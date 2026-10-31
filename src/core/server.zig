@@ -123,6 +123,36 @@ const LinkEntry = struct {
     closing: bool = false,
 };
 
+/// Ceilings that keep a runaway client, or connections whose far end vanished,
+/// from exhausting the machine. They are generous for real use and soft: two
+/// requests at the limit may both pass. Hitting one is an error the client
+/// shows, never a silent drop.
+pub const max_panes = 128;
+pub const max_connections = 1024;
+const too_many_panes: wire.Result = .{ .@"error" = "too many panes: close some first" };
+
+/// The server log is rolled aside once it passes this size. One earlier file
+/// is kept as `<log>.1`, so the log never holds more than twice this.
+pub const max_log_bytes = 8 << 20;
+
+/// The identity and size of the file at `path`, if it can be opened.
+fn pathInfo(path: []const u8) ?sys.FileInfo {
+    const fd = c.open(cstr(path), c.O_RDONLY | c.O_CLOEXEC);
+    if (fd < 0) return null;
+    defer _ = c.close(fd);
+    return sys.fileInfo(fd);
+}
+
+/// Renames `path` to `<path>.1`, replacing any earlier one, when it holds at
+/// least `limit` bytes. True when it did.
+fn rollAside(path: []const u8, limit: u64) bool {
+    const info = pathInfo(path) orelse return false;
+    if (info.size < limit) return false;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const old = std.fmt.bufPrint(&buf, "{s}.1", .{path}) catch return false;
+    return c.rename(cstr(path), cstr(old)) == 0;
+}
+
 pub const Server = struct {
     gpa: Allocator,
     paths: paths_mod.Paths,
@@ -133,6 +163,8 @@ pub const Server = struct {
     links: std.ArrayList(*LinkEntry) = .empty,
     connections: usize = 0,
     idle_since: i64 = 0,
+    /// When a connection was last refused for `max_connections`; log throttle.
+    last_refusal: i64 = 0,
     started_at: u64 = 0,
     // Changes are batched for watchers; a subscribed command caller also
     // gets the current tree immediately after its successful result.
@@ -202,6 +234,7 @@ pub const Server = struct {
         const pid = c.fork();
         if (pid < 0) return error.Fork;
         if (pid == 0) {
+            _ = rollAside(paths.log, max_log_bytes);
             const devnull = c.open("/dev/null", c.O_RDONLY);
             const logfd = c.open(cstr(paths.log), c.O_CREAT | c.O_WRONLY | c.O_APPEND, @as(c_uint, 0o600));
             if (devnull >= 0) _ = c.dup2(devnull, 0);
@@ -234,6 +267,10 @@ pub const Server = struct {
                 continue;
             }
             if (!sys.sameUserPeer(fd)) {
+                _ = c.close(fd);
+                continue;
+            }
+            if (self.connectionsFull()) {
                 _ = c.close(fd);
                 continue;
             }
@@ -272,6 +309,21 @@ pub const Server = struct {
         stream.release();
         // Last: the link may be destroyed as soon as this reaches zero.
         _ = entry.readers.fetchSub(1, .release);
+    }
+
+    /// Whether `max_connections` are open. Logs the first refusal of each
+    /// second, so a flood cannot fill the log.
+    fn connectionsFull(self: *Server) bool {
+        self.mutex.lock();
+        const open = self.connections;
+        self.mutex.unlock();
+        if (open < max_connections) return false;
+        const now = sys.elapsedMillis();
+        if (now - self.last_refusal >= 1000) {
+            self.last_refusal = now;
+            log("refusing a connection: {d} open", .{open});
+        }
+        return true;
     }
 
     fn changeConnections(self: *Server, delta: isize) void {
@@ -848,8 +900,16 @@ pub const Server = struct {
     /// uses cmd.cwd/startup/appearance; omitted startup keeps the login shell.
     /// The child stays gated through allocation, reader prep and publication.
     /// Rejection never executes startup; no server lock spans fork or join.
+    /// Whether another pane fits under `max_panes`.
+    fn hasPaneRoom(self: *Server) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.panes.items.len < max_panes;
+    }
+
     fn newTab(self: *Server, arena: Allocator, cmd: wire.Command, size: wire.GridSize) wire.Result {
         if (cmd.controller) |id| if (!wire.validController(id)) return .{ .@"error" = "InvalidController" };
+        if (!self.hasPaneRoom()) return too_many_panes;
         const after = cmd.tab;
         const oom: wire.Result = .{ .@"error" = "out of memory" };
         const tab = self.gpa.create(Tab) catch return oom;
@@ -1097,6 +1157,7 @@ pub const Server = struct {
     /// the source and reserves all split resources before publishing/releasing.
     /// Closing the source or allocation failure cannot execute startup source.
     fn splitPane(self: *Server, arena: Allocator, cmd: wire.Command, size: wire.GridSize) wire.Result {
+        if (!self.hasPaneRoom()) return too_many_panes;
         const pane_id = cmd.pane orelse "";
         const direction = cmd.direction orelse .right;
         const oom: wire.Result = .{ .@"error" = "out of memory" };
@@ -1300,9 +1361,25 @@ pub const Server = struct {
     /// closed links whose connection threads are done. Frees happen outside
     /// the lock; `destroy` joins the link's receiver, which may be inside
     /// `onStream` waiting for that lock.
+    /// Rolls the log aside while the server runs and points stdout and stderr
+    /// at the new file. Does nothing unless stderr is the log, so a server run
+    /// in a terminal or a test is left alone.
+    fn rotateLog(self: *Server) void {
+        const mine = sys.fileInfo(2) orelse return;
+        const named = pathInfo(self.paths.log) orelse return;
+        if (mine.ino != named.ino or mine.dev != named.dev) return;
+        if (!rollAside(self.paths.log, max_log_bytes)) return;
+        const fd = c.open(cstr(self.paths.log), c.O_CREAT | c.O_WRONLY | c.O_APPEND | c.O_CLOEXEC, @as(c_uint, 0o600));
+        if (fd < 0) return;
+        _ = c.dup2(fd, 1);
+        _ = c.dup2(fd, 2);
+        if (fd > 2) _ = c.close(fd);
+    }
+
     fn idleLoop(self: *Server) noreturn {
         while (true) {
             sys.sleepMillis(5000);
+            self.rotateLog();
             self.reapPanes();
             self.reapLinks();
             self.mutex.lock();
@@ -1424,6 +1501,57 @@ const CommandTransport = struct {
 
     fn close(_: *anyopaque) void {}
 };
+
+test "pane limit refuses a new pane" {
+    var server = testServer(testing.allocator);
+    defer server.panes.deinit(testing.allocator);
+    // Placeholders only; nothing dereferences a pane on the refusal path.
+    try server.panes.appendNTimes(testing.allocator, @ptrFromInt(@alignOf(Pane)), max_panes);
+    defer server.panes.clearRetainingCapacity();
+    try testing.expect(!server.hasPaneRoom());
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const size: wire.GridSize = .{ .cols = 80, .rows = 24, .cell_width = 8, .cell_height = 16 };
+    try testing.expectEqualStrings(too_many_panes.@"error".?, server.newTab(arena.allocator(), .{ .op = .newTab }, size).@"error".?);
+    try testing.expectEqualStrings(too_many_panes.@"error".?, server.splitPane(arena.allocator(), .{ .op = .splitPane }, size).@"error".?);
+    server.panes.shrinkRetainingCapacity(max_panes - 1);
+    try testing.expect(server.hasPaneRoom());
+}
+
+test "log rolls aside at the limit" {
+    var template = "/tmp/koi-log-XXXXXXXX".*;
+    const dir = std.mem.span(c.mkdtemp(&template) orelse return error.CreateDirectory);
+    defer {
+        var cmd: [128]u8 = undefined;
+        const rm = std.fmt.bufPrintSentinel(&cmd, "rm -rf {s}", .{dir}, 0) catch unreachable;
+        _ = c.system(rm.ptr);
+    }
+    var path_buf: [96]u8 = undefined;
+    const log_path = try std.fmt.bufPrint(&path_buf, "{s}/server.log", .{dir});
+    const write = struct {
+        fn file(path: []const u8, bytes: []const u8) !void {
+            const fd = c.open(cstr(path), c.O_CREAT | c.O_WRONLY | c.O_TRUNC, @as(c_uint, 0o600));
+            if (fd < 0) return error.CreateFile;
+            defer _ = c.close(fd);
+            if (c.write(fd, bytes.ptr, bytes.len) != bytes.len) return error.WriteFile;
+        }
+    };
+    try write.file(log_path, "short");
+    try testing.expect(!rollAside(log_path, 16));
+    try testing.expectEqual(0, c.access(cstr(log_path), c.F_OK));
+    var old_buf: [100]u8 = undefined;
+    const old_path = try std.fmt.bufPrint(&old_buf, "{s}.1", .{log_path});
+    try write.file(old_path, "the roll before");
+    try write.file(log_path, "0123456789abcdefXYZ");
+    try testing.expect(rollAside(log_path, 16));
+    try testing.expect(c.access(cstr(log_path), c.F_OK) != 0);
+    var read: [32]u8 = undefined;
+    const fd = c.open(cstr(old_path), c.O_RDONLY);
+    try testing.expect(fd >= 0);
+    defer _ = c.close(fd);
+    const n: usize = @intCast(c.read(fd, &read, read.len));
+    try testing.expectEqualStrings("0123456789abcdefXYZ", read[0..n]);
+}
 
 fn testServer(gpa: Allocator) Server {
     return .{ .gpa = gpa, .paths = undefined, .mutex = sys.Mutex.init(), .notify_mutex = sys.Mutex.init(), .notify_cond = sys.Cond.init(), .state_mutex = sys.Mutex.init() };

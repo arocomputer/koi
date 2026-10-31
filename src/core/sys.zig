@@ -184,6 +184,25 @@ pub fn directoryInfo(fd: c_int) !struct { uid: c.uid_t, gid: c.gid_t, mode: u32 
     }
 }
 
+/// Which file a descriptor is, and how large: enough to tell whether two
+/// names or descriptors are the same file. Linux uses statx for the reason
+/// `directoryInfo` does.
+pub const FileInfo = struct { dev: u64, ino: u64, size: u64 };
+
+pub fn fileInfo(fd: c_int) ?FileInfo {
+    if (builtin.os.tag == .macos) {
+        var st: c.struct_stat = undefined;
+        if (c.fstat(fd, &st) != 0) return null;
+        return .{ .dev = @intCast(st.st_dev), .ino = st.st_ino, .size = @intCast(st.st_size) };
+    } else {
+        const linux = std.os.linux;
+        var st: linux.Statx = undefined;
+        if (linux.statx(fd, "", linux.AT.EMPTY_PATH, .{ .INO = true, .SIZE = true }, &st) != 0 or
+            !st.mask.INO or !st.mask.SIZE) return null;
+        return .{ .dev = (@as(u64, st.dev_major) << 32) | st.dev_minor, .ino = st.ino, .size = st.size };
+    }
+}
+
 test "writeAll reports a failed write instead of treating it as delivered" {
     const fd = c.open("/dev/null", c.O_RDONLY);
     try std.testing.expect(fd >= 0);
