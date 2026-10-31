@@ -317,7 +317,14 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
             }
         }
         let snapshot = sources.mapValues(\.state)
-        Task { await owner.activityCenter.consume(snapshot: snapshot) }
+        Task { [weak owner] in
+            guard let owner else { return }
+            await owner.activityCenter.consume(snapshot: snapshot, viewedPanes: owner.viewedAgentPanes) { [weak owner] item in
+                owner?.refreshAgentBadges()
+                owner?.showAgentCompletion(item)
+            }
+            owner.refreshAgentBadges()
+        }
         for source in machines.allWorkspaces where !source.state.tabs.isEmpty {
             guard !probingServers.contains(source.endpoint) else { continue }
             let endpoint = source.endpoint
@@ -639,6 +646,49 @@ final class AppDelegate: NSResponder, NSApplicationDelegate, NSWindowDelegate, N
                 })
             }
         }, placeholder: "Search activity…"))
+    }
+
+    /// Only the active window's focused pane counts as having read its completion.
+    private var viewedAgentPanes: Set<ActivityItem.ID> {
+        guard NSApp.isActive else { return [] }
+        return Set(windowOwners.compactMap { controller in
+            guard controller.window?.isKeyWindow == true,
+                  let pane = controller.workspace.focusedPane else { return nil }
+            return ActivityItem.ID(endpoint: controller.machines.current, pane: pane)
+        })
+    }
+
+    private func refreshAgentBadges() {
+        for controller in windowOwners {
+            for source in controller.machines.allWorkspaces {
+                source.completedAgentPanes = Set(activityCenter.completions.keys
+                    .filter { $0.endpoint == source.endpoint }.map(\.pane))
+            }
+        }
+    }
+
+    /// Selection and window focus clear a completion across every window attached to that pane.
+    func acknowledgeVisibleAgentCompletion() {
+        let owner = applicationOwner ?? self
+        for id in owner.viewedAgentPanes { owner.activityCenter.acknowledge(id) }
+        owner.refreshAgentBadges()
+    }
+
+    private func showAgentCompletion(_ item: ActivityItem) {
+        guard NSApp.isActive,
+              let controller = windowOwners.first(where: { $0.window?.isKeyWindow == true })
+                ?? windowOwners.first(where: { $0.window?.isMainWindow == true }),
+              controller.machines.current != item.id.endpoint,
+              let parent = controller.window?.contentView else { return }
+        let machine: String = if case .ssh(let host) = item.id.endpoint { host } else { "This Mac" }
+        let agent = Programs.style(for: item.program, shell: "").name
+        Toast.show("\(agent) finished on \(machine)", in: parent, actionTitle: "Open Pane",
+                   identifier: "agent-completion") { [weak self] in
+            guard let self else { return }
+            if !self.focusActivity(endpoint: item.id.endpoint, tab: item.tab, pane: item.id.pane) {
+                self.toast("That pane is no longer available.")
+            }
+        }
     }
 
     /// Notification taps wait briefly for initial attachment, then route by stable IDs.

@@ -5,9 +5,16 @@ import SwiftUI
 /// Its glass finish is shared with Koi's floating menus and pickers.
 struct Toast: View {
     let text: String
+    var actionTitle: String?
+    var action: (() -> Void)?
 
     var body: some View {
-        Text(text)
+        HStack(spacing: 12) {
+            Text(text)
+            if let actionTitle, let action {
+                Button(actionTitle, action: action).buttonStyle(.borderedProminent).controlSize(.small)
+            }
+        }
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 14)
@@ -16,8 +23,18 @@ struct Toast: View {
     }
 
     /// Present and retire a notice in its owning window without taking focus.
-    @MainActor static func show(_ text: String, in parent: NSView) {
+    @MainActor static func show(_ text: String, in parent: NSView,
+                                actionTitle: String? = nil, identifier: String? = nil,
+                                action: (() -> Void)? = nil) {
+        if let identifier {
+            parent.subviews.filter { $0.identifier?.rawValue == identifier }.forEach { $0.removeFromSuperview() }
+        }
         let toast = NSHostingView(rootView: Toast(text: text))
+        if let identifier { toast.identifier = NSUserInterfaceItemIdentifier(identifier) }
+        toast.rootView = Toast(text: text, actionTitle: actionTitle, action: { [weak toast] in
+            toast?.removeFromSuperview()
+            action?()
+        })
         toast.translatesAutoresizingMaskIntoConstraints = false
         toast.safeAreaRegions = []
         toast.alphaValue = 0
@@ -27,7 +44,7 @@ struct Toast: View {
             toast.bottomAnchor.constraint(equalTo: parent.bottomAnchor, constant: -16),
         ])
         NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.25; toast.animator().alphaValue = 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.6) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + (actionTitle == nil ? 2.6 : 8)) {
             NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.45; toast.animator().alphaValue = 0 },
                                                  completionHandler: { Task { @MainActor in toast.removeFromSuperview() } })
         }

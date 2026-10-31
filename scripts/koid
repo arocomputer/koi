@@ -166,7 +166,7 @@ with os.fdopen(fd, 'r+') as guard:
               'ProgramsTests|ClipboardTests|DeviceIconsTests|InstallationTests|'
               'IntegrationsTests|UpdaterTests|DiagnosticsTests|DiagnosticIssuesTests|'
               'TabDragTests|ProjectTests|PaletteSearchTests|RendererDiagnosticsTests|'
-              'paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
+              'paneHeaderCloseProtectsTheLastPaneInEachTab|paneOutlivesItsClient|treeCommandsRoundTripThroughTheRealServer|'
               'stdioRelayCarriesTheProtocol|offerFromTheServerOpensALinkForItsSecretOnly|'
               'streamKeepsItsLinkAlive|'
               'PaneNegotiationTests|'

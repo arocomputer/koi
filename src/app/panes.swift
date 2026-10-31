@@ -970,7 +970,9 @@ struct PaneHeader: View {
                     if !model.alone {
                         IconButton(symbol: model.zoomed ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", help: model.zoomed ? "Unzoom Pane" : "Zoom Pane", shortcut: .toggleZoom, glyphSize: 12.5, controlSize: 24) { model.actions?.zoom() }
                     }
-                    IconButton(symbol: "xmark", help: "Close Pane", shortcut: .closePane, glyphSize: 12.5, controlSize: 24) { model.actions?.close() }
+                    IconButton(symbol: "xmark", help: model.alone ? "The last pane stays open. Close its tab to end it." : "Close Pane", shortcut: model.alone ? nil : .closePane, glyphSize: 12.5, controlSize: 24) { model.actions?.close() }
+                        .disabled(model.alone)
+                        .opacity(model.alone ? 0.25 : 1)
                 }
             }
             .frame(width: model.alone ? 76 : 102, height: 24, alignment: .trailing)

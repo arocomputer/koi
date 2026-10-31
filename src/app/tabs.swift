@@ -222,10 +222,21 @@ private struct TabItem: View {
         let styles = [style] + tab.layout.panes.filter { $0 != pane?.id }.compactMap { tab.pane($0) }
             .map { Programs.style(for: $0) }
         HStack(spacing: 8) {
-            if horizontal && styles.count > 1 {
-                TileStack(styles: styles)
-            } else {
-                ProgramTile(style: style, size: ProgramTile.tabSize)
+            Group {
+                if horizontal && styles.count > 1 {
+                    TileStack(styles: styles)
+                } else {
+                    ProgramTile(style: style, size: ProgramTile.tabSize)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if workspace.hasAgentCompletion(in: self.tab) {
+                    Circle().fill(.green)
+                        .frame(width: 7, height: 7)
+                        .overlay { Circle().stroke(Theme.current.backgroundColor, lineWidth: 1.5) }
+                        .offset(x: 2, y: -2)
+                        .accessibilityHidden(true)
+                }
             }
             HStack(spacing: 0) {
                 HStack(spacing: 5) {
@@ -288,7 +299,7 @@ private struct TabItem: View {
             TabGroupingMenu(tab: tab, workspace: workspace)
         }
         .accessibilityLabel(displayName?.isEmpty == false ? displayName! : "\(label.title) \(label.detail)")
-        .accessibilityValue(selected ? "Selected" : "")
+        .accessibilityValue([selected ? "Selected" : "", workspace.hasAgentCompletion(in: tab) ? "Agent finished" : ""].filter { !$0.isEmpty }.joined(separator: ", "))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { workspace.select(tab.id) }
     }
@@ -303,7 +314,7 @@ private struct TabItem: View {
                     case .working: WorkingDots()
                     case .blocked: StatusDot(color: .orange)
                     case .error: StatusDot(color: .red)
-                    default: if workspace.attention.contains(tab.id) { StatusDot(color: .orange) }
+                    default: EmptyView()
                     }
                 }
                 .opacity(showClose ? 0 : 1)

@@ -170,10 +170,25 @@ Settings; **Edit Config File** is a separate palette command. See the
 
 **Show Activity** lists non-idle programs across connected machines and can
 focus their panes. Status can come from server inference, legacy OSC 7501,
-or explicit [`koi status`](cli.md). First observations and repeated statuses
-do not notify. Blocked, done and error notifications each default off;
-`quiet-when-focused` suppresses them while Koi is active and defaults on.
-There are no catch-up alerts for suppressed transitions.
+or explicit [`koi status`](cli.md).
+
+Completion cues are for agent applications identified in Koi's program catalog:
+
+- While viewing another machine, a completed agent shows a toast with **Open Pane**.
+  It switches to that machine, tab and pane without creating a new shell.
+- On the same machine, an unread completion appears as a small green circle at
+  the upper-right of the tab's program icon, in both top and side tab bars.
+- Visiting the completed pane clears its circle across windows. Work starting
+  again, removal of the pane or another program taking over also clears it.
+  An already focused pane needs no unread indicator.
+
+These in-app cues do not need notification permission. Agent hooks in Advanced
+can report turn completion automatically. Initial observations and repeated
+statuses stay silent; ordinary commands do not produce completion cues.
+
+System notifications for agents are separate: blocked, done and error each
+default off. `quiet-when-focused` suppresses system notifications while Koi is
+active and defaults on. Suppressed transitions never produce catch-up alerts.
 
 Koi does not request notification authorization at startup. Enabling a
 notification toggle in Settings or clicking **Enable Notifications…** requests
@@ -285,3 +300,10 @@ next launch shows them again. Cancel stops a check or a download.
 The parser and controls are in [`config.swift`](../src/app/config.swift)
 and [`settings.swift`](../src/app/settings.swift); action IDs are defined
 in [`shortcuts.swift`](../src/app/shortcuts.swift).
+
+### Closing panes
+
+The pane header's close button is dimmed and disabled when it is the only pane
+in its tab. Split panes retain an active close button. Use **Close Tab** when
+you intend to end a single-pane tab; explicit tab closing and close shortcuts
+keep their existing behavior.

@@ -53,6 +53,12 @@ struct ActivityItem: Identifiable, Equatable {
 /// repeated statuses, removed panes and suppressed transitions never produce catch-up alerts.
 @MainActor @Observable final class ActivityCenter {
     private(set) var activities: [ActivityItem] = []
+    /// Unread agent completions survive idle status until visited or work starts again.
+    private(set) var completions: [ActivityItem.ID: ActivityItem] = [:]
+    @ObservationIgnored private var previousPrograms: [ActivityItem.ID: String] = [:]
+
+    func acknowledge(_ id: ActivityItem.ID) { completions[id] = nil }
+
     private(set) var authorization: UNAuthorizationStatus = .notDetermined
     private(set) var notificationError: String?
     @ObservationIgnored private let delivery: ActivityDelivery
@@ -87,9 +93,13 @@ struct ActivityItem: Identifiable, Equatable {
 
     /// Omitted machines/panes are removed. Keep disconnected machines' last states in the
     /// input if their activity should remain visible. Call after any workspace state changes.
-    func consume(snapshot: [Endpoint: Wire.State], config: Config = .current, now: Date = Date()) async {
+    func consume(snapshot: [Endpoint: Wire.State], config: Config = .current, now: Date = Date(),
+                 viewedPanes: Set<ActivityItem.ID> = [],
+                 onAgentCompletion: ((ActivityItem) -> Void)? = nil) async {
         let oldItems = Dictionary(uniqueKeysWithValues: activities.map { ($0.id, $0) })
         var next: [ActivityItem.ID: Wire.Status] = [:]
+        var programs: [ActivityItem.ID: String] = [:]
+        var completed: [ActivityItem] = []
         var nextRevisions: [ActivityItem.ID: UUID] = [:]
         var items: [ActivityItem] = []
         var notices: [(ActivityItem, UUID)] = []
@@ -99,7 +109,13 @@ struct ActivityItem: Identifiable, Equatable {
                     let id = ActivityItem.ID(endpoint: endpoint, pane: pane.id)
                     let old = previous[id]
                     next[id] = pane.status
-                    let revision = old == pane.status ? (revisions[id] ?? UUID()) : UUID()
+                    programs[id] = pane.program
+                    let sameProgram = previousPrograms[id] == pane.program
+                    let agent = Programs.isAgent(pane.program)
+                    if (!sameProgram && !pane.program.isEmpty) || pane.status == .working || viewedPanes.contains(id) {
+                        completions[id] = nil
+                    }
+                    let revision = sameProgram && old == pane.status ? (revisions[id] ?? UUID()) : UUID()
                     nextRevisions[id] = revision
                     guard pane.status != .idle else { continue }
                     let item = ActivityItem(id: id, tab: tab.id,
@@ -107,16 +123,24 @@ struct ActivityItem: Identifiable, Equatable {
                                             program: pane.program, status: pane.status,
                                             changedAt: old == pane.status ? (oldItems[id]?.changedAt ?? now) : now)
                     items.append(item)
+                    if agent, sameProgram, let old, old != .done, pane.status == .done,
+                       !viewedPanes.contains(id) {
+                        completions[id] = item
+                        completed.append(item)
+                    }
                     let enabled = switch pane.status {
                     case .blocked: config.notifyBlocked
                     case .done: config.notifyDone
                     case .error: config.notifyError
                     default: false
                     }
-                    if old != nil, old != pane.status, enabled { notices.append((item, revision)) }
+                    if agent, sameProgram, old != nil, old != pane.status, enabled,
+                       !viewedPanes.contains(id) { notices.append((item, revision)) }
                 }
             }
         }
+        completions = completions.filter { next[$0.key] != nil }
+        previousPrograms = programs
         previous = next
         revisions = nextRevisions
         activities = items.sorted {
@@ -125,6 +149,7 @@ struct ActivityItem: Identifiable, Equatable {
             let right = String(describing: $1.id.endpoint) + $1.id.pane
             return left < right
         }
+        for item in completed { onAgentCompletion?(item) }
         guard !notices.isEmpty, !(config.quietWhenFocused && isAppFocused()) else { return }
         await refreshAuthorization()
         guard authorization == .authorized || authorization == .provisional else { return }

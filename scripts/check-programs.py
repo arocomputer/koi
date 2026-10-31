@@ -87,7 +87,7 @@ def validate(directory) -> list[str]:
         if not isinstance(entry, dict):
             check(False, path, "expected entry object")
             continue
-        for key in entry.keys() - {"runs", "name", "logo", "symbol", "text", "colors", "ink", "mark"}:
+        for key in entry.keys() - {"runs", "name", "logo", "symbol", "text", "colors", "ink", "mark", "agent"}:
             check(False, f"{path}.{key}", "unknown entry field")
         check(nonempty(entry.get("name")), path + ".name", "expected nonempty name")
         runs = entry.get("runs")
@@ -106,6 +106,8 @@ def validate(directory) -> list[str]:
                   "expected exactly one nonempty " + "/".join(sorted(keys)))
             if location.endswith(".mark") and isinstance(glyph, dict):
                 check(not glyph.keys() - keys, location, "unknown mark field")
+        if "agent" in entry:
+            check(isinstance(entry["agent"], bool), path + ".agent", "expected boolean")
         colors = entry.get("colors")
         check(isinstance(colors, list) and len(colors) == 2 and all(matches(r"[0-9a-fA-F]{6}", c) for c in colors),
               path + ".colors", "expected two six-digit hex colors without #")

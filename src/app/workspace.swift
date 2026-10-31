@@ -25,8 +25,11 @@ final class Workspace {
     private(set) var state = Wire.State()
     private(set) var transport: DiagnosticServer.Transport = .disconnected
     private(set) var selectedTab: String?
-    /// Tabs whose program finished while they were not selected.
-    private(set) var attention: Set<String> = []
+    /// Pane IDs with unread agent completions, shared across windows by ActivityCenter.
+    var completedAgentPanes: Set<String> = []
+    func hasAgentCompletion(in tab: Wire.TabInfo) -> Bool {
+        tab.panes.contains { completedAgentPanes.contains($0.id) }
+    }
     private(set) var collapsed: Set<String> = []
     /// The group whose name field is open.
     var renamingGroup: String?
@@ -69,8 +72,6 @@ final class Workspace {
     @ObservationIgnored private var fontSize = Config.current.fontSize
     @ObservationIgnored private var received = false
     @ObservationIgnored private var pendingSelection: String?
-    /// When each working tab started working.
-    @ObservationIgnored private var workingSince: [String: Date] = [:]
 
     /// Only chrome metadata is delayed; state, terminal behavior and pane status
     /// always use the latest server tree. New panes are presented immediately.
@@ -336,17 +337,6 @@ final class Workspace {
         let previousPanes = tab(selectedTab)?.tab.layout.panes ?? []
         let first = !received
         received = true
-        // A tab that worked for a while and stopped while out of sight wants
-        // attention; a brief burst of output does not.
-        for t in new.tabs {
-            let working = t.panes.contains { $0.status == .working }
-            if working {
-                if workingSince[t.id] == nil { workingSince[t.id] = Date() }
-            } else if let since = workingSince.removeValue(forKey: t.id),
-                      t.id != selectedTab, Date().timeIntervalSince(since) >= 3 {
-                attention.insert(t.id)
-            }
-        }
         state = new
         updatePresentations()
         let names = Dictionary(uniqueKeysWithValues: new.tabs.map { ($0.id, $0.name ?? "") })
@@ -372,7 +362,6 @@ final class Workspace {
         }
         onViewsChanged?()
         for pane in new.tabs.flatMap(\.panes) { views[pane.id]?.setProgram(pane.program) }
-        attention.formIntersection(Set(new.tabs.map(\.id)))
 
         if new.items.isEmpty {
             if first {
@@ -430,7 +419,6 @@ final class Workspace {
         selectedTab = tabID
         focusedPane = focusedPane(in: t)?.id
         zoomedPane = nil
-        attention.remove(tabID)
         show()
         saveLayout()
     }
@@ -652,6 +640,12 @@ final class Workspace {
             else { self.onError?("Update the running server to use a startup command. Existing sessions were preserved.") }
         }
         return false
+    }
+
+    /// Header close never ends the last pane's tab, including clicks during a topology update.
+    func closePaneFromHeader() {
+        guard let tab = tab(selectedTab)?.tab, tab.panes.count > 1 else { return }
+        closePane()
     }
 
     /// Closes the focused pane; the tab goes with its last pane.

@@ -470,12 +470,13 @@ extension AppDelegate {
     /// pane across metadata refreshes and focusing newly selected panes.
     func show(_ tab: Wire.TabInfo?) {
         let ws = workspace
+        acknowledgeVisibleAgentCompletion()
         if actionsOwner != ObjectIdentifier(ws) {
             actionsOwner = ObjectIdentifier(ws)
             card.actions = SplitContainerView.Actions(
                 split: { ws.splitPane($0) },
                 zoom: { ws.toggleZoom() },
-                close: { ws.closePane() },
+                close: { ws.closePaneFromHeader() },
                 focus: { ws.focus($0) },
                 resize: { ws.resizeSplit($0, index: $1, ratio: $2) },
                 swap: { ws.swapPanes($0, onto: $1) },
@@ -570,7 +571,10 @@ extension AppDelegate {
     }
 
     /// Give the selected terminal focus when the main window becomes key.
-    func windowDidBecomeKey(_ notification: Notification) { workspace.selectedView?.setFocused(true) }
+    func windowDidBecomeKey(_ notification: Notification) {
+        workspace.selectedView?.setFocused(true)
+        acknowledgeVisibleAgentCompletion()
+    }
     /// Losing key focus ends live gestures and clears terminal focus together.
     func windowDidResignKey(_ notification: Notification) {
         resizeHandle?.cancel()

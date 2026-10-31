@@ -416,7 +416,12 @@ cannot commit or replace terminal input.
 Activity merges connected workspace snapshots by endpoint and pane identity.
 Explicit `reportStatus` and legacy OSC 7501 reports coexist with output/process
 inference; explicit reports are tied to foreground identity rather than a
-permanent pane label. Notification delivery is injected, opt-in for blocked,
+permanent pane label. The catalog's optional `agent` flag identifies applications
+eligible for notices. Agent done transitions create pane-scoped unread records
+shared across windows: the tab icon carries a circle until the pane is visited.
+A completion on another machine shows an actionable in-app toast. Baselines,
+repeated statuses and ordinary command completions stay silent. System
+notification delivery is injected, opt-in for blocked,
 done and error transitions, and quiet while focused by default. Initial
 observations and suppressed/repeated statuses produce no catch-up alerts.
 Construction does not query or request notification authorization; a user
