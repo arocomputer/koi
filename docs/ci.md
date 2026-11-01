@@ -178,7 +178,8 @@ ask/aft with one stable required gate and a narrower administrator bypass:
 
 - PRs and resolved review threads; squash merging and linear history.
 - No branch deletion or force pushes.
-- `Required`, from GitHub Actions, with the branch up to date before merging.
+- `Required`, from GitHub Actions. Branches need not be up to date with `main`:
+  conflicts still block merging, and the push run on `main` checks the merged result.
 - Zero mandatory approvals while there is one maintainer. CODEOWNERS routes
   review requests without making solo work impossible.
 - Administrator bypass only through a PR, not unrestricted direct pushes.
