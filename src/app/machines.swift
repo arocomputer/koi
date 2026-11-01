@@ -41,6 +41,13 @@ final class Machines {
 
     var allWorkspaces: [Workspace] { Array(workspaces.values) }
 
+    /// A set-up machine whose control connection is down and retrying. Setup
+    /// failures keep their own warning; this is only for a machine that is off.
+    func isOffline(_ endpoint: Endpoint) -> Bool {
+        guard case .ssh(let host) = endpoint, status[host] == .ready else { return false }
+        return workspaces[endpoint]?.transport == .disconnected
+    }
+
     /// Shows this Mac (or the machine shown last time) and connects to every
     /// added machine in the background, so switching to one is instant and
     /// its tabs are already current.
@@ -319,13 +326,16 @@ private struct MachineRow: View {
 
     var body: some View {
         let failure: String? = if case .ssh(let h) = endpoint, case .failed(let m) = machines.status[h] { m } else { nil }
+        let offline = machines.isOffline(endpoint)
         Button(action: select) {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 9) {
                     Image(systemName: machines.deviceIcons.symbol(for: endpoint)).frame(width: 18)
                     Text(endpoint.title).lineLimit(1)
                     Spacer()
-                    if case .ssh(let h) = endpoint, machines.status[h] == .connecting {
+                    if offline {
+                        Text("Offline").font(.system(size: 12)).foregroundStyle(.secondary)
+                    } else if case .ssh(let h) = endpoint, machines.status[h] == .connecting {
                         ProgressView().controlSize(.small).scaleEffect(0.7)
                     } else if failure != nil {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -344,6 +354,7 @@ private struct MachineRow: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .frame(minHeight: 32)
+            .opacity(offline ? 0.55 : 1)
             .background(Color.primary.opacity(highlighted ? 0.09 : machines.current == endpoint ? 0.05 : 0), in: .rect(cornerRadius: 8, style: .continuous))
             .contentShape(.rect)
         }
@@ -596,7 +607,7 @@ struct MachineSettingsView: View {
         }
         switch machines.status[host] {
         case .connecting: return "Setting up SSH…"
-        case .ready: return "SSH setup ready"
+        case .ready: return machines.isOffline(endpoint) ? "Offline, retrying" : "SSH setup ready"
         case .failed: return "SSH setup failed"
         case nil: return "SSH setup not started"
         }
