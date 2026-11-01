@@ -30,11 +30,8 @@ extension SessionTests {
         var create = Wire.Command(op: .newTab)
         create.startup = "stty -echo; n=0; printf 'process-ready\\n'; while IFS= read -r line; do n=$((n+1)); printf 'reply-%s:%s\\n' \"$n\" \"$line\"; done"
         let id = try #require(control.run(create).pane)
-        let offer = try #require(server.offer())
-        let relay = try NetworkFixture(serverPort: offer.port)
+        let (relay, link) = try #require(try connectThroughRelay(server))
         defer { relay.stop() }
-        let link = try #require(LinkClient(host: "127.0.0.1", port: relay.port,
-                                          secret: Wire.secretBytes(offer.secret)))
         let stream = try #require(link.open())
         defer { stream.close() }
         let pane = try #require(TestPane(id, cols: 100, rows: 40, transport: stream))
@@ -59,11 +56,8 @@ extension SessionTests {
 
             // A new offer gives the reconnect fresh cryptographic state; the
             // original pane and shell must keep their identity and counter.
-            let nextOffer = try #require(server.offer())
-            let nextRelay = try NetworkFixture(serverPort: nextOffer.port)
+            let (nextRelay, nextLink) = try #require(try connectThroughRelay(server))
             defer { nextRelay.stop() }
-            let nextLink = try #require(LinkClient(host: "127.0.0.1", port: nextRelay.port,
-                                                  secret: Wire.secretBytes(nextOffer.secret)))
             let nextStream = try #require(nextLink.open())
             defer { nextStream.close() }
             let reattached = try #require(TestPane(id, cols: 100, rows: 40, transport: nextStream))
@@ -74,5 +68,22 @@ extension SessionTests {
         }
         #expect(relay.counts.dropped > 0, "the path must actually discard datagrams")
         #expect(relay.counts.forwarded > 0)
+    }
+
+    /// Opens a link through a fresh impaired relay. One 2.5 s handshake can go
+    /// unanswered on a loaded runner; the app then falls back to SSH and probes
+    /// again with a new offer, so the test retries the same way. Each attempt
+    /// takes a new offer: a new link reusing a secret the server has already
+    /// seen could be refused as a replay.
+    private func connectThroughRelay(_ server: TestServer) throws -> (NetworkFixture, LinkClient)? {
+        for _ in 0..<3 {
+            guard let offer = server.offer() else { continue }
+            let relay = try NetworkFixture(serverPort: offer.port)
+            if let link = LinkClient(host: "127.0.0.1", port: relay.port, secret: Wire.secretBytes(offer.secret)) {
+                return (relay, link)
+            }
+            relay.stop()
+        }
+        return nil
     }
 }
